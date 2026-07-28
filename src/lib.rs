@@ -1,7 +1,7 @@
-//! GoogleSQL (ZetaSQL) の Rust バインディング。
+//! Rust bindings for GoogleSQL (ZetaSQL).
 //!
-//! goccy/googlesql-wasm が公開する prebuilt WebAssembly モジュールを
-//! wasmtime 上で駆動して GoogleSQL のパーサ機能を提供する。
+//! Drives the prebuilt WebAssembly module published by goccy/googlesql-wasm on
+//! top of wasmtime to provide GoogleSQL parser functionality.
 
 mod ast;
 mod error;

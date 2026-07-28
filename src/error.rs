@@ -1,21 +1,21 @@
-//! クレート共通のエラー型。
+//! Crate-wide error type.
 
-/// GoogleSQL バインディングの操作で発生しうるエラー。
+/// Errors that can occur when using the GoogleSQL bindings.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// wasm モジュールのロード・インスタンス化に失敗した。
+    /// Failed to load or instantiate the wasm module.
     #[error("failed to instantiate googlesql wasm: {0}")]
     Instantiate(String),
 
-    /// wasm ランタイムの実行(export 呼び出し等)に失敗した。
+    /// A wasm runtime error (e.g. failed export call).
     #[error("wasm runtime error: {0}")]
     Wasm(String),
 
-    /// wasm 線形メモリへの読み書きに失敗した。
+    /// Failed to read from or write to wasm linear memory.
     #[error("wasm memory access error: {0}")]
     Memory(String),
 
-    /// GoogleSQL 側が返したエラー(構文エラー等)。
+    /// An error returned by GoogleSQL itself (e.g. a syntax error).
     #[error("googlesql error: {0}")]
     GoogleSql(String),
 }

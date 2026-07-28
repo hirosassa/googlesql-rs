@@ -18,12 +18,12 @@ sha2 = "0.10"
 unsafe_code = "forbid"
 
 [lints.clippy]
-# rust-hardening: パニック系構文を非テストコードで禁止
+# rust-hardening: forbid panicking constructs in non-test code
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
-# 算術・キャストの安全性
+# arithmetic and cast safety
 arithmetic_side_effects = "deny"
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"

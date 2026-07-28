@@ -1,18 +1,19 @@
 # googlesql-rs
 
-GoogleSQL (ZetaSQL) の Rust バインディング。
+Rust bindings for GoogleSQL (ZetaSQL).
 
-[goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm) が公開する
-prebuilt WebAssembly モジュールを [wasmtime](https://wasmtime.dev/) 上で駆動することで、
-巨大な C++ / Bazel ツールチェインを一切必要とせずに GoogleSQL のパーサ機能を利用できます。
+Drives the prebuilt WebAssembly module published by
+[goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm) on top of
+[wasmtime](https://wasmtime.dev/), giving you GoogleSQL parser functionality
+without requiring a massive C++ / Bazel toolchain.
 
-## 特徴
+## Features
 
-- **C++ ビルド不要** — GoogleSQL を WASM 化した成果物を実行するだけ
-- **cgo 相当の FFI 不要** — `unsafe` は `forbid`
-- ビルド時に `googlesql.wasm` を GitHub Release から自動取得(SHA256 検証つき)
+- **No C++ build required** — just run the pre-compiled WASM artifact of GoogleSQL
+- **No cgo-style FFI needed** — `unsafe` is `forbid`
+- `googlesql.wasm` is automatically fetched from GitHub Releases at build time (with SHA256 verification)
 
-## 使い方
+## Usage
 
 ```rust
 use googlesql::Module;
@@ -32,12 +33,13 @@ fn main() -> Result<(), googlesql::Error> {
 }
 ```
 
-構文エラーは `Error::GoogleSql` として返ります。
+Syntax errors are returned as `Error::GoogleSql`.
 
-### AST の走査
+### Traversing the AST
 
-パース結果は所有権完結した AST 木として取得でき、各ノードの型名・ソースの
-バイト範囲・子ノードを辿れます。ノードのテキストは元 SQL のバイト範囲から取り出します。
+The parse result is returned as a self-contained AST tree; you can inspect the
+type name, byte range within the source, and children of each node. Node text
+is extracted from the byte range of the original SQL.
 
 ```rust
 use googlesql::{AstNode, Module};
@@ -64,27 +66,27 @@ dump(parsed.root(), sql, 0);
 //       ASTFromClause Some("FROM t")
 ```
 
-上位のコンテナノードは位置情報を持たない(`byte_range()` が `None`)ことがあります。
+Upper-level container nodes may carry no position information (`byte_range()` returns `None`).
 
-## 現状
+## Status
 
-- ✅ SQL 文のパースと正規化(`parse_statement` → `canonical_sql`)
-- ✅ AST ノードへの型付きアクセス(型名・バイト範囲・子ノード走査)
-- ⬜ アナライザ(型推論・名前解決、Catalog コールバック)
-- ⬜ フォーマッタ
+- ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
+- ✅ Typed access to AST nodes (type name, byte range, child traversal)
+- ⬜ Analyzer (type inference, name resolution, Catalog callback)
+- ⬜ Formatter
 
-## ビルド
+## Building
 
-初回ビルドは `googlesql.wasm`(約 14MB)をダウンロードします。
-オフライン環境やローカルの wasm を使う場合は環境変数で上書きできます。
+The first build downloads `googlesql.wasm` (~14 MB).
+For offline environments or a locally available wasm file, you can override the path via an environment variable.
 
 ```sh
-# ローカルの wasm を使う(ダウンロードをスキップ)
+# Use a local wasm file (skips the download)
 GOOGLESQL_WASM=/path/to/googlesql.wasm cargo build
 ```
 
-内部アーキテクチャと WASM ホスト ABI の詳細は [`docs/SPIKE.md`](docs/SPIKE.md) を参照してください。
+For details on the internal architecture and the WASM host ABI, see [`docs/SPIKE.md`](docs/SPIKE.md).
 
-## ライセンス
+## License
 
-Apache-2.0(GoogleSQL / ZetaSQL に準拠)。
+Apache-2.0 (following GoogleSQL / ZetaSQL).
