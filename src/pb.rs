@@ -34,6 +34,18 @@ pub fn append_string(buf: &mut Vec<u8>, field: u32, s: &str) {
     buf.extend_from_slice(bytes);
 }
 
+/// uint64 フィールド(wire type 0, varint)を追記する。
+pub fn append_uint64(buf: &mut Vec<u8>, field: u32, v: u64) {
+    append_tag(buf, field, 0);
+    append_varint(buf, v);
+}
+
+/// 非負 int32 フィールド(wire type 0, varint)を追記する。
+pub fn append_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
+    append_tag(buf, field, 0);
+    append_varint(buf, u64::try_from(v).unwrap_or(0));
+}
+
 /// ハンドル(ポインタ)フィールドを submessage 形で追記する。
 pub fn append_handle(buf: &mut Vec<u8>, field: u32, ptr: u64) {
     let inner_len = varint_len(ptr).checked_add(1).unwrap_or(0);
@@ -121,6 +133,23 @@ pub fn read_string_at_field(resp: &[u8], field: u32) -> Option<String> {
             if w == 2 {
                 let bytes = read_len_prefixed(&mut cur)?;
                 return Some(String::from_utf8_lossy(bytes).into_owned());
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
+/// 応答の指定フィールドから int32(varint)を読む。
+pub fn read_int32_at_field(resp: &[u8], field: u32) -> Option<i32> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 0 {
+                let v = read_varint(&mut cur)?;
+                let low = u32::try_from(v & 0xFFFF_FFFF).ok()?;
+                return Some(i32::from_ne_bytes(low.to_ne_bytes()));
             }
             return None;
         }
@@ -225,6 +254,19 @@ mod tests {
         append_tag(&mut buf, 1, 0);
         append_varint(&mut buf, 42);
         assert_eq!(read_handle_at_field(&buf, 1), 42);
+    }
+
+    #[test]
+    fn int32_field_roundtrip() {
+        for v in [0i32, 1, 127, 128, 1000, i32::MAX, -1] {
+            let mut buf = Vec::new();
+            append_int32(&mut buf, 3, v.max(0));
+            assert_eq!(read_int32_at_field(&buf, 3), Some(v.max(0)));
+        }
+        // int32 の -1 表現(下位32bit)も読めること。
+        let mut neg = Vec::new();
+        append_uint64(&mut neg, 1, u64::from(u32::MAX));
+        assert_eq!(read_int32_at_field(&neg, 1), Some(-1));
     }
 
     #[test]

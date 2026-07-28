@@ -136,9 +136,15 @@ impl Module {
     /// リクエスト/レスポンスの各バッファは呼び出し後に解放する。
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
         let name = format!("w_{svc}_{mid}");
+        self.call_export(&name, req)
+    }
+
+    /// 名前付き export(`w_<svc>_<mid>` または `wasmify_get_type_name` 等)を
+    /// `(ptr,len) -> (ptr<<32 | len)` 規約で呼び出す。
+    pub fn call_export(&mut self, name: &str, req: &[u8]) -> Result<Vec<u8>, Error> {
         let func = self
             .instance
-            .get_typed_func::<(u32, u32), u64>(&mut self.store, &name)
+            .get_typed_func::<(u32, u32), u64>(&mut self.store, name)
             .map_err(|e| Error::Wasm(format!("export `{name}`: {e}")))?;
 
         let (req_ptr, req_len) = if req.is_empty() {
