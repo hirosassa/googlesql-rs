@@ -6,6 +6,8 @@
 //! - `wasmify::callback_invoke` is provided (returns 0 in the MVP — no callbacks registered)
 //! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
 
+use std::sync::OnceLock;
+
 use wasmtime::{
     Caller, Engine, Extern, ExternType, Instance, Linker, Memory, Module as WasmModule, Store,
     TypedFunc, Val, ValType,
@@ -17,6 +19,33 @@ use crate::error::Error;
 
 /// Absolute path to googlesql.wasm prepared by build.rs.
 const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
+
+/// Process-wide cache of the compiled wasm module and its `Engine`.
+///
+/// JIT-compiling the ~13MB module dominates the cost of [`Module::new`]. wasmtime's
+/// `Engine` and `Module` are `Send + Sync` and designed to be shared across many
+/// instances and threads, so we compile once here and only instantiate per `Module`.
+/// The immutable compiled code is shared; each `Module` still gets its own `Store`,
+/// `Instance`, and linear memory, so instances stay fully isolated.
+static SHARED_WASM: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
+
+/// Returns the shared `Engine` and compiled module, compiling on first use.
+///
+/// Uses `get_or_init` so the expensive compilation runs exactly once even when
+/// many threads construct a `Module` concurrently; the losers block rather than
+/// each recompiling. A compilation failure is cached (the embedded wasm is fixed,
+/// so it would fail identically every time).
+fn shared_wasm() -> Result<&'static (Engine, WasmModule), Error> {
+    SHARED_WASM
+        .get_or_init(|| {
+            let engine = Engine::default();
+            let wasm = WasmModule::from_file(&engine, WASM_PATH)
+                .map_err(|e| format!("load {WASM_PATH}: {e}"))?;
+            Ok((engine, wasm))
+        })
+        .as_ref()
+        .map_err(|e| Error::Instantiate(e.clone()))
+}
 
 /// Host state carried in the wasmtime `Store`.
 struct HostState {
@@ -38,15 +67,13 @@ pub struct Module {
 impl Module {
     /// Loads the embedded wasm and returns a fully initialized instance.
     pub fn new() -> Result<Self, Error> {
-        let engine = Engine::default();
-        let wasm = WasmModule::from_file(&engine, WASM_PATH)
-            .map_err(|e| Error::Instantiate(format!("load {WASM_PATH}: {e}")))?;
+        let (engine, wasm) = shared_wasm()?;
 
-        let mut linker: Linker<HostState> = Linker::new(&engine);
+        let mut linker: Linker<HostState> = Linker::new(engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |s: &mut HostState| &mut s.wasi)
             .map_err(|e| Error::Instantiate(format!("wasi linker: {e}")))?;
         register_callback_import(&mut linker)?;
-        register_env_stubs(&mut linker, &wasm)?;
+        register_env_stubs(&mut linker, wasm)?;
 
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stderr();
@@ -66,10 +93,10 @@ impl Module {
             .preopened_dir("/", "/", DirPerms::READ, FilePerms::READ)
             .map_err(|e| Error::Instantiate(format!("preopen /: {e}")))?
             .build_p1();
-        let mut store = Store::new(&engine, HostState { wasi });
+        let mut store = Store::new(engine, HostState { wasi });
 
         let instance = linker
-            .instantiate(&mut store, &wasm)
+            .instantiate(&mut store, wasm)
             .map_err(|e| Error::Instantiate(format!("instantiate: {e}")))?;
 
         let memory = instance
