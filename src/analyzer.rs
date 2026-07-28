@@ -6,11 +6,13 @@
 //!
 //! [`Module::analyze_statement`] resolves against an empty catalog;
 //! [`Module::analyze_statement_with_catalog`] registers user-defined tables
-//! (via `SimpleTable`/`SimpleColumn`) first. Both report success or failure
-//! only; typed access to the resolved AST comes later.
+//! (via `SimpleTable`/`SimpleColumn`) first. Both report success or failure only.
+//! [`Module::analyze_output_columns`] additionally returns the query's resolved
+//! output schema.
 
 use crate::error::Error;
 use crate::pb;
+use crate::resolved::OutputColumn;
 use crate::runtime::Module;
 
 const SVC_ANALYZER: i32 = 0;
@@ -120,6 +122,32 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<(), Error> {
+        self.analyze_columns(sql, tables).map(drop)
+    }
+
+    /// Analyzes a query and returns its resolved output schema.
+    ///
+    /// Like [`Module::analyze_statement_with_catalog`], but instead of only
+    /// reporting success it returns one [`OutputColumn`] per column the query
+    /// produces, each carrying the column's name and resolved type. Non-query
+    /// statements have no output schema and yield an empty vec. Returns
+    /// [`Error::GoogleSql`] on a syntax error or unresolved name.
+    pub fn analyze_output_columns(
+        &mut self,
+        sql: &str,
+        tables: &[TableDef],
+    ) -> Result<Vec<OutputColumn>, Error> {
+        self.analyze_columns(sql, tables)
+    }
+
+    /// Runs the full analysis pipeline and returns the query's output columns.
+    ///
+    /// Frees the `AnalyzerOptions` handle regardless of success or failure.
+    fn analyze_columns(
+        &mut self,
+        sql: &str,
+        tables: &[TableDef],
+    ) -> Result<Vec<OutputColumn>, Error> {
         let options = self.new_handle(SVC_ANALYZER_OPTIONS, MID_NEW_ANALYZER_OPTIONS, &[])?;
 
         // Free the options handle regardless of analysis success or failure.
@@ -129,9 +157,9 @@ impl Module {
             MID_FREE_ANALYZER_OPTIONS,
             &pb::handle_arg(options),
         );
-        result?;
+        let columns = result?;
         freed?;
-        Ok(())
+        Ok(columns)
     }
 
     /// Builds the `TypeFactory` handle and runs the analysis against it,
@@ -141,7 +169,7 @@ impl Module {
         sql: &str,
         options: u64,
         tables: &[TableDef],
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OutputColumn>, Error> {
         let type_factory = self.new_handle(SVC_TYPE_FACTORY, MID_NEW_TYPE_FACTORY, &[])?;
 
         let result = self.analyze_with_catalog(sql, options, type_factory, tables);
@@ -150,9 +178,9 @@ impl Module {
             MID_FREE_TYPE_FACTORY,
             &pb::handle_arg(type_factory),
         );
-        result?;
+        let columns = result?;
         freed?;
-        Ok(())
+        Ok(columns)
     }
 
     /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with
@@ -164,7 +192,7 @@ impl Module {
         options: u64,
         type_factory: u64,
         tables: &[TableDef],
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OutputColumn>, Error> {
         let mut catalog_req = Vec::new();
         pb::append_string(&mut catalog_req, 1, "");
         pb::append_handle(&mut catalog_req, 2, type_factory);
@@ -178,9 +206,9 @@ impl Module {
             MID_FREE_SIMPLE_CATALOG,
             &pb::handle_arg(catalog),
         );
-        analyzed?;
+        let columns = analyzed?;
         freed?;
-        Ok(())
+        Ok(columns)
     }
 
     /// Registers `tables` into `catalog`, runs the analysis, then frees the
@@ -193,14 +221,14 @@ impl Module {
         catalog: u64,
         type_factory: u64,
         tables: &[TableDef],
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OutputColumn>, Error> {
         let table_handles = self.add_tables(catalog, type_factory, tables)?;
 
         let analyzed = self.analyze(sql, options, catalog, type_factory);
         let freed = self.free_tables(&table_handles);
-        analyzed?;
+        let columns = analyzed?;
         freed?;
-        Ok(())
+        Ok(columns)
     }
 
     /// Registers each table into `catalog`, returning the created `SimpleTable`
@@ -367,14 +395,15 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Invokes `AnalyzeStatement` and releases the resulting `AnalyzerOutput` handle.
+    /// Invokes `AnalyzeStatement`, reads the resolved output schema, then releases
+    /// the resulting `AnalyzerOutput` handle.
     fn analyze(
         &mut self,
         sql: &str,
         options: u64,
         catalog: u64,
         type_factory: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OutputColumn>, Error> {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, sql);
         pb::append_handle(&mut req, 2, options);
@@ -383,16 +412,23 @@ impl Module {
         let resp = self.invoke(SVC_ANALYZER, MID_ANALYZE_STATEMENT, &req)?;
         check_error(&resp)?;
 
-        // The resolved output is not surfaced yet (Phase 1); free it immediately.
         let output = pb::read_handle_at_field(&resp, 2);
-        if output != 0 {
-            self.invoke(
-                SVC_ANALYZER_OUTPUT,
-                MID_FREE_ANALYZER_OUTPUT,
-                &pb::handle_arg(output),
-            )?;
+        if output == 0 {
+            return Ok(Vec::new());
         }
-        Ok(())
+
+        // Walk the resolved tree while the output (and the catalog/type factory
+        // that own its nodes and types) is still alive, then free it. The visited
+        // nodes are borrowed pointers into that tree, so none are freed here.
+        let columns = self.output_columns(output);
+        let freed = self.invoke(
+            SVC_ANALYZER_OUTPUT,
+            MID_FREE_ANALYZER_OUTPUT,
+            &pb::handle_arg(output),
+        );
+        let columns = columns?;
+        freed?;
+        Ok(columns)
     }
 
     /// Invokes a constructor and returns the non-null handle from response field 1.
