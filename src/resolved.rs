@@ -16,8 +16,17 @@ use crate::runtime::Module;
 const SVC_ANALYZER_OUTPUT: i32 = 558;
 const MID_RESOLVED_STATEMENT: i32 = 8;
 
-/// Node kind (from `wasmify_get_type_name`) of a resolved `SELECT` statement.
+/// Node kinds (from `wasmify_get_type_name`) that the walks match on.
 const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
+const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
+
+/// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children.
+const SVC_RESOLVED_NODE: i32 = 1167;
+const MID_GET_CHILD_NODES: i32 = 9;
+
+/// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
+const SVC_RESOLVED_SCAN: i32 = 1251;
+const MID_SCAN_COLUMN_LIST: i32 = 12;
 
 const SVC_RESOLVED_QUERY_STMT: i32 = 1211;
 const MID_OUTPUT_COLUMN_LIST: i32 = 12;
@@ -27,6 +36,8 @@ const MID_OUTPUT_COLUMN_GET_COLUMN: i32 = 8;
 const MID_OUTPUT_COLUMN_NAME: i32 = 9;
 
 const SVC_RESOLVED_COLUMN: i32 = 839;
+const MID_COLUMN_NAME: i32 = 9;
+const MID_COLUMN_TABLE_NAME: i32 = 11;
 const MID_COLUMN_TYPE: i32 = 13;
 
 const SVC_TYPE: i32 = 1417;
@@ -54,6 +65,27 @@ impl OutputColumn {
     }
 }
 
+/// A table a query reads, with the columns it actually references.
+///
+/// Produced by [`Module::referenced_tables`]; holds only owned data.
+#[derive(Debug, Clone)]
+pub struct TableRef {
+    name: String,
+    columns: Vec<String>,
+}
+
+impl TableRef {
+    /// The referenced table's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The columns read from this table, in the order first encountered.
+    pub fn columns(&self) -> &[String] {
+        &self.columns
+    }
+}
+
 impl Module {
     /// Extracts the output column schema from an `AnalyzerOutput` handle.
     ///
@@ -63,6 +95,9 @@ impl Module {
         &mut self,
         analyzer_output: u64,
     ) -> Result<Vec<OutputColumn>, Error> {
+        if analyzer_output == 0 {
+            return Ok(Vec::new());
+        }
         let statement =
             self.rpc_handle(SVC_ANALYZER_OUTPUT, MID_RESOLVED_STATEMENT, analyzer_output)?;
         if statement == 0 || self.node_kind(statement)? != KIND_QUERY_STMT {
@@ -99,6 +134,67 @@ impl Module {
         Ok(OutputColumn { name, type_name })
     }
 
+    /// Collects the tables a resolved statement reads, with referenced columns.
+    ///
+    /// Returns an empty vec for statements that read no tables.
+    pub(crate) fn referenced_tables_of(
+        &mut self,
+        analyzer_output: u64,
+    ) -> Result<Vec<TableRef>, Error> {
+        if analyzer_output == 0 {
+            return Ok(Vec::new());
+        }
+        let statement =
+            self.rpc_handle(SVC_ANALYZER_OUTPUT, MID_RESOLVED_STATEMENT, analyzer_output)?;
+        if statement == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut tables = Vec::new();
+        self.collect_table_scans(statement, &mut tables)?;
+        Ok(tables)
+    }
+
+    /// Records `node` if it is a table scan, then recurses into its children.
+    fn collect_table_scans(&mut self, node: u64, tables: &mut Vec<TableRef>) -> Result<(), Error> {
+        if self.node_kind(node)? == KIND_TABLE_SCAN {
+            self.record_table_scan(node, tables)?;
+        }
+        for child in self.child_nodes(node)? {
+            if child != 0 {
+                self.collect_table_scans(child, tables)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds the table and columns read by one `ResolvedTableScan` to `tables`.
+    fn record_table_scan(&mut self, scan: u64, tables: &mut Vec<TableRef>) -> Result<(), Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_SCAN,
+            MID_SCAN_COLUMN_LIST,
+            &pb::handle_arg(scan),
+        )?;
+        check_error(&resp)?;
+        for column in pb::read_handles_at_field(&resp, 1) {
+            let table_name = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_TABLE_NAME, column)?;
+            let column_name = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)?;
+            add_referenced_column(tables, &table_name, column_name);
+        }
+        Ok(())
+    }
+
+    /// Returns the child node handles of a resolved node via `GetChildNodes`.
+    fn child_nodes(&mut self, node: u64) -> Result<Vec<u64>, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_NODE,
+            MID_GET_CHILD_NODES,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_handles_at_field(&resp, 1))
+    }
+
     /// Returns a type handle's human-readable name via `Type::DebugString(false)`.
     fn type_debug_string(&mut self, type_handle: u64) -> Result<String, Error> {
         let mut req = Vec::new();
@@ -116,6 +212,21 @@ impl Module {
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::GoogleSql("string field not found".into()))
+    }
+}
+
+/// Records `column` under `table_name`, grouping repeated tables and skipping a
+/// column already recorded for that table (so lineage stays deduplicated).
+fn add_referenced_column(tables: &mut Vec<TableRef>, table_name: &str, column: String) {
+    if let Some(existing) = tables.iter_mut().find(|table| table.name == table_name) {
+        if !existing.columns.contains(&column) {
+            existing.columns.push(column);
+        }
+    } else {
+        tables.push(TableRef {
+            name: table_name.to_owned(),
+            columns: vec![column],
+        });
     }
 }
 
