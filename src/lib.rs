@@ -1,0 +1,15 @@
+//! Rust bindings for GoogleSQL (ZetaSQL).
+//!
+//! Drives the prebuilt WebAssembly module published by goccy/googlesql-wasm on
+//! top of wasmtime to provide GoogleSQL parser functionality.
+
+mod ast;
+mod error;
+mod parser;
+mod pb;
+mod runtime;
+
+pub use ast::AstNode;
+pub use error::Error;
+pub use parser::ParsedStatement;
+pub use runtime::Module;

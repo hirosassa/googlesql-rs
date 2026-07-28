@@ -1,0 +1,30 @@
+[package]
+name = "googlesql"
+version = "0.1.0"
+edition = "2024"
+description = "Rust bindings for GoogleSQL (ZetaSQL) via a prebuilt WebAssembly module"
+license = "Apache-2.0"
+repository = "https://github.com/hirosassa/googlesql-rs"
+
+[dependencies]
+wasmtime = "47"
+wasmtime-wasi = "47"
+thiserror = "2"
+
+[build-dependencies]
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# rust-hardening: forbid panicking constructs in non-test code
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+# arithmetic and cast safety
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
