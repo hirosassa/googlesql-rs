@@ -30,7 +30,7 @@ const TYPE_NAME_PREFIX: &str = "googlesql::";
 pub struct AstNode {
     kind: String,
     byte_range: Option<Range<usize>>,
-    children: Vec<AstNode>,
+    children: Vec<Self>,
 }
 
 impl AstNode {
@@ -45,7 +45,7 @@ impl AstNode {
     }
 
     /// The child nodes.
-    pub fn children(&self) -> &[AstNode] {
+    pub fn children(&self) -> &[Self] {
         &self.children
     }
 
@@ -151,8 +151,5 @@ impl Module {
 
 /// Converts an error in field 15 of the response into [`Error::GoogleSql`].
 fn check_error(resp: &[u8]) -> Result<(), Error> {
-    match pb::extract_error(resp) {
-        Some(message) => Err(Error::GoogleSql(message)),
-        None => Ok(()),
-    }
+    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message)))
 }
