@@ -4,6 +4,7 @@
 //! NewParserOptions(699,0) → ParseStatement(0,10) → ParserOutput.Node(700,3)
 //! → Unparse(0,12)。確保したハンドルは破棄する。
 
+use crate::ast::AstNode;
 use crate::error::Error;
 use crate::pb;
 use crate::runtime::Module;
@@ -22,16 +23,22 @@ const MID_FREE_PARSER_OUTPUT: i32 = 9;
 
 /// パース済みステートメント。
 ///
-/// MVP では正規化(unparse)後のSQL文字列を保持する。将来 AST アクセサを追加予定。
+/// 正規化(unparse)後のSQL文字列と、所有権完結した AST 木を保持する。
 #[derive(Debug, Clone)]
 pub struct ParsedStatement {
     canonical_sql: String,
+    root: AstNode,
 }
 
 impl ParsedStatement {
     /// 正規化された標準SQL文字列。
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
+    }
+
+    /// AST のルートノード。
+    pub fn root(&self) -> &AstNode {
+        &self.root
     }
 }
 
@@ -77,22 +84,23 @@ impl Module {
         }
 
         // ParserOutput は結果の成否に関わらず解放する(AST木ごと解放される)。
-        let canonical = self.canonicalize_output(output_ptr);
+        let built = self.build_from_output(output_ptr);
         let freed = self.invoke(
             SVC_PARSER_OUTPUT,
             MID_FREE_PARSER_OUTPUT,
             &pb::handle_arg(output_ptr),
         );
 
-        let canonical = canonical?;
+        let (canonical_sql, root) = built?;
         freed?;
         Ok(ParsedStatement {
-            canonical_sql: canonical,
+            canonical_sql,
+            root,
         })
     }
 
-    /// ParserOutput の AST ルートを取り出し、Unparse で正規化SQLを得る。
-    fn canonicalize_output(&mut self, output_ptr: u64) -> Result<String, Error> {
+    /// ParserOutput の AST ルートを取り出し、正規化SQLと AST 木を構築する。
+    fn build_from_output(&mut self, output_ptr: u64) -> Result<(String, AstNode), Error> {
         let node_resp = self.invoke(
             SVC_PARSER_OUTPUT,
             MID_PARSER_OUTPUT_NODE,
@@ -106,8 +114,11 @@ impl Module {
 
         let unparsed = self.invoke(SVC_PARSER, MID_UNPARSE, &pb::handle_arg(node_ptr))?;
         check_error(&unparsed)?;
-        pb::read_string_at_field(&unparsed, 1)
-            .ok_or_else(|| Error::GoogleSql("Unparse returned no string".into()))
+        let canonical = pb::read_string_at_field(&unparsed, 1)
+            .ok_or_else(|| Error::GoogleSql("Unparse returned no string".into()))?;
+
+        let root = self.build_ast(node_ptr)?;
+        Ok((canonical, root))
     }
 }
 

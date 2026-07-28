@@ -34,10 +34,42 @@ fn main() -> Result<(), googlesql::Error> {
 
 構文エラーは `Error::GoogleSql` として返ります。
 
-## 現状(MVP)
+### AST の走査
+
+パース結果は所有権完結した AST 木として取得でき、各ノードの型名・ソースの
+バイト範囲・子ノードを辿れます。ノードのテキストは元 SQL のバイト範囲から取り出します。
+
+```rust
+use googlesql::{AstNode, Module};
+
+fn dump(node: &AstNode, sql: &str, depth: usize) {
+    println!("{}{} {:?}", "  ".repeat(depth), node.kind(), node.text(sql));
+    for child in node.children() {
+        dump(child, sql, depth + 1);
+    }
+}
+
+let mut module = Module::new()?;
+let sql = "SELECT a, 42 FROM t";
+let parsed = module.parse_statement(sql)?;
+dump(parsed.root(), sql, 0);
+// ASTQueryStatement None
+//   ASTQuery None
+//     ASTSelect None
+//       ASTSelectList Some("a, 42")
+//         ...
+//           ASTIdentifier Some("a")
+//         ASTSelectColumn Some("42")
+//           ASTIntLiteral Some("42")
+//       ASTFromClause Some("FROM t")
+```
+
+上位のコンテナノードは位置情報を持たない(`byte_range()` が `None`)ことがあります。
+
+## 現状
 
 - ✅ SQL 文のパースと正規化(`parse_statement` → `canonical_sql`)
-- ⬜ AST ノードへの型付きアクセス
+- ✅ AST ノードへの型付きアクセス(型名・バイト範囲・子ノード走査)
 - ⬜ アナライザ(型推論・名前解決、Catalog コールバック)
 - ⬜ フォーマッタ
 
