@@ -1,10 +1,10 @@
-//! GoogleSQL の prebuilt wasm を wasmtime 上で駆動するホストランタイム。
+//! Host runtime that drives the GoogleSQL prebuilt wasm on top of wasmtime.
 //!
-//! ABI の詳細は `docs/SPIKE.md` を参照。要点:
-//! - WASI(preview1)をリアクタとして提供し、`/` をマウント(タイムゾーン等の読取)
-//! - `env` の C++ ランタイム import はすべてスタブで満たす
-//! - `wasmify::callback_invoke` を提供(MVP では未使用のため 0 を返す)
-//! - RPC は `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` の規約
+//! ABI details are documented in `docs/SPIKE.md`. Key points:
+//! - WASI (preview1) is provided as a reactor; `/` is pre-opened (for timezone reads, etc.)
+//! - All C++ runtime imports from `env` are satisfied by stubs
+//! - `wasmify::callback_invoke` is provided (returns 0 in the MVP — no callbacks registered)
+//! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
 
 use wasmtime::{
     Caller, Engine, Extern, ExternType, Instance, Linker, Memory, Module as WasmModule, Store,
@@ -15,18 +15,18 @@ use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::error::Error;
 
-/// build.rs が用意した googlesql.wasm の絶対パス。
+/// Absolute path to googlesql.wasm prepared by build.rs.
 const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 
-/// Store に載せるホスト状態。
+/// Host state carried in the wasmtime `Store`.
 struct HostState {
     wasi: WasiP1Ctx,
 }
 
-/// GoogleSQL wasm の単一インスタンス。
+/// A single instance of the GoogleSQL wasm module.
 ///
-/// wasmtime の `Store` は排他アクセス(`&mut`)を要するため、各メソッドは
-/// `&mut self` を取り、単一インスタンスへの呼び出しを直列化する。
+/// wasmtime's `Store` requires exclusive access (`&mut`), so every method takes
+/// `&mut self`, serializing all calls through a single instance.
 pub struct Module {
     store: Store<HostState>,
     memory: Memory,
@@ -36,7 +36,7 @@ pub struct Module {
 }
 
 impl Module {
-    /// 埋め込まれた wasm をロードし、初期化まで済ませたインスタンスを返す。
+    /// Loads the embedded wasm and returns a fully initialized instance.
     pub fn new() -> Result<Self, Error> {
         let engine = Engine::default();
         let wasm = WasmModule::from_file(&engine, WASM_PATH)
@@ -63,7 +63,7 @@ impl Module {
             .get_memory(&mut store, "memory")
             .ok_or_else(|| Error::Instantiate("wasm export `memory` not found".into()))?;
 
-        // WASI リアクタ初期化(C++ グローバルコンストラクタ実行)。
+        // Initialize the WASI reactor (runs C++ global constructors).
         if let Some(init) = instance.get_func(&mut store, "_initialize") {
             let init = init
                 .typed::<(), ()>(&store)
@@ -96,21 +96,21 @@ impl Module {
         })
     }
 
-    /// wasm 線形メモリを `len` バイト確保し、その先頭ポインタを返す。
+    /// Allocates `len` bytes in wasm linear memory and returns the pointer.
     pub fn alloc(&mut self, len: u32) -> Result<u32, Error> {
         self.alloc_fn
             .call(&mut self.store, len)
             .map_err(|e| Error::Wasm(format!("wasm_alloc({len}): {e}")))
     }
 
-    /// `alloc` で確保したポインタを解放する。
+    /// Frees a pointer previously returned by `alloc`.
     pub fn free(&mut self, ptr: u32) -> Result<(), Error> {
         self.free_fn
             .call(&mut self.store, ptr)
             .map_err(|e| Error::Wasm(format!("wasm_free({ptr}): {e}")))
     }
 
-    /// `ptr` からバイト列を書き込む。
+    /// Writes a byte slice into wasm memory at `ptr`.
     pub fn write(&mut self, ptr: u32, data: &[u8]) -> Result<(), Error> {
         let offset = usize::try_from(ptr).map_err(|e| Error::Memory(e.to_string()))?;
         self.memory
@@ -118,7 +118,7 @@ impl Module {
             .map_err(|e| Error::Memory(e.to_string()))
     }
 
-    /// `ptr` から `len` バイトを読み出してコピーを返す。
+    /// Reads `len` bytes from wasm memory starting at `ptr` and returns them as a `Vec<u8>`.
     pub fn read(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, Error> {
         let offset = usize::try_from(ptr).map_err(|e| Error::Memory(e.to_string()))?;
         let len = usize::try_from(len).map_err(|e| Error::Memory(e.to_string()))?;
@@ -129,18 +129,18 @@ impl Module {
         Ok(buf)
     }
 
-    /// wasmify RPC を呼び出す。
+    /// Invokes a wasmify RPC.
     ///
-    /// export `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` の規約に従い、
-    /// `req` を wasm メモリに書いて渡し、応答バイト列をコピーして返す。
-    /// リクエスト/レスポンスの各バッファは呼び出し後に解放する。
+    /// Follows the `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` convention:
+    /// writes `req` into wasm memory, calls the export, and returns the response bytes.
+    /// Both the request and response buffers are freed after the call.
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
         let name = format!("w_{svc}_{mid}");
         self.call_export(&name, req)
     }
 
-    /// 名前付き export(`w_<svc>_<mid>` または `wasmify_get_type_name` 等)を
-    /// `(ptr,len) -> (ptr<<32 | len)` 規約で呼び出す。
+    /// Calls a named export (`w_<svc>_<mid>` or `wasmify_get_type_name`, etc.)
+    /// using the `(ptr,len) -> (ptr<<32 | len)` convention.
     pub fn call_export(&mut self, name: &str, req: &[u8]) -> Result<Vec<u8>, Error> {
         let func = self
             .instance
@@ -179,10 +179,10 @@ impl Module {
     }
 }
 
-/// `wasmify::callback_invoke` を登録する。
+/// Registers the `wasmify::callback_invoke` import.
 ///
-/// MVP では Catalog 等のコールバックを使わないため、常に「ハンドラ未登録」を
-/// 意味する 0 を返す(wazero と同じ規約)。
+/// In the MVP, no Catalog or other callbacks are used, so this always returns 0
+/// (meaning "no handler registered"), following the same convention as wazero.
 fn register_callback_import(linker: &mut Linker<HostState>) -> Result<(), Error> {
     linker
         .func_wrap(
@@ -199,7 +199,7 @@ fn register_callback_import(linker: &mut Linker<HostState>) -> Result<(), Error>
     Ok(())
 }
 
-/// wasm が要求する `env` の C++ ランタイム import をすべてスタブで満たす。
+/// Satisfies all C++ runtime `env` imports required by the wasm module with stubs.
 fn register_env_stubs(linker: &mut Linker<HostState>, wasm: &WasmModule) -> Result<(), Error> {
     for import in wasm.imports() {
         if import.module() != "env" {
@@ -224,7 +224,7 @@ fn register_env_stubs(linker: &mut Linker<HostState>, wasm: &WasmModule) -> Resu
     Ok(())
 }
 
-/// `env` スタブの呼び出し本体(wazero の envStub 規約を移植)。
+/// Body of each `env` stub (ported from wazero's envStub convention).
 fn env_stub_call(
     name: &str,
     result_types: &[ValType],
@@ -232,20 +232,20 @@ fn env_stub_call(
     params: &[Val],
     results: &mut [Val],
 ) -> wasmtime::Result<()> {
-    // C++ throw は巻き戻せないので trap させる。
+    // C++ throws cannot be unwound, so trap.
     if name.contains("__cxa_throw") || name.ends_with("_throw") {
         return Err(wasmtime::Error::msg(format!(
             "C++ exception thrown in wasm (env::{name})"
         )));
     }
-    // セマフォ待ちはシングルスレッドなので成功(1)を返す。
+    // Semaphore waits succeed immediately in a single-threaded context.
     if name.contains("SemWait") || name.contains("sem_wait") {
         if let Some(slot) = results.get_mut(0) {
             *slot = Val::I32(1);
         }
         return Ok(());
     }
-    // C++ 例外オブジェクトの確保は wasm_alloc で満たす。
+    // Satisfy C++ exception object allocation via wasm_alloc.
     if name.contains("allocate_exception") {
         let size = params.first().and_then(Val::i32).unwrap_or(64);
         let size = if size <= 0 { 64 } else { size };
@@ -255,7 +255,7 @@ fn env_stub_call(
         }
         return Ok(());
     }
-    // それ以外は各戻り値型のゼロ値を返すだけ。
+    // All other stubs return the zero value for each result type.
     for (i, ty) in result_types.iter().enumerate() {
         if let Some(slot) = results.get_mut(i) {
             *slot = zero_val(ty);
@@ -264,7 +264,7 @@ fn env_stub_call(
     Ok(())
 }
 
-/// caller 経由で `wasm_alloc` を呼び、確保したポインタ(i32)を返す。
+/// Calls `wasm_alloc` through a `Caller` and returns the allocated pointer (i32).
 fn alloc_via_caller(caller: &mut Caller<'_, HostState>, size: i32) -> Option<i32> {
     let Some(Extern::Func(alloc)) = caller.get_export("wasm_alloc") else {
         return None;
@@ -275,7 +275,7 @@ fn alloc_via_caller(caller: &mut Caller<'_, HostState>, size: i32) -> Option<i32
     i32::try_from(ptr).ok()
 }
 
-/// 数値型 `ValType` に対応するゼロ値の `Val` を返す。
+/// Returns the zero `Val` for a numeric `ValType`.
 fn zero_val(ty: &ValType) -> Val {
     match ty {
         ValType::I32 => Val::I32(0),

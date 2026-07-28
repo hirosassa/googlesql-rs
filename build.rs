@@ -1,11 +1,11 @@
-//! ビルド時に GoogleSQL の prebuilt WebAssembly モジュールを用意する。
+//! Prepares the GoogleSQL prebuilt WebAssembly module at build time.
 //!
-//! 取得元の優先順位:
-//! 1. 環境変数 `GOOGLESQL_WASM` が指すローカルファイル(オフライン/開発用)
-//! 2. `OUT_DIR` にキャッシュ済みの検証済みコピー
-//! 3. GitHub Release からのダウンロード(`curl`)
+//! Resolution priority:
+//! 1. Local file pointed to by the `GOOGLESQL_WASM` environment variable (offline / development)
+//! 2. A verified cached copy in `OUT_DIR`
+//! 3. Download from GitHub Releases via `curl`
 //!
-//! いずれの場合も SHA256 をピン留め値と照合してから採用する。
+//! In all cases the SHA256 is checked against the pinned value before the file is used.
 
 use std::env;
 use std::error::Error;
@@ -15,7 +15,7 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-/// 同梱する googlesql.wasm のバージョンと検証情報(goccy/googlesql-wasm)。
+/// Version and integrity metadata for the bundled googlesql.wasm (goccy/googlesql-wasm).
 const WASM_VERSION: &str = "v0.3.4";
 const WASM_SHA256: &str = "5f14b3a74a9bb4e333b03e8420b11b633a1b77379053f02e44235abed08ae407";
 const WASM_URL: &str =
@@ -32,16 +32,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_sha256(&bytes)?;
     fs::write(&dest, &bytes)?;
 
-    // wasm の絶対パスを実行時参照できるよう公開する。
+    // Expose the absolute path to the wasm file for use at runtime.
     println!("cargo::rustc-env=GOOGLESQL_WASM_PATH={}", dest.display());
     Ok(())
 }
 
-/// 優先順位に従って wasm のバイト列を取得する(検証は呼び出し側で行う)。
+/// Resolves the wasm bytes according to the priority order (verification is left to the caller).
 fn resolve_wasm_bytes(dest: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     if let Ok(local) = env::var("GOOGLESQL_WASM") {
         let bytes =
-            fs::read(&local).map_err(|e| format!("GOOGLESQL_WASM={local} を読めません: {e}"))?;
+            fs::read(&local).map_err(|e| format!("cannot read GOOGLESQL_WASM={local}: {e}"))?;
         return Ok(bytes);
     }
 
@@ -52,31 +52,32 @@ fn resolve_wasm_bytes(dest: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     }
 
     download_with_curl(WASM_URL, dest)?;
-    let bytes = fs::read(dest).map_err(|e| format!("ダウンロード済み wasm を読めません: {e}"))?;
+    let bytes = fs::read(dest).map_err(|e| format!("cannot read downloaded wasm: {e}"))?;
     Ok(bytes)
 }
 
-/// `curl` で URL を `dest` にダウンロードする。
+/// Downloads `url` to `dest` using `curl`.
 fn download_with_curl(url: &str, dest: &Path) -> Result<(), Box<dyn Error>> {
     let status = Command::new("curl")
         .args(["-fsSL", "--retry", "3", "-o"])
         .arg(dest)
         .arg(url)
         .status()
-        .map_err(|e| format!("curl を起動できません({WASM_VERSION}): {e}"))?;
+        .map_err(|e| format!("cannot launch curl ({WASM_VERSION}): {e}"))?;
     if !status.success() {
-        return Err(format!("curl による {url} のダウンロードに失敗しました").into());
+        return Err(format!("curl failed to download {url}").into());
     }
     Ok(())
 }
 
-/// バイト列の SHA256 がピン留め値と一致することを検証する。
+/// Verifies that the SHA256 of `bytes` matches the pinned value.
 fn verify_sha256(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let actual = sha256_hex(bytes);
     if actual != WASM_SHA256 {
-        return Err(
-            format!("googlesql.wasm の SHA256 不一致 (期待 {WASM_SHA256}, 実際 {actual})").into(),
-        );
+        return Err(format!(
+            "googlesql.wasm SHA256 mismatch (expected {WASM_SHA256}, got {actual})"
+        )
+        .into());
     }
     Ok(())
 }

@@ -1,12 +1,12 @@
-//! wasmify が用いる protobuf wire-format の最小 encode/decode。
+//! Minimal protobuf wire-format encode/decode used by wasmify.
 //!
-//! 仕様は `docs/SPIKE.md` を参照。ハンドル(オブジェクトポインタ)は
-//! submessage 形(`tag(f,2) + len + 0x08 + varint(ptr)`)、コンストラクタ応答は
-//! 直接 varint 形で格納される。
+//! See `docs/SPIKE.md` for the specification. Handles (object pointers) use the
+//! submessage form (`tag(f,2) + len + 0x08 + varint(ptr)`); constructor responses
+//! store the pointer as a bare varint.
 
 // ---- encode ----------------------------------------------------------------
 
-/// varint(LEB128)を追記する。
+/// Appends a varint (LEB128) to `buf`.
 pub fn append_varint(buf: &mut Vec<u8>, mut v: u64) {
     loop {
         let low = u8::try_from(v & 0x7f).unwrap_or(0);
@@ -20,13 +20,13 @@ pub fn append_varint(buf: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-/// フィールドタグ(`field << 3 | wire`)を追記する。
+/// Appends a field tag (`field << 3 | wire`) to `buf`.
 pub fn append_tag(buf: &mut Vec<u8>, field: u32, wire: u32) {
     let tag = u64::from(field).checked_shl(3).unwrap_or(0) | u64::from(wire);
     append_varint(buf, tag);
 }
 
-/// 文字列フィールド(wire type 2)を追記する。
+/// Appends a string field (wire type 2) to `buf`.
 pub fn append_string(buf: &mut Vec<u8>, field: u32, s: &str) {
     let bytes = s.as_bytes();
     append_tag(buf, field, 2);
@@ -34,19 +34,19 @@ pub fn append_string(buf: &mut Vec<u8>, field: u32, s: &str) {
     buf.extend_from_slice(bytes);
 }
 
-/// uint64 フィールド(wire type 0, varint)を追記する。
+/// Appends a uint64 field (wire type 0, varint) to `buf`.
 pub fn append_uint64(buf: &mut Vec<u8>, field: u32, v: u64) {
     append_tag(buf, field, 0);
     append_varint(buf, v);
 }
 
-/// 非負 int32 フィールド(wire type 0, varint)を追記する。
+/// Appends a non-negative int32 field (wire type 0, varint) to `buf`.
 pub fn append_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
     append_tag(buf, field, 0);
     append_varint(buf, u64::try_from(v).unwrap_or(0));
 }
 
-/// ハンドル(ポインタ)フィールドを submessage 形で追記する。
+/// Appends a handle (pointer) field in submessage form to `buf`.
 pub fn append_handle(buf: &mut Vec<u8>, field: u32, ptr: u64) {
     let inner_len = varint_len(ptr).checked_add(1).unwrap_or(0);
     append_tag(buf, field, 2);
@@ -55,14 +55,14 @@ pub fn append_handle(buf: &mut Vec<u8>, field: u32, ptr: u64) {
     append_varint(buf, ptr);
 }
 
-/// ハンドルだけを持つリクエスト(field 1 = ハンドル)を組み立てる。
+/// Builds a request that contains only a single handle (field 1 = handle).
 pub fn handle_arg(ptr: u64) -> Vec<u8> {
     let mut buf = Vec::new();
     append_handle(&mut buf, 1, ptr);
     buf
 }
 
-/// varint として符号化したときのバイト数を返す。
+/// Returns the number of bytes needed to encode `v` as a varint.
 fn varint_len(mut v: u64) -> u64 {
     let mut n: u64 = 1;
     while v >= 0x80 {
@@ -74,7 +74,7 @@ fn varint_len(mut v: u64) -> u64 {
 
 // ---- decode ----------------------------------------------------------------
 
-/// カーソルから varint を読む。
+/// Reads a varint from the cursor.
 fn read_varint(cur: &mut &[u8]) -> Option<u64> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
@@ -93,7 +93,7 @@ fn read_varint(cur: &mut &[u8]) -> Option<u64> {
     }
 }
 
-/// カーソルからフィールドタグ `(field, wire)` を読む。
+/// Reads a field tag `(field, wire)` from the cursor.
 fn read_tag(cur: &mut &[u8]) -> Option<(u32, u32)> {
     let tag = read_varint(cur)?;
     let field = u32::try_from(tag.checked_shr(3)?).ok()?;
@@ -101,7 +101,7 @@ fn read_tag(cur: &mut &[u8]) -> Option<(u32, u32)> {
     Some((field, wire))
 }
 
-/// 長さ前置(wire type 2)のペイロードを読み、カーソルを進める。
+/// Reads a length-prefixed (wire type 2) payload and advances the cursor.
 fn read_len_prefixed<'a>(cur: &mut &'a [u8]) -> Option<&'a [u8]> {
     let len = usize::try_from(read_varint(cur)?).ok()?;
     let (head, rest) = cur.split_at_checked(len)?;
@@ -109,7 +109,7 @@ fn read_len_prefixed<'a>(cur: &mut &'a [u8]) -> Option<&'a [u8]> {
     Some(head)
 }
 
-/// 指定 wire type のフィールド値を読み飛ばす。
+/// Skips a field value of the given wire type.
 fn skip(cur: &mut &[u8], wire: u32) -> Option<()> {
     match wire {
         0 => read_varint(cur).map(|_| ()),
@@ -120,12 +120,12 @@ fn skip(cur: &mut &[u8], wire: u32) -> Option<()> {
     }
 }
 
-/// 応答からエラー(field 15 の string)を取り出す。無ければ `None`。
+/// Extracts the error string (field 15) from a response. Returns `None` if absent.
 pub fn extract_error(resp: &[u8]) -> Option<String> {
     read_string_at_field(resp, 15)
 }
 
-/// 応答の指定フィールドから string を読む。
+/// Reads the string at the given field number from a response.
 pub fn read_string_at_field(resp: &[u8], field: u32) -> Option<String> {
     let mut cur = resp;
     while let Some((f, w)) = read_tag(&mut cur) {
@@ -141,7 +141,7 @@ pub fn read_string_at_field(resp: &[u8], field: u32) -> Option<String> {
     None
 }
 
-/// 応答の指定フィールドから int32(varint)を読む。
+/// Reads an int32 (varint) at the given field number from a response.
 pub fn read_int32_at_field(resp: &[u8], field: u32) -> Option<i32> {
     let mut cur = resp;
     while let Some((f, w)) = read_tag(&mut cur) {
@@ -158,7 +158,7 @@ pub fn read_int32_at_field(resp: &[u8], field: u32) -> Option<i32> {
     None
 }
 
-/// 応答の指定フィールドからハンドル(ポインタ)を読む。無ければ `0`。
+/// Reads a handle (pointer) at the given field number from a response. Returns `0` if absent.
 pub fn read_handle_at_field(resp: &[u8], field: u32) -> u64 {
     if field == 1 {
         return read_handle_ptr(resp);
@@ -180,7 +180,7 @@ pub fn read_handle_at_field(resp: &[u8], field: u32) -> u64 {
     0
 }
 
-/// 直接 varint 形と submessage 形の両方に対応してハンドルを読む。
+/// Reads a handle pointer, supporting both bare-varint and submessage forms.
 fn read_handle_ptr(data: &[u8]) -> u64 {
     let mut cur = data;
     while let Some((f, w)) = read_tag(&mut cur) {
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn direct_varint_handle_is_read() {
-        // コンストラクタ応答形: field 1 = 直接 varint。
+        // Constructor response form: field 1 = bare varint.
         let mut buf = Vec::new();
         append_tag(&mut buf, 1, 0);
         append_varint(&mut buf, 42);
@@ -263,7 +263,7 @@ mod tests {
             append_int32(&mut buf, 3, v.max(0));
             assert_eq!(read_int32_at_field(&buf, 3), Some(v.max(0)));
         }
-        // int32 の -1 表現(下位32bit)も読めること。
+        // The int32 representation of -1 (lower 32 bits) must also be readable.
         let mut neg = Vec::new();
         append_uint64(&mut neg, 1, u64::from(u32::MAX));
         assert_eq!(read_int32_at_field(&neg, 1), Some(-1));
@@ -274,7 +274,7 @@ mod tests {
         let mut buf = Vec::new();
         append_string(&mut buf, 15, "syntax error");
         assert_eq!(extract_error(&buf).as_deref(), Some("syntax error"));
-        // エラーフィールドが無ければ None。
+        // When the error field is absent, None is returned.
         let mut ok = Vec::new();
         append_handle(&mut ok, 2, 1);
         assert_eq!(extract_error(&ok), None);

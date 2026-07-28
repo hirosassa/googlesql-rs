@@ -1,9 +1,9 @@
-//! パーサ機能(parse_statement → 正規化SQL)のE2Eテスト。
+//! End-to-end tests for parser functionality (parse_statement → canonical SQL).
 #![allow(clippy::unwrap_used)]
 
 use googlesql::{Error, Module};
 
-/// 有効なSQLをパースし、正規化SQL文字列を取り出せること。
+/// A valid SQL statement can be parsed and the canonical SQL string extracted.
 #[test]
 fn parses_and_canonicalizes_select() {
     let mut module = Module::new().unwrap();
@@ -12,21 +12,21 @@ fn parses_and_canonicalizes_select() {
     let canonical = parsed.canonical_sql();
     assert!(
         canonical.to_uppercase().contains("SELECT"),
-        "正規化SQLに SELECT が含まれること: {canonical:?}"
+        "canonical SQL must contain SELECT: {canonical:?}"
     );
     assert!(
         canonical.contains('1'),
-        "正規化SQLに 1 が含まれること: {canonical:?}"
+        "canonical SQL must contain 1: {canonical:?}"
     );
 }
 
-/// 構文エラーのSQLは GoogleSql エラーを返すこと。
+/// A SQL statement with a syntax error returns a GoogleSql error.
 #[test]
 fn returns_error_for_invalid_sql() {
     let mut module = Module::new().unwrap();
     let err = module.parse_statement("SELECT FROM").unwrap_err();
     assert!(
         matches!(err, Error::GoogleSql(_)),
-        "構文エラーは Error::GoogleSql になること: {err:?}"
+        "a syntax error must produce Error::GoogleSql: {err:?}"
     );
 }

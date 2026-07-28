@@ -1,8 +1,8 @@
-//! GoogleSQL パーサの高レベルAPI。
+//! High-level API for the GoogleSQL parser.
 //!
-//! 呼び出しチェーン(svc/mid は `docs/SPIKE.md` 参照):
+//! Call chain (svc/mid values from `docs/SPIKE.md`):
 //! NewParserOptions(699,0) → ParseStatement(0,10) → ParserOutput.Node(700,3)
-//! → Unparse(0,12)。確保したハンドルは破棄する。
+//! → Unparse(0,12). All acquired handles are released after use.
 
 use crate::ast::AstNode;
 use crate::error::Error;
@@ -21,9 +21,9 @@ const SVC_PARSER_OUTPUT: i32 = 700;
 const MID_PARSER_OUTPUT_NODE: i32 = 3;
 const MID_FREE_PARSER_OUTPUT: i32 = 9;
 
-/// パース済みステートメント。
+/// A parsed SQL statement.
 ///
-/// 正規化(unparse)後のSQL文字列と、所有権完結した AST 木を保持する。
+/// Holds the normalized (unparsed) SQL string and a self-contained AST tree.
 #[derive(Debug, Clone)]
 pub struct ParsedStatement {
     canonical_sql: String,
@@ -31,21 +31,21 @@ pub struct ParsedStatement {
 }
 
 impl ParsedStatement {
-    /// 正規化された標準SQL文字列。
+    /// The normalized canonical SQL string.
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
     }
 
-    /// AST のルートノード。
+    /// The root node of the AST.
     pub fn root(&self) -> &AstNode {
         &self.root
     }
 }
 
 impl Module {
-    /// SQL 文をパースし、正規化した結果を返す。
+    /// Parses a SQL statement and returns the normalized result.
     ///
-    /// 構文エラー時は [`Error::GoogleSql`] を返す。
+    /// Returns [`Error::GoogleSql`] on a syntax error.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
         let options = self.invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])?;
         check_error(&options)?;
@@ -54,7 +54,7 @@ impl Module {
             return Err(Error::GoogleSql("NewParserOptions returned null".into()));
         }
 
-        // options は結果の成否に関わらず解放する。
+        // Free the options handle regardless of parse success or failure.
         let parsed = self.parse_with_options(sql, options_ptr);
         let freed = self.invoke(
             SVC_PARSER_OPTIONS,
@@ -67,7 +67,7 @@ impl Module {
         Ok(parsed)
     }
 
-    /// 構築済み ParserOptions を使ってパースし、正規化SQLまで求める。
+    /// Parses using a pre-built `ParserOptions` handle and produces the canonical SQL.
     fn parse_with_options(
         &mut self,
         sql: &str,
@@ -83,7 +83,7 @@ impl Module {
             return Err(Error::GoogleSql("ParseStatement returned null".into()));
         }
 
-        // ParserOutput は結果の成否に関わらず解放する(AST木ごと解放される)。
+        // Free the ParserOutput handle regardless of success or failure (also frees the AST arena).
         let built = self.build_from_output(output_ptr);
         let freed = self.invoke(
             SVC_PARSER_OUTPUT,
@@ -99,7 +99,7 @@ impl Module {
         })
     }
 
-    /// ParserOutput の AST ルートを取り出し、正規化SQLと AST 木を構築する。
+    /// Extracts the AST root from a `ParserOutput` handle and builds the canonical SQL and AST tree.
     fn build_from_output(&mut self, output_ptr: u64) -> Result<(String, AstNode), Error> {
         let node_resp = self.invoke(
             SVC_PARSER_OUTPUT,
@@ -122,7 +122,7 @@ impl Module {
     }
 }
 
-/// 応答にエラー(field 15)があれば [`Error::GoogleSql`] に変換する。
+/// Converts an error in field 15 of the response into [`Error::GoogleSql`].
 fn check_error(resp: &[u8]) -> Result<(), Error> {
     match pb::extract_error(resp) {
         Some(message) => Err(Error::GoogleSql(message)),

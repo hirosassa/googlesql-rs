@@ -1,9 +1,9 @@
-//! AST 型付きアクセスのE2Eテスト。
+//! End-to-end tests for typed AST access.
 #![allow(clippy::unwrap_used)]
 
 use googlesql::{AstNode, Module};
 
-/// ノード木を再帰的に探し、ソーステキストが `want` に一致するノードがあるか。
+/// Recursively searches the node tree for a node whose source text matches `want`.
 fn contains_text(node: &AstNode, sql: &str, want: &str) -> bool {
     if node.text(sql) == Some(want) {
         return true;
@@ -11,7 +11,7 @@ fn contains_text(node: &AstNode, sql: &str, want: &str) -> bool {
     node.children().iter().any(|c| contains_text(c, sql, want))
 }
 
-/// 型名(kind)を再帰的に探す。
+/// Recursively searches the node tree for a node whose kind contains `want`.
 fn contains_kind(node: &AstNode, want: &str) -> bool {
     if node.kind().contains(want) {
         return true;
@@ -26,11 +26,11 @@ fn builds_typed_ast_tree() {
     let parsed = module.parse_statement(sql).unwrap();
     let root = parsed.root();
 
-    assert!(!root.kind().is_empty(), "root の kind: {:?}", root.kind());
-    assert!(!root.children().is_empty(), "root に子ノードがあること");
+    assert!(!root.kind().is_empty(), "root kind: {:?}", root.kind());
+    assert!(!root.children().is_empty(), "root must have child nodes");
     assert!(
         contains_kind(root, "Query") || contains_kind(root, "Select"),
-        "AST に Query/Select 系ノードがあること"
+        "AST must contain a Query/Select-family node"
     );
 }
 
@@ -41,15 +41,18 @@ fn node_source_text_via_byte_range() {
     let parsed = module.parse_statement(sql).unwrap();
     let root = parsed.root();
 
-    // 上位のコンテナノードは位置情報を持たない(byte_range が None)ことがある。
-    // 葉ノードはバイト範囲を持ち、元 SQL からテキストを取り出せる。
-    assert!(contains_text(root, sql, "a"), "識別子 a のノードがあること");
+    // Upper-level container nodes may have no position information (byte_range is None).
+    // Leaf nodes carry a byte range and can have their text extracted from the original SQL.
+    assert!(
+        contains_text(root, sql, "a"),
+        "must find a node for identifier a"
+    );
     assert!(
         contains_text(root, sql, "42"),
-        "リテラル 42 のノードがあること"
+        "must find a node for literal 42"
     );
     assert!(
         contains_text(root, sql, "t"),
-        "テーブル名 t のノードがあること"
+        "must find a node for table name t"
     );
 }
