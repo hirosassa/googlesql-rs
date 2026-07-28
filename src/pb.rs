@@ -195,6 +195,27 @@ pub fn read_handle_at_field(resp: &[u8], field: u32) -> u64 {
     0
 }
 
+/// Reads every handle stored at the given repeated field number from a response.
+///
+/// Each occurrence is a length-delimited submessage carrying the handle (the
+/// same encoding [`append_handle`] produces), so `output_column_list`-style
+/// repeated accessors decode into one handle per element, in order.
+pub fn read_handles_at_field(resp: &[u8], field: u32) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field && w == 2 {
+            let Some(sub) = read_len_prefixed(&mut cur) else {
+                break;
+            };
+            out.push(read_handle_ptr(sub));
+        } else if skip(&mut cur, w).is_none() {
+            break;
+        }
+    }
+    out
+}
+
 /// Reads a handle pointer, supporting both bare-varint and submessage forms.
 fn read_handle_ptr(data: &[u8]) -> u64 {
     let mut cur = data;
@@ -276,6 +297,30 @@ mod tests {
         assert_eq!(read_tag(&mut cur), Some((2, 2)));
         let sub = read_len_prefixed(&mut cur);
         assert_eq!(sub.map(|s| read_handle_at_field(s, 4)), Some(0xCAFE));
+    }
+
+    #[test]
+    fn repeated_handles_decode_in_order() {
+        // A repeated handle field encodes as several occurrences of the same
+        // field number, each a submessage carrying one handle.
+        let mut buf = Vec::new();
+        append_handle(&mut buf, 1, 0xAAAA);
+        append_handle(&mut buf, 1, 0xBBBB);
+        append_handle(&mut buf, 1, 0xCCCC);
+        assert_eq!(read_handles_at_field(&buf, 1), vec![0xAAAA, 0xBBBB, 0xCCCC]);
+
+        // An absent field yields no handles, and unrelated fields are skipped.
+        let mut other = Vec::new();
+        append_string(&mut other, 2, "ignored");
+        assert!(read_handles_at_field(&other, 1).is_empty());
+
+        // A same-numbered field with a different wire type is skipped, not
+        // treated as a handle, and the trailing handle is still collected.
+        let mut mixed = Vec::new();
+        append_handle(&mut mixed, 1, 0x1111);
+        append_uint64(&mut mixed, 1, 999); // field 1, wire type 0
+        append_handle(&mut mixed, 1, 0x2222);
+        assert_eq!(read_handles_at_field(&mixed, 1), vec![0x1111, 0x2222]);
     }
 
     #[test]

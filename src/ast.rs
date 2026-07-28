@@ -79,7 +79,10 @@ impl Module {
     }
 
     /// Returns the type name of the node (with the `googlesql::` prefix stripped).
-    fn node_kind(&mut self, node_ptr: u64) -> Result<String, Error> {
+    ///
+    /// Works for any handle: `wasmify_get_type_name` reports the C++ type name,
+    /// so the resolved-AST walk reuses it to identify node kinds too.
+    pub(crate) fn node_kind(&mut self, node_ptr: u64) -> Result<String, Error> {
         let mut req = Vec::new();
         pb::append_uint64(&mut req, 1, node_ptr);
         let resp = self.call_export(EXPORT_TYPE_NAME, &req)?;
@@ -142,7 +145,7 @@ impl Module {
     }
 
     /// Common helper: passes a single handle and returns the handle from field 1 of the response.
-    fn rpc_handle(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<u64, Error> {
+    pub(crate) fn rpc_handle(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<u64, Error> {
         let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
         check_error(&resp)?;
         Ok(pb::read_handle_at_field(&resp, 1))
