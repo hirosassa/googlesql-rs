@@ -3,6 +3,7 @@
 //! Drives the prebuilt WebAssembly module published by goccy/googlesql-wasm on
 //! top of wasmtime to provide GoogleSQL parser and formatter functionality.
 
+mod analyzer;
 mod ast;
 mod error;
 mod formatter;

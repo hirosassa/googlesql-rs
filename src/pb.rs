@@ -55,6 +55,15 @@ pub fn append_handle(buf: &mut Vec<u8>, field: u32, ptr: u64) {
     append_varint(buf, ptr);
 }
 
+/// Appends a length-delimited submessage field (wire type 2) to `buf`.
+///
+/// `inner` is the already-encoded body of the nested message.
+pub fn append_submessage(buf: &mut Vec<u8>, field: u32, inner: &[u8]) {
+    append_tag(buf, field, 2);
+    append_varint(buf, u64::try_from(inner.len()).unwrap_or(0));
+    buf.extend_from_slice(inner);
+}
+
 /// Builds a request that contains only a single handle (field 1 = handle).
 pub fn handle_arg(ptr: u64) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -245,6 +254,22 @@ mod tests {
         let mut buf = Vec::new();
         append_handle(&mut buf, 2, 0xDEAD_BEEF);
         assert_eq!(read_handle_at_field(&buf, 2), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn submessage_wraps_inner_handle() {
+        // A handle nested inside a submessage field must round-trip: encode the
+        // inner buffer (field 4 = handle), wrap it as field 2, and read it back.
+        let mut inner = Vec::new();
+        append_handle(&mut inner, 4, 0xCAFE);
+        let mut outer = Vec::new();
+        append_submessage(&mut outer, 2, &inner);
+
+        // The outer field 2 is a submessage; its nested field-4 handle round-trips.
+        let mut cur = outer.as_slice();
+        assert_eq!(read_tag(&mut cur), Some((2, 2)));
+        let sub = read_len_prefixed(&mut cur);
+        assert_eq!(sub.map(|s| read_handle_at_field(s, 4)), Some(0xCAFE));
     }
 
     #[test]
