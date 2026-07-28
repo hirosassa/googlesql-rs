@@ -46,6 +46,12 @@ pub fn append_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
     append_varint(buf, u64::try_from(v).unwrap_or(0));
 }
 
+/// Appends a bool field (wire type 0, varint `0`/`1`) to `buf`.
+pub fn append_bool(buf: &mut Vec<u8>, field: u32, v: bool) {
+    append_tag(buf, field, 0);
+    append_varint(buf, u64::from(v));
+}
+
 /// Appends a handle (pointer) field in submessage form to `buf`.
 pub fn append_handle(buf: &mut Vec<u8>, field: u32, ptr: u64) {
     let inner_len = varint_len(ptr).checked_add(1).unwrap_or(0);
@@ -292,6 +298,17 @@ mod tests {
         let mut neg = Vec::new();
         append_uint64(&mut neg, 1, u64::from(u32::MAX));
         assert_eq!(read_int32_at_field(&neg, 1), Some(-1));
+    }
+
+    #[test]
+    fn bool_field_encodes_as_varint() {
+        let mut t = Vec::new();
+        append_bool(&mut t, 4, true);
+        assert_eq!(read_int32_at_field(&t, 4), Some(1));
+
+        let mut f = Vec::new();
+        append_bool(&mut f, 4, false);
+        assert_eq!(read_int32_at_field(&f, 4), Some(0));
     }
 
     #[test]

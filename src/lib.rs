@@ -11,6 +11,7 @@ mod parser;
 mod pb;
 mod runtime;
 
+pub use analyzer::{ColumnDef, ColumnType, TableDef};
 pub use ast::AstNode;
 pub use error::Error;
 pub use parser::ParsedStatement;
