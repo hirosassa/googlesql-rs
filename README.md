@@ -4,8 +4,8 @@ Rust bindings for GoogleSQL (ZetaSQL).
 
 Drives the prebuilt WebAssembly module published by
 [goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm) on top of
-[wasmtime](https://wasmtime.dev/), giving you GoogleSQL parser functionality
-without requiring a massive C++ / Bazel toolchain.
+[wasmtime](https://wasmtime.dev/), giving you GoogleSQL parser and formatter
+functionality without requiring a massive C++ / Bazel toolchain.
 
 ## Features
 
@@ -68,12 +68,33 @@ dump(parsed.root(), sql, 0);
 
 Upper-level container nodes may carry no position information (`byte_range()` returns `None`).
 
+### Formatting
+
+`format_sql` pretty-prints a statement into GoogleSQL's canonical layout.
+
+```rust
+use googlesql::Module;
+
+let mut module = Module::new()?;
+let formatted = module.format_sql("select a,b from t where a>1")?;
+println!("{formatted}");
+// SELECT
+//   a,
+//   b
+// FROM
+//   t
+// WHERE
+//   a > 1;
+```
+
+Like the parser, invalid SQL is returned as `Error::GoogleSql`.
+
 ## Status
 
 - ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
 - ✅ Typed access to AST nodes (type name, byte range, child traversal)
+- ✅ SQL formatting (`format_sql`)
 - ⬜ Analyzer (type inference, name resolution, Catalog callback)
-- ⬜ Formatter
 
 ## Building
 
