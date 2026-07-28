@@ -48,8 +48,21 @@ impl Module {
         register_callback_import(&mut linker)?;
         register_env_stubs(&mut linker, &wasm)?;
 
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stderr()
+        let mut builder = WasiCtxBuilder::new();
+        builder.inherit_stderr();
+        // Resolve the host tz database (may be a chain of symlinks on macOS) and
+        // preopen the real directory directly at the guest path cctz expects, so
+        // absl's FindTimeZoneByName works without in-sandbox symlink traversal.
+        if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
+            builder.env("TZDIR", "/usr/share/zoneinfo");
+            let _ = builder.preopened_dir(
+                &real,
+                "/usr/share/zoneinfo",
+                DirPerms::READ,
+                FilePerms::READ,
+            );
+        }
+        let wasi = builder
             .preopened_dir("/", "/", DirPerms::READ, FilePerms::READ)
             .map_err(|e| Error::Instantiate(format!("preopen /: {e}")))?
             .build_p1();

@@ -89,12 +89,35 @@ println!("{formatted}");
 
 Like the parser, invalid SQL is returned as `Error::GoogleSql`.
 
+### Analyzing
+
+`analyze_statement` runs the GoogleSQL analyzer (type inference and name
+resolution) over a statement. GoogleSQL's builtin functions and operators are
+registered, so expressions resolve; the catalog otherwise has no user-defined
+tables. It reports success or failure only.
+
+```rust
+use googlesql::Module;
+
+let mut module = Module::new()?;
+
+// Literals and builtin operators resolve successfully.
+module.analyze_statement("SELECT 1 + 2 AS x")?;
+
+// With no user tables in the catalog, table references fail name resolution.
+assert!(module.analyze_statement("SELECT x FROM missing_table").is_err());
+```
+
+Syntax errors and unresolved names are returned as `Error::GoogleSql`.
+
 ## Status
 
 - ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
 - ✅ Typed access to AST nodes (type name, byte range, child traversal)
 - ✅ SQL formatting (`format_sql`)
-- ⬜ Analyzer (type inference, name resolution, Catalog callback)
+- 🟡 Analyzer (`analyze_statement`) — statement validation via type inference and name resolution, with builtin functions/operators registered
+- ⬜ Analyzer: user-defined tables in the catalog
+- ⬜ Analyzer: typed access to the resolved AST
 
 ## Building
 
