@@ -16,7 +16,7 @@
 
 use crate::error::Error;
 use crate::pb;
-use crate::resolved::{OutputColumn, TableRef};
+use crate::resolved::{OutputColumn, ResolvedNode, TableRef};
 use crate::runtime::Module;
 
 const SVC_ANALYZER: i32 = 0;
@@ -158,6 +158,20 @@ impl Module {
         tables: &[TableDef],
     ) -> Result<Vec<TableRef>, Error> {
         self.run_analysis(sql, tables, true, Self::referenced_tables_of)
+    }
+
+    /// Analyzes a statement and returns its resolved AST as a self-contained tree.
+    ///
+    /// Each [`ResolvedNode`] exposes its kind and children, mirroring the parser's
+    /// [`Module::parse_statement`] tree for the analyzer's typed output. Returns
+    /// `Ok(None)` for a statement that produces no resolved output, or
+    /// [`Error::GoogleSql`] on a syntax error or unresolved name.
+    pub fn resolved_tree(
+        &mut self,
+        sql: &str,
+        tables: &[TableDef],
+    ) -> Result<Option<ResolvedNode>, Error> {
+        self.run_analysis(sql, tables, false, Self::resolved_tree_of)
     }
 
     /// Runs the full analysis pipeline, invoking `extract` on the resulting
