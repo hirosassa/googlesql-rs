@@ -276,7 +276,7 @@ fn alloc_via_caller(caller: &mut Caller<'_, HostState>, size: i32) -> Option<i32
 }
 
 /// Returns the zero `Val` for a numeric `ValType`.
-fn zero_val(ty: &ValType) -> Val {
+const fn zero_val(ty: &ValType) -> Val {
     match ty {
         ValType::I32 => Val::I32(0),
         ValType::I64 => Val::I64(0),

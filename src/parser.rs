@@ -37,7 +37,7 @@ impl ParsedStatement {
     }
 
     /// The root node of the AST.
-    pub fn root(&self) -> &AstNode {
+    pub const fn root(&self) -> &AstNode {
         &self.root
     }
 }
@@ -124,8 +124,5 @@ impl Module {
 
 /// Converts an error in field 15 of the response into [`Error::GoogleSql`].
 fn check_error(resp: &[u8]) -> Result<(), Error> {
-    match pb::extract_error(resp) {
-        Some(message) => Err(Error::GoogleSql(message)),
-        None => Ok(()),
-    }
+    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message)))
 }
