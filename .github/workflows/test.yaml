@@ -27,8 +27,8 @@ jobs:
           rustup toolchain install ${{ matrix.rust }} --profile minimal --component rustfmt,clippy
           rustup default ${{ matrix.rust }}
 
-      - name: Run cargo check
-        run: cargo check
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
@@ -46,6 +46,9 @@ jobs:
 
       - name: Install Rust
         run: rustup toolchain install stable --component llvm-tools-preview
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
