@@ -11,7 +11,10 @@ fn analyzes_literal_select() {
     // empty catalog.
     let result = module.analyze_statement("SELECT 1");
 
-    assert!(result.is_ok(), "expected analysis to succeed, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
 }
 
 #[test]
@@ -22,7 +25,10 @@ fn analyzes_builtin_operator() {
     // functions to be registered in the catalog.
     let result = module.analyze_statement("SELECT 1 + 2 AS x");
 
-    assert!(result.is_ok(), "expected analysis to succeed, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
 }
 
 #[test]

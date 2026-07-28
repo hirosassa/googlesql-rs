@@ -122,7 +122,11 @@ impl Module {
     /// built from the given `LanguageOptions` handle.
     fn add_builtins_with_language(&mut self, catalog: u64, language: u64) -> Result<(), Error> {
         let mut builtin_options = Vec::new();
-        pb::append_handle(&mut builtin_options, FIELD_BUILTIN_OPTIONS_LANGUAGE, language);
+        pb::append_handle(
+            &mut builtin_options,
+            FIELD_BUILTIN_OPTIONS_LANGUAGE,
+            language,
+        );
 
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, catalog);
