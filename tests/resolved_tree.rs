@@ -438,6 +438,66 @@ fn non_function_nodes_are_not_aggregate() {
 }
 
 #[test]
+fn scalar_function_calls_report_their_argument_count() {
+    let mut module = Module::new().unwrap();
+
+    // `id + 1` is a binary scalar call, so `$add` takes two value arguments.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS x FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call =
+        find_kind(&root, "ResolvedFunctionCall").expect("`id + 1` produces a ResolvedFunctionCall");
+    assert_eq!(call.argument_count(), Some(2));
+}
+
+#[test]
+fn unary_function_calls_report_a_single_argument() {
+    let mut module = Module::new().unwrap();
+
+    // `lower(name)` takes exactly one value argument.
+    let root = module
+        .resolved_tree("SELECT lower(name) AS n FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call = find_kind(&root, "ResolvedFunctionCall")
+        .expect("`lower(name)` produces a ResolvedFunctionCall");
+    assert_eq!(call.argument_count(), Some(1));
+}
+
+#[test]
+fn aggregate_function_calls_report_their_argument_count() {
+    let mut module = Module::new().unwrap();
+
+    // `COUNT(id)` takes one value argument; the count reflects value arguments,
+    // not the node's children (an aggregate may also carry modifier children).
+    let root = module
+        .resolved_tree("SELECT COUNT(id) FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call = find_kind(&root, "ResolvedAggregateFunctionCall")
+        .expect("`COUNT(id)` produces a ResolvedAggregateFunctionCall");
+    assert_eq!(call.argument_count(), Some(1));
+}
+
+#[test]
+fn non_function_nodes_have_no_argument_count() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a function call.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.argument_count().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 

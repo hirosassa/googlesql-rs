@@ -72,6 +72,7 @@ const MID_VALUE_STRING: i32 = 146;
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
 const SVC_RESOLVED_FUNCTION_CALL_BASE: i32 = 1004;
 const MID_FUNCTION: i32 = 19;
+const MID_ARGUMENT_LIST_SIZE: i32 = 14;
 const SVC_FUNCTION: i32 = 636;
 const MID_FUNCTION_NAME: i32 = 30;
 
@@ -210,6 +211,7 @@ pub struct ResolvedNode {
     table_name: Option<String>,
     cast: Option<CastInfo>,
     parameter_name: Option<String>,
+    argument_count: Option<usize>,
     children: Vec<Self>,
 }
 
@@ -267,6 +269,16 @@ impl ResolvedNode {
     /// or `None` if it is not a `ResolvedParameter`.
     pub fn parameter_name(&self) -> Option<&str> {
         self.parameter_name.as_deref()
+    }
+
+    /// The number of value arguments this node's function call takes, or `None`
+    /// if it is not a function call. Covers both scalar
+    /// (`ResolvedFunctionCall`) and aggregate (`ResolvedAggregateFunctionCall`)
+    /// calls. For a scalar call this equals `children().len()`, but an aggregate
+    /// call may carry extra modifier children (e.g. `ORDER BY`), so this counts
+    /// only the value arguments.
+    pub const fn argument_count(&self) -> Option<usize> {
+        self.argument_count
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -399,8 +411,14 @@ impl Module {
         } else {
             None
         };
-        let function_name = if kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL {
+        let is_function_call = kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL;
+        let function_name = if is_function_call {
             Some(self.node_function_name(node)?)
+        } else {
+            None
+        };
+        let argument_count = if is_function_call {
+            Some(self.node_argument_count(node)?)
         } else {
             None
         };
@@ -434,6 +452,7 @@ impl Module {
             table_name,
             cast,
             parameter_name,
+            argument_count,
             children,
         })
     }
@@ -473,6 +492,23 @@ impl Module {
     fn node_function_name(&mut self, node: u64) -> Result<String, Error> {
         let function = self.rpc_handle(SVC_RESOLVED_FUNCTION_CALL_BASE, MID_FUNCTION, node)?;
         self.rpc_string(SVC_FUNCTION, MID_FUNCTION_NAME, function)
+    }
+
+    /// Reads the number of value arguments a `ResolvedFunctionCall` takes.
+    ///
+    /// `argument_list_size()` counts only the value arguments, excluding any
+    /// aggregate modifiers. proto3 omits a zero count, so a missing field means
+    /// a zero-argument call (e.g. `CURRENT_TIMESTAMP()`); a negative count is
+    /// invalid and surfaces as an error rather than being silently clamped.
+    fn node_argument_count(&mut self, node: u64) -> Result<usize, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_FUNCTION_CALL_BASE,
+            MID_ARGUMENT_LIST_SIZE,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
+        usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string()))
     }
 
     /// Reads the constant a `ResolvedLiteral` node carries.
