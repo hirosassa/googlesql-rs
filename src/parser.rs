@@ -114,5 +114,5 @@ impl Module {
 
 /// Converts an error in field 15 of the response into [`Error::GoogleSql`].
 fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message)))
+    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }

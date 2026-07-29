@@ -1178,7 +1178,9 @@ impl Module {
             Some(JOIN_TYPE_LEFT) => Ok(JoinType::Left),
             Some(JOIN_TYPE_RIGHT) => Ok(JoinType::Right),
             Some(JOIN_TYPE_FULL) => Ok(JoinType::Full),
-            other => Err(Error::GoogleSql(format!("unknown join type: {other:?}"))),
+            other => Err(Error::GoogleSql(
+                format!("unknown join type: {other:?}").into(),
+            )),
         }
     }
 
@@ -1225,9 +1227,9 @@ impl Module {
             Some(OP_TYPE_INTERSECT_DISTINCT) => Ok(SetOperation::IntersectDistinct),
             Some(OP_TYPE_EXCEPT_ALL) => Ok(SetOperation::ExceptAll),
             Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
-            other => Err(Error::GoogleSql(format!(
-                "unknown set operation: {other:?}"
-            ))),
+            other => Err(Error::GoogleSql(
+                format!("unknown set operation: {other:?}").into(),
+            )),
         }
     }
 
@@ -1249,9 +1251,9 @@ impl Module {
             Some(SUBQUERY_TYPE_ARRAY) => Ok(SubqueryKind::Array),
             Some(SUBQUERY_TYPE_EXISTS) => Ok(SubqueryKind::Exists),
             Some(SUBQUERY_TYPE_IN) => Ok(SubqueryKind::In),
-            other => Err(Error::GoogleSql(format!(
-                "unknown subquery kind: {other:?}"
-            ))),
+            other => Err(Error::GoogleSql(
+                format!("unknown subquery kind: {other:?}").into(),
+            )),
         }
     }
 
@@ -1352,7 +1354,7 @@ impl Module {
         )?;
         check_error(&resp)?;
         let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
-        usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string()))
+        usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string().into()))
     }
 
     /// Reads whether a `ResolvedQueryStmt` produces a value table.
@@ -1577,5 +1579,5 @@ fn add_referenced_column(tables: &mut Vec<TableRef>, table_name: &str, column: S
 
 /// Converts an error in field 15 of the response into [`Error::GoogleSql`].
 fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message)))
+    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }

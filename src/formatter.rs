@@ -21,7 +21,7 @@ impl Module {
         pb::append_string(&mut req, 1, sql);
         let resp = self.invoke(SVC_FORMATTER, MID_FORMAT_SQL, &req)?;
         if let Some(message) = pb::extract_error(&resp) {
-            return Err(Error::GoogleSql(message));
+            return Err(Error::GoogleSql(message.into()));
         }
         pb::read_string_at_field(&resp, 2)
             .ok_or_else(|| Error::GoogleSql("FormatSql returned no string".into()))
