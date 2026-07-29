@@ -9,6 +9,8 @@
 //! `TypeFactory`); it must run while both are still alive and frees nothing it
 //! visits. The service/method ids were measured from the wazero reference glue.
 
+use std::ops::Range;
+
 use crate::error::Error;
 use crate::pb;
 use crate::runtime::Module;
@@ -38,6 +40,14 @@ const TYPE_DOUBLE: &str = "DOUBLE";
 const SVC_RESOLVED_NODE: i32 = 1167;
 const MID_GET_CHILD_NODES: i32 = 9;
 const MID_IS_EXPRESSION: i32 = 17;
+/// `GetParseLocationRangeOrNULL` returns the node's `ParseLocationRange`, or a
+/// null handle when the analyzer recorded no location for it.
+const MID_PARSE_LOCATION_RANGE: i32 = 15;
+
+/// `ParseLocationRange`: `Start`/`End` are the range's `ParseLocationPoint`s.
+const SVC_PARSE_LOCATION_RANGE: i32 = 693;
+const MID_RANGE_START: i32 = 13;
+const MID_RANGE_END: i32 = 8;
 
 /// `ResolvedExpr` base class: `Type` is the expression's resolved type.
 const SVC_RESOLVED_EXPR: i32 = 979;
@@ -220,6 +230,7 @@ pub struct ResolvedNode {
     argument_count: Option<usize>,
     scan_columns: Option<Vec<String>>,
     distinct: Option<bool>,
+    parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
 
@@ -304,6 +315,15 @@ impl ResolvedNode {
     /// not `Some(false)`.
     pub const fn distinct(&self) -> Option<bool> {
         self.distinct
+    }
+
+    /// The byte range this node spans within the analyzed SQL, or `None` if the
+    /// analyzer recorded no location for it. [`Module::resolved_tree`] requests
+    /// full-node-scope location recording, but synthetic nodes with no source
+    /// text (e.g. a wrapping projection) still report `None`. The range indexes
+    /// the same SQL string passed to `resolved_tree`.
+    pub fn parse_location(&self) -> Option<Range<usize>> {
+        self.parse_location.clone()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -462,6 +482,8 @@ impl Module {
         } else {
             None
         };
+        // A location can attach to any resolved node, so this is not gated on kind.
+        let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
             self.node_cast(node, type_name.as_deref())?
         } else {
@@ -490,6 +512,7 @@ impl Module {
             argument_count,
             scan_columns,
             distinct,
+            parse_location,
             children,
         })
     }
@@ -551,6 +574,22 @@ impl Module {
         )?;
         check_error(&resp)?;
         Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Reads the source byte range a resolved node spans, if one was recorded.
+    ///
+    /// `GetParseLocationRangeOrNULL` yields a `ParseLocationRange` (or a null
+    /// handle for nodes with no recorded location); its `Start`/`End` are
+    /// `ParseLocationPoint`s that [`Module::byte_range_from_points`] turns into a
+    /// validated byte range, shared with the parser AST's location logic.
+    fn node_parse_location(&mut self, node: u64) -> Result<Option<Range<usize>>, Error> {
+        let range = self.rpc_handle(SVC_RESOLVED_NODE, MID_PARSE_LOCATION_RANGE, node)?;
+        if range == 0 {
+            return Ok(None);
+        }
+        let start_point = self.rpc_handle(SVC_PARSE_LOCATION_RANGE, MID_RANGE_START, range)?;
+        let end_point = self.rpc_handle(SVC_PARSE_LOCATION_RANGE, MID_RANGE_END, range)?;
+        self.byte_range_from_points(start_point, end_point)
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
