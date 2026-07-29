@@ -71,6 +71,7 @@ const MID_COLUMN_REF_COLUMN: i32 = 8;
 /// cast's source type, while the cast node's own type is the target type.
 const SVC_RESOLVED_CAST: i32 = 829;
 const MID_CAST_EXPR: i32 = 8;
+const MID_CAST_RETURN_NULL_ON_ERROR: i32 = 17;
 
 /// `ResolvedParameter`: `Name` is the query parameter's name (e.g. `p` for `@p`).
 const SVC_RESOLVED_PARAMETER: i32 = 1185;
@@ -270,6 +271,7 @@ pub enum LiteralValue {
 pub struct CastInfo {
     from_type: String,
     to_type: String,
+    safe: bool,
 }
 
 impl CastInfo {
@@ -281,6 +283,13 @@ impl CastInfo {
     /// The resolved type the cast converts to (the cast's own type).
     pub fn to_type(&self) -> &str {
         &self.to_type
+    }
+
+    /// Whether the cast returns `NULL` on a failed conversion instead of
+    /// erroring, i.e. whether it is a `SAFE_CAST`. A plain `CAST` reports
+    /// `false`.
+    pub const fn is_safe(&self) -> bool {
+        self.safe
     }
 }
 
@@ -787,10 +796,26 @@ impl Module {
         let Some(from_type) = self.node_type_name(operand)? else {
             return Ok(None);
         };
+        let safe = self.node_cast_is_safe(node)?;
         Ok(Some(CastInfo {
             from_type,
             to_type: to_type.to_owned(),
+            safe,
         }))
+    }
+
+    /// Reads whether a `ResolvedCast` returns `NULL` on error (a `SAFE_CAST`).
+    ///
+    /// `return_null_on_error()` is a bool; proto3 omits a false value, so a
+    /// missing field means a plain `CAST`.
+    fn node_cast_is_safe(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_CAST,
+            MID_CAST_RETURN_NULL_ON_ERROR,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads the catalog name of the table a `ResolvedTableScan` reads.
