@@ -16,5 +16,7 @@ pub use analyzer::{ColumnDef, ColumnType, TableDef};
 pub use ast::AstNode;
 pub use error::Error;
 pub use parser::ParsedStatement;
-pub use resolved::{CastInfo, ColumnReference, LiteralValue, OutputColumn, ResolvedNode, TableRef};
+pub use resolved::{
+    CastInfo, ColumnReference, JoinType, LiteralValue, OutputColumn, ResolvedNode, TableRef,
+};
 pub use runtime::Module;

@@ -27,6 +27,7 @@ const KIND_FUNCTION_CALL: &str = "ResolvedFunctionCall";
 const KIND_AGGREGATE_FUNCTION_CALL: &str = "ResolvedAggregateFunctionCall";
 const KIND_CAST: &str = "ResolvedCast";
 const KIND_PARAMETER: &str = "ResolvedParameter";
+const KIND_JOIN_SCAN: &str = "ResolvedJoinScan";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -65,6 +66,15 @@ const MID_CAST_EXPR: i32 = 8;
 /// `ResolvedParameter`: `Name` is the query parameter's name (e.g. `p` for `@p`).
 const SVC_RESOLVED_PARAMETER: i32 = 1185;
 const MID_PARAMETER_NAME: i32 = 9;
+
+/// `ResolvedJoinScan`: `JoinType` is the join's kind, as a
+/// `ResolvedJoinScanEnums::JoinType` (1=INNER, 2=LEFT, 3=RIGHT, 4=FULL).
+const SVC_RESOLVED_JOIN_SCAN: i32 = 1123;
+const MID_JOIN_TYPE: i32 = 12;
+const JOIN_TYPE_INNER: i32 = 1;
+const JOIN_TYPE_LEFT: i32 = 2;
+const JOIN_TYPE_RIGHT: i32 = 3;
+const JOIN_TYPE_FULL: i32 = 4;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -208,6 +218,24 @@ impl CastInfo {
     }
 }
 
+/// The kind of a `ResolvedJoinScan`.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL may report join kinds beyond
+/// these (e.g. semi/anti joins from array or `IN` subquery rewrites); adding a
+/// variant later must not be a breaking change for callers that match on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum JoinType {
+    /// `INNER JOIN` (also a comma/cross join with an `ON`/`USING` condition).
+    Inner,
+    /// `LEFT [OUTER] JOIN`.
+    Left,
+    /// `RIGHT [OUTER] JOIN`.
+    Right,
+    /// `FULL [OUTER] JOIN`.
+    Full,
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
@@ -230,6 +258,7 @@ pub struct ResolvedNode {
     argument_count: Option<usize>,
     scan_columns: Option<Vec<String>>,
     distinct: Option<bool>,
+    join_type: Option<JoinType>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -315,6 +344,12 @@ impl ResolvedNode {
     /// not `Some(false)`.
     pub const fn distinct(&self) -> Option<bool> {
         self.distinct
+    }
+
+    /// The kind of this node's join (INNER/LEFT/RIGHT/FULL), or `None` if it is
+    /// not a `ResolvedJoinScan`.
+    pub const fn join_type(&self) -> Option<JoinType> {
+        self.join_type
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -482,6 +517,11 @@ impl Module {
         } else {
             None
         };
+        let join_type = if kind == KIND_JOIN_SCAN {
+            Some(self.node_join_type(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -512,6 +552,7 @@ impl Module {
             argument_count,
             scan_columns,
             distinct,
+            join_type,
             parse_location,
             children,
         })
@@ -590,6 +631,24 @@ impl Module {
         let start_point = self.rpc_handle(SVC_PARSE_LOCATION_RANGE, MID_RANGE_START, range)?;
         let end_point = self.rpc_handle(SVC_PARSE_LOCATION_RANGE, MID_RANGE_END, range)?;
         self.byte_range_from_points(start_point, end_point)
+    }
+
+    /// Reads the kind of a `ResolvedJoinScan`.
+    ///
+    /// `join_type()` is a `ResolvedJoinScanEnums::JoinType`. The value always
+    /// names a concrete join kind (the enum reserves no zero default), so an
+    /// unrecognized or missing value is surfaced as an error rather than being
+    /// silently mapped to a default.
+    fn node_join_type(&mut self, node: u64) -> Result<JoinType, Error> {
+        let resp = self.invoke(SVC_RESOLVED_JOIN_SCAN, MID_JOIN_TYPE, &pb::handle_arg(node))?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(JOIN_TYPE_INNER) => Ok(JoinType::Inner),
+            Some(JOIN_TYPE_LEFT) => Ok(JoinType::Left),
+            Some(JOIN_TYPE_RIGHT) => Ok(JoinType::Right),
+            Some(JOIN_TYPE_FULL) => Ok(JoinType::Full),
+            other => Err(Error::GoogleSql(format!("unknown join type: {other:?}"))),
+        }
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
