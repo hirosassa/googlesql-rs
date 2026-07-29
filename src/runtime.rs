@@ -6,6 +6,8 @@
 //! - `wasmify::callback_invoke` is provided (returns 0 in the MVP — no callbacks registered)
 //! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use wasmtime::{
@@ -16,6 +18,7 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::error::Error;
+use crate::pb;
 
 /// Absolute path to googlesql.wasm prepared by build.rs.
 const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
@@ -62,6 +65,51 @@ pub struct Module {
     alloc_fn: TypedFunc<u32, u32>,
     free_fn: TypedFunc<u32, ()>,
     instance: Instance,
+    /// Deferred frees enqueued by dropped [`Handle`]s, drained by
+    /// [`Module::flush_frees`].
+    pending_frees: Rc<RefCell<Vec<PendingFree>>>,
+}
+
+/// A wasm-side handle free deferred until [`Module::flush_frees`]: the
+/// `w_<svc>_<mid>` free RPC to invoke with `ptr`.
+#[derive(Clone, Copy)]
+struct PendingFree {
+    svc: i32,
+    mid: i32,
+    ptr: u64,
+}
+
+/// An RAII guard over a host-owned wasm-side C++ handle.
+///
+/// On drop it enqueues its free RPC into the owning [`Module`]'s queue rather
+/// than freeing eagerly: releasing a handle needs `&mut Store`, which a `Drop`
+/// impl cannot obtain. [`Module::flush_frees`] performs the deferred frees later.
+/// Deferring lets handles (including nested ones) be created and dropped without
+/// threading `&mut Module` through the guard.
+pub struct Handle {
+    ptr: u64,
+    free_svc: i32,
+    free_mid: i32,
+    queue: Rc<RefCell<Vec<PendingFree>>>,
+}
+
+impl Handle {
+    /// The wasm-side handle pointer, valid until [`Module::flush_frees`] runs.
+    pub(crate) const fn ptr(&self) -> u64 {
+        self.ptr
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // The queue is borrowed only here and in `flush_frees`, never
+        // concurrently (single-threaded, no reentrancy), so this cannot panic.
+        self.queue.borrow_mut().push(PendingFree {
+            svc: self.free_svc,
+            mid: self.free_mid,
+            ptr: self.ptr,
+        });
+    }
 }
 
 impl Module {
@@ -133,7 +181,98 @@ impl Module {
             alloc_fn,
             free_fn,
             instance,
+            pending_frees: Rc::new(RefCell::new(Vec::new())),
         })
+    }
+
+    /// Runs `f`, then frees every handle it acquired via a single flush, whether
+    /// `f` succeeded or failed.
+    ///
+    /// Handles dropped inside `f` enqueue their frees as its frames unwind; the
+    /// flush here releases them all, preserving the drop (child-before-parent)
+    /// order. This is the one place handle cleanup happens, so any handle must be
+    /// acquired within a `with_frees` scope or it leaks. On error the work error
+    /// takes priority over a flush error.
+    pub(crate) fn with_frees<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let result = f(self);
+        let freed = self.flush_frees();
+        let value = result?;
+        freed?;
+        Ok(value)
+    }
+
+    /// Invokes a constructor RPC and returns its non-null handle from response
+    /// field 1, without registering a free.
+    ///
+    /// Use for handles whose ownership transfers into the wasm side (e.g. a
+    /// `SimpleColumn` adopted by a `SimpleTable`), which the host must not free.
+    /// Returns [`Error::GoogleSql`] if the response carries an error or the
+    /// constructor yields a null handle.
+    pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
+        let resp = self.invoke(svc, mid, req)?;
+        if let Some(message) = pb::extract_error(&resp) {
+            return Err(Error::GoogleSql(message));
+        }
+        let ptr = pb::read_handle_at_field(&resp, 1);
+        if ptr == 0 {
+            return Err(Error::GoogleSql(format!(
+                "constructor w_{svc}_{mid} returned null"
+            )));
+        }
+        Ok(ptr)
+    }
+
+    /// Invokes a constructor RPC and returns an RAII [`Handle`] that, once
+    /// dropped, defers freeing the resulting wasm-side handle via
+    /// `w_<free_svc>_<free_mid>` (run by the enclosing [`with_frees`](Module::with_frees)).
+    ///
+    /// Returns [`Error::GoogleSql`] if the response carries an error or the
+    /// constructor yields a null handle.
+    pub(crate) fn acquire_handle(
+        &mut self,
+        new_svc: i32,
+        new_mid: i32,
+        req: &[u8],
+        free_svc: i32,
+        free_mid: i32,
+    ) -> Result<Handle, Error> {
+        let ptr = self.new_handle(new_svc, new_mid, req)?;
+        Ok(self.register_free(free_svc, free_mid, ptr))
+    }
+
+    /// Wraps an already-obtained wasm-side handle `ptr` in an RAII [`Handle`]
+    /// that defers freeing it via `w_<free_svc>_<free_mid>`.
+    ///
+    /// Use this for handles returned by non-constructor RPCs (e.g. the
+    /// `ParserOutput`/`AnalyzerOutput` a `Parse`/`Analyze` call yields), where
+    /// [`acquire_handle`](Module::acquire_handle) does not apply.
+    pub(crate) fn register_free(&self, free_svc: i32, free_mid: i32, ptr: u64) -> Handle {
+        Handle {
+            ptr,
+            free_svc,
+            free_mid,
+            queue: Rc::clone(&self.pending_frees),
+        }
+    }
+
+    /// Runs every free enqueued by a dropped [`Handle`], returning the first
+    /// error after attempting all of them so a single failure cannot strand the
+    /// remaining handles.
+    fn flush_frees(&mut self) -> Result<(), Error> {
+        // Drain into a local Vec first: `invoke` needs `&mut self`, so the
+        // `pending_frees` borrow cannot be held across the loop.
+        let pending: Vec<PendingFree> = self.pending_frees.borrow_mut().drain(..).collect();
+        let mut first_error = None;
+        for free in pending {
+            let freed = self.invoke(free.svc, free.mid, &pb::handle_arg(free.ptr));
+            if let (Err(e), None) = (freed, &first_error) {
+                first_error = Some(e);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Allocates `len` bytes in wasm linear memory and returns the pointer.
@@ -323,5 +462,53 @@ const fn zero_val(ty: &ValType) -> Val {
         ValType::F32 => Val::F32(0),
         ValType::F64 => Val::F64(0),
         _ => Val::I32(0),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    // A `ParserOptions` handle (NewParserOptions = svc699/mid0, freed by mid12)
+    // is a convenient real handle to exercise the deferred-free machinery.
+    const SVC_PARSER_OPTIONS: i32 = 699;
+    const MID_NEW_PARSER_OPTIONS: i32 = 0;
+    const MID_FREE_PARSER_OPTIONS: i32 = 12;
+
+    /// A `Handle` does not free its wasm-side handle eagerly: dropping it only
+    /// enqueues the free, which `flush_frees` later performs.
+    #[test]
+    fn handle_defers_free_until_flush() {
+        let mut module = super::Module::new().expect("instantiate module");
+
+        {
+            let handle = module
+                .acquire_handle(
+                    SVC_PARSER_OPTIONS,
+                    MID_NEW_PARSER_OPTIONS,
+                    &[],
+                    SVC_PARSER_OPTIONS,
+                    MID_FREE_PARSER_OPTIONS,
+                )
+                .expect("acquire ParserOptions handle");
+            assert_ne!(handle.ptr(), 0, "handle pointer must be non-null");
+            assert_eq!(
+                module.pending_frees.borrow().len(),
+                0,
+                "nothing may be queued while the handle is still alive"
+            );
+        }
+
+        assert_eq!(
+            module.pending_frees.borrow().len(),
+            1,
+            "dropping the handle must enqueue exactly one deferred free"
+        );
+
+        module.flush_frees().expect("flush frees");
+        assert_eq!(
+            module.pending_frees.borrow().len(),
+            0,
+            "flush must drain the queue and run every free"
+        );
     }
 }
