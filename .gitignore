@@ -2,4 +2,6 @@
 
 # spike reference artifacts (large, not committed)
 /spike/
-/target
+
+# tooling caches
+/.workspace_cache/
