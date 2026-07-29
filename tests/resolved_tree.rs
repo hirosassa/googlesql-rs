@@ -105,6 +105,90 @@ fn non_expression_nodes_have_no_type() {
     assert_eq!(root.type_name(), None);
 }
 
+/// Returns the first node in the tree whose kind matches, if any.
+fn find_kind<'a>(node: &'a ResolvedNode, kind: &str) -> Option<&'a ResolvedNode> {
+    if node.kind() == kind {
+        return Some(node);
+    }
+    node.children()
+        .iter()
+        .find_map(|child| find_kind(child, kind))
+}
+
+#[test]
+fn column_ref_nodes_carry_their_source_column() {
+    let mut module = Module::new().unwrap();
+
+    // `id` used inside an expression becomes a ResolvedColumnRef pointing back
+    // at the `users.id` column it reads.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS x FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let column_ref = find_kind(&root, "ResolvedColumnRef")
+        .expect("an expression over a column should produce a ResolvedColumnRef");
+    let reference = column_ref
+        .column_ref()
+        .expect("a ResolvedColumnRef node exposes its source column");
+
+    assert_eq!(reference.table(), "users");
+    assert_eq!(reference.name(), "id");
+}
+
+#[test]
+fn non_column_ref_nodes_have_no_column_reference() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a column reference.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.column_ref().is_none());
+}
+
+/// Collects every column reference in the tree as `(table, name)` pairs.
+fn collect_column_refs(node: &ResolvedNode, out: &mut Vec<(String, String)>) {
+    if let Some(reference) = node.column_ref() {
+        out.push((reference.table().to_string(), reference.name().to_string()));
+    }
+    for child in node.children() {
+        collect_column_refs(child, out);
+    }
+}
+
+#[test]
+fn column_ref_to_a_computed_column_names_its_synthetic_table() {
+    let mut module = Module::new().unwrap();
+
+    // `ORDER BY a` references the computed column `a`, which is produced by the
+    // projection rather than a user table. The analyzer gives such intermediate
+    // columns a synthetic table name (e.g. `$query`), so the reference still
+    // resolves with a non-empty table and name.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS a FROM users ORDER BY a", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let mut refs = Vec::new();
+    collect_column_refs(&root, &mut refs);
+
+    // The base column read from the user table.
+    assert!(refs.contains(&("users".to_string(), "id".to_string())));
+    // The computed column referenced by ORDER BY: a synthetic, non-empty table.
+    let computed = refs
+        .iter()
+        .find(|(_, name)| name == "a")
+        .expect("ORDER BY references the computed column `a`");
+    assert!(
+        !computed.0.is_empty(),
+        "a computed column still reports a (synthetic) table name, got empty"
+    );
+}
+
 #[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
