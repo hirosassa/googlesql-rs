@@ -149,6 +149,7 @@ const MID_VALUE_STRING: i32 = 146;
 const MID_VALUE_BYTES: i32 = 111;
 const MID_VALUE_DATE: i32 = 112;
 const MID_VALUE_TIMESTAMP_MICROS: i32 = 106;
+const MID_VALUE_IS_NULL: i32 = 131;
 
 /// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
@@ -261,6 +262,11 @@ pub enum LiteralValue {
     /// A `TIMESTAMP` constant, as the number of microseconds since the
     /// 1970-01-01 epoch.
     Timestamp(i64),
+    /// A `NULL` constant. Its resolved type is still available through the
+    /// node's [`type_name`](ResolvedNode::type_name) (e.g. `INT64` for
+    /// `CAST(NULL AS INT64)`); this variant carries no payload because a `NULL`
+    /// has no value to read.
+    Null,
 }
 
 /// The source and target types of a `ResolvedCast` node.
@@ -1076,6 +1082,11 @@ impl Module {
         type_name: Option<&str>,
     ) -> Result<Option<LiteralValue>, Error> {
         let value = self.rpc_handle(SVC_RESOLVED_LITERAL, MID_LITERAL_VALUE, node)?;
+        // A NULL literal has no readable contents; the typed accessors below trap
+        // on the wasm side if called on one, so detect NULL before dispatching.
+        if self.value_is_null(value)? {
+            return Ok(Some(LiteralValue::Null));
+        }
         let literal = match type_name {
             Some(TYPE_INT64) => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
             Some(TYPE_BOOL) => LiteralValue::Bool(self.value_bool(value, MID_VALUE_BOOL)?),
@@ -1110,6 +1121,14 @@ impl Module {
         let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
         check_error(&resp)?;
         Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Reads whether a `Value` handle holds `NULL`.
+    ///
+    /// `is_null()` is a bool; proto3 omits a false value, so a missing field
+    /// means the value is non-null.
+    fn value_is_null(&mut self, value: u64) -> Result<bool, Error> {
+        self.value_bool(value, MID_VALUE_IS_NULL)
     }
 
     /// Reads a double from a `Value` handle via the given accessor. An absent
