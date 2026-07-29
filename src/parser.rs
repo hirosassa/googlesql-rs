@@ -47,8 +47,8 @@ impl Module {
     ///
     /// Returns [`Error::GoogleSql`] on a syntax error.
     ///
-    /// Every wasm-side handle acquired during the parse is an RAII [`Handle`]
-    /// that enqueues its own free on drop; the enclosing [`with_frees`](Module::with_frees)
+    /// Every wasm-side handle acquired during the parse is an RAII `Handle`
+    /// that enqueues its own free on drop; the enclosing `with_frees`
     /// releases them all, whether the parse succeeded or failed.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
         self.with_frees(|module| {
