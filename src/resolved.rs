@@ -35,6 +35,7 @@ const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
 const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
 const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
 const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
+const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -149,6 +150,11 @@ const MID_LITERAL_HAS_EXPLICIT_TYPE: i32 = 9;
 /// field this node reads.
 const SVC_RESOLVED_GET_STRUCT_FIELD: i32 = 1025;
 const MID_FIELD_IDX: i32 = 10;
+
+/// `ResolvedArrayScan`: `ElementColumn` is the column each array element is
+/// bound to (the `x` in `UNNEST(...) AS x`).
+const SVC_RESOLVED_ARRAY_SCAN: i32 = 809;
+const MID_ARRAY_SCAN_ELEMENT_COLUMN: i32 = 16;
 
 /// `Value` (zetasql::Value): scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
@@ -460,6 +466,7 @@ pub struct ResolvedNode {
     with_query_name: Option<String>,
     is_value_table: Option<bool>,
     struct_field_index: Option<i32>,
+    array_element_name: Option<String>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -644,6 +651,12 @@ impl ResolvedNode {
     /// `ResolvedGetStructField`.
     pub const fn struct_field_index(&self) -> Option<i32> {
         self.struct_field_index
+    }
+
+    /// The name of the column each array element is bound to (the `x` in
+    /// `UNNEST(...) AS x`), or `None` if this node is not a `ResolvedArrayScan`.
+    pub fn array_element_name(&self) -> Option<&str> {
+        self.array_element_name.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -887,6 +900,11 @@ impl Module {
         } else {
             None
         };
+        let array_element_name = if kind == KIND_ARRAY_SCAN {
+            Some(self.node_array_element_name(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -931,6 +949,7 @@ impl Module {
             with_query_name,
             is_value_table,
             struct_field_index,
+            array_element_name,
             parse_location,
             children,
         })
@@ -978,6 +997,16 @@ impl Module {
     fn node_table_name(&mut self, node: u64) -> Result<String, Error> {
         let table = self.rpc_handle(SVC_RESOLVED_TABLE_SCAN, MID_TABLE_SCAN_TABLE, node)?;
         self.rpc_string(SVC_TABLE, MID_TABLE_NAME, table)
+    }
+
+    /// Reads the name of the element column a `ResolvedArrayScan` binds.
+    ///
+    /// `element_column()` yields the `ResolvedColumn` each array element is bound
+    /// to; its `Name` is the alias given in `UNNEST(...) AS name`.
+    fn node_array_element_name(&mut self, node: u64) -> Result<String, Error> {
+        let column =
+            self.rpc_handle(SVC_RESOLVED_ARRAY_SCAN, MID_ARRAY_SCAN_ELEMENT_COLUMN, node)?;
+        self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
     }
 
     /// Reads the names of the columns a `ResolvedTableScan` produces.
