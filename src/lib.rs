@@ -18,6 +18,6 @@ pub use error::Error;
 pub use parser::ParsedStatement;
 pub use resolved::{
     CastInfo, ColumnReference, JoinType, LimitOffset, LiteralValue, OutputColumn, ResolvedNode,
-    SetOperation, TableRef,
+    SetOperation, SubqueryKind, TableRef,
 };
 pub use runtime::Module;

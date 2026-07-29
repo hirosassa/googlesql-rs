@@ -32,6 +32,7 @@ const KIND_ORDER_BY_ITEM: &str = "ResolvedOrderByItem";
 const KIND_SET_OPERATION_SCAN: &str = "ResolvedSetOperationScan";
 const KIND_AGGREGATE_SCAN: &str = "ResolvedAggregateScan";
 const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
+const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -111,6 +112,16 @@ const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
 const SVC_RESOLVED_LIMIT_OFFSET_SCAN: i32 = 1125;
 const MID_LIMIT: i32 = 9;
 const MID_OFFSET: i32 = 12;
+
+/// `ResolvedSubqueryExpr`: `SubqueryType` is the kind of subquery, as a
+/// `ResolvedSubqueryExprEnums::SubqueryType` (1=SCALAR, 2=ARRAY, 3=EXISTS,
+/// 4=IN). Later values (`LIKE ANY/ALL`) name syntax this wasm build rejects.
+const SVC_RESOLVED_SUBQUERY_EXPR: i32 = 1287;
+const MID_SUBQUERY_TYPE: i32 = 31;
+const SUBQUERY_TYPE_SCALAR: i32 = 1;
+const SUBQUERY_TYPE_ARRAY: i32 = 2;
+const SUBQUERY_TYPE_EXISTS: i32 = 3;
+const SUBQUERY_TYPE_IN: i32 = 4;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -294,6 +305,25 @@ pub enum SetOperation {
     ExceptDistinct,
 }
 
+/// The kind of a `ResolvedSubqueryExpr`.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL also defines `LIKE ANY`/`LIKE
+/// ALL` subquery forms; this wasm build rejects that syntax, so those variants
+/// are omitted until they can be produced and their wire values verified.
+/// Adding one later must not be a breaking change for callers that match on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SubqueryKind {
+    /// A scalar subquery `(SELECT ...)`, yielding a single value.
+    Scalar,
+    /// An `ARRAY(SELECT ...)` subquery, yielding an array.
+    Array,
+    /// An `EXISTS(SELECT ...)` subquery, yielding a bool.
+    Exists,
+    /// An `x IN (SELECT ...)` subquery, yielding a bool.
+    In,
+}
+
 /// The row counts of a `ResolvedLimitOffsetScan`.
 ///
 /// Carried by limit/offset scan nodes in a [`ResolvedNode`] tree; holds only
@@ -346,6 +376,7 @@ pub struct ResolvedNode {
     join_type: Option<JoinType>,
     is_descending: Option<bool>,
     set_operation: Option<SetOperation>,
+    subquery_kind: Option<SubqueryKind>,
     group_by_columns: Option<Vec<String>>,
     limit_offset: Option<LimitOffset>,
     parse_location: Option<Range<usize>>,
@@ -453,6 +484,12 @@ impl ResolvedNode {
     /// `ResolvedSetOperationScan`.
     pub const fn set_operation(&self) -> Option<SetOperation> {
         self.set_operation
+    }
+
+    /// The kind of subquery this node is (scalar/`ARRAY`/`EXISTS`/`IN`), or
+    /// `None` if it is not a `ResolvedSubqueryExpr`.
+    pub const fn subquery_kind(&self) -> Option<SubqueryKind> {
+        self.subquery_kind
     }
 
     /// The names of this node's `GROUP BY` columns, or `None` if it is not a
@@ -649,6 +686,11 @@ impl Module {
         } else {
             None
         };
+        let subquery_kind = if kind == KIND_SUBQUERY_EXPR {
+            Some(self.node_subquery_kind(node)?)
+        } else {
+            None
+        };
         let group_by_columns = if kind == KIND_AGGREGATE_SCAN {
             Some(self.node_group_by_columns(node)?)
         } else {
@@ -692,6 +734,7 @@ impl Module {
             join_type,
             is_descending,
             set_operation,
+            subquery_kind,
             group_by_columns,
             limit_offset,
             parse_location,
@@ -827,6 +870,30 @@ impl Module {
             Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
             other => Err(Error::GoogleSql(format!(
                 "unknown set operation: {other:?}"
+            ))),
+        }
+    }
+
+    /// Reads the kind of a `ResolvedSubqueryExpr`.
+    ///
+    /// `subquery_type()` is a `ResolvedSubqueryExprEnums::SubqueryType`. Only the
+    /// forms this wasm build can produce are mapped; a `LIKE ANY/ALL` value (or
+    /// any other unrecognized or missing one) is surfaced as an error rather
+    /// than being silently mapped to a default.
+    fn node_subquery_kind(&mut self, node: u64) -> Result<SubqueryKind, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_SUBQUERY_EXPR,
+            MID_SUBQUERY_TYPE,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(SUBQUERY_TYPE_SCALAR) => Ok(SubqueryKind::Scalar),
+            Some(SUBQUERY_TYPE_ARRAY) => Ok(SubqueryKind::Array),
+            Some(SUBQUERY_TYPE_EXISTS) => Ok(SubqueryKind::Exists),
+            Some(SUBQUERY_TYPE_IN) => Ok(SubqueryKind::In),
+            other => Err(Error::GoogleSql(format!(
+                "unknown subquery kind: {other:?}"
             ))),
         }
     }
