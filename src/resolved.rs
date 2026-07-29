@@ -22,6 +22,7 @@ const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
 const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
 const KIND_LITERAL: &str = "ResolvedLiteral";
 const KIND_FUNCTION_CALL: &str = "ResolvedFunctionCall";
+const KIND_AGGREGATE_FUNCTION_CALL: &str = "ResolvedAggregateFunctionCall";
 const KIND_CAST: &str = "ResolvedCast";
 const KIND_PARAMETER: &str = "ResolvedParameter";
 
@@ -236,10 +237,18 @@ impl ResolvedNode {
         self.literal_value.as_ref()
     }
 
-    /// The name of the function this node invokes (e.g. `$add`, `lower`), or
-    /// `None` if it is not a `ResolvedFunctionCall`.
+    /// The name of the function this node invokes (e.g. `$add`, `lower`,
+    /// `count`), or `None` if it is not a function call. Covers both scalar
+    /// (`ResolvedFunctionCall`) and aggregate (`ResolvedAggregateFunctionCall`)
+    /// calls; use [`is_aggregate`](Self::is_aggregate) to tell them apart.
     pub fn function_name(&self) -> Option<&str> {
         self.function_name.as_deref()
+    }
+
+    /// Whether this node is an aggregate function call (e.g. `COUNT`, `SUM`), as
+    /// opposed to a scalar call or a non-call node.
+    pub fn is_aggregate(&self) -> bool {
+        self.kind == KIND_AGGREGATE_FUNCTION_CALL
     }
 
     /// The catalog name of the table this node scans, or `None` if it is not a
@@ -390,7 +399,7 @@ impl Module {
         } else {
             None
         };
-        let function_name = if kind == KIND_FUNCTION_CALL {
+        let function_name = if kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL {
             Some(self.node_function_name(node)?)
         } else {
             None
