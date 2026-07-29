@@ -86,7 +86,7 @@ struct PendingFree {
 /// impl cannot obtain. [`Module::flush_frees`] performs the deferred frees later.
 /// Deferring lets handles (including nested ones) be created and dropped without
 /// threading `&mut Module` through the guard.
-pub(crate) struct Handle {
+pub struct Handle {
     ptr: u64,
     free_svc: i32,
     free_mid: i32,
