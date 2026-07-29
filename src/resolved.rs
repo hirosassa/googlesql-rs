@@ -80,9 +80,11 @@ const SVC_RESOLVED_PARAMETER: i32 = 1185;
 const MID_PARAMETER_NAME: i32 = 9;
 
 /// `ResolvedJoinScan`: `JoinType` is the join's kind, as a
-/// `ResolvedJoinScanEnums::JoinType` (1=INNER, 2=LEFT, 3=RIGHT, 4=FULL).
+/// `ResolvedJoinScanEnums::JoinType` (1=INNER, 2=LEFT, 3=RIGHT, 4=FULL);
+/// `HasUsing` is whether the join was written with a `USING` clause.
 const SVC_RESOLVED_JOIN_SCAN: i32 = 1123;
 const MID_JOIN_TYPE: i32 = 12;
+const MID_JOIN_SCAN_HAS_USING: i32 = 9;
 const JOIN_TYPE_INNER: i32 = 1;
 const JOIN_TYPE_LEFT: i32 = 2;
 const JOIN_TYPE_RIGHT: i32 = 3;
@@ -413,6 +415,7 @@ pub struct ResolvedNode {
     alias: Option<String>,
     distinct: Option<bool>,
     join_type: Option<JoinType>,
+    has_using: Option<bool>,
     is_descending: Option<bool>,
     is_correlated: Option<bool>,
     set_operation: Option<SetOperation>,
@@ -520,6 +523,13 @@ impl ResolvedNode {
     /// not a `ResolvedJoinScan`.
     pub const fn join_type(&self) -> Option<JoinType> {
         self.join_type
+    }
+
+    /// Whether this node's join was written with a `USING` clause, or `None` if
+    /// it is not a `ResolvedJoinScan`. `Some(false)` covers both an `ON` join and
+    /// a comma/cross join; only `JOIN ... USING (...)` yields `Some(true)`.
+    pub const fn has_using(&self) -> Option<bool> {
+        self.has_using
     }
 
     /// Whether this ORDER BY item sorts descending (`DESC`), or `None` if it is
@@ -753,6 +763,11 @@ impl Module {
         } else {
             None
         };
+        let has_using = if kind == KIND_JOIN_SCAN {
+            Some(self.node_has_using(node)?)
+        } else {
+            None
+        };
         let is_descending = if kind == KIND_ORDER_BY_ITEM {
             Some(self.node_is_descending(node)?)
         } else {
@@ -825,6 +840,7 @@ impl Module {
             alias,
             distinct,
             join_type,
+            has_using,
             is_descending,
             is_correlated,
             set_operation,
@@ -960,6 +976,20 @@ impl Module {
             Some(JOIN_TYPE_FULL) => Ok(JoinType::Full),
             other => Err(Error::GoogleSql(format!("unknown join type: {other:?}"))),
         }
+    }
+
+    /// Reads whether a `ResolvedJoinScan` was written with a `USING` clause.
+    ///
+    /// `has_using()` is a bool on the join scan. proto3 omits a false value, so a
+    /// missing field means the join uses no `USING` clause.
+    fn node_has_using(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_JOIN_SCAN,
+            MID_JOIN_SCAN_HAS_USING,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads whether a `ResolvedOrderByItem` sorts descending.

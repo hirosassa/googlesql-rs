@@ -1422,3 +1422,60 @@ fn non_table_scan_nodes_have_no_alias() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.alias(), None);
 }
+
+#[test]
+fn join_with_using_is_flagged() {
+    let mut module = Module::new().unwrap();
+
+    // `events` shares the `id` column name with `users`, so USING(id) is legal.
+    let events = TableDef {
+        name: "events".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let root = module
+        .resolved_tree(
+            "SELECT id FROM users JOIN events USING (id)",
+            &[users_table(), events],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join = find_kind(&root, "ResolvedJoinScan").expect("the query joins two tables");
+    assert_eq!(join.has_using(), Some(true));
+}
+
+#[test]
+fn join_with_on_condition_has_no_using() {
+    let mut module = Module::new().unwrap();
+
+    // An ON join uses no USING clause; proto3 omits that false flag, which must
+    // decode as `Some(false)`, not `None` and not an error.
+    let root = module
+        .resolved_tree(
+            "SELECT users.id FROM users JOIN orders ON users.id = orders.user_id",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join = find_kind(&root, "ResolvedJoinScan").expect("the query joins two tables");
+    assert_eq!(join.has_using(), Some(false));
+}
+
+#[test]
+fn non_join_scan_nodes_have_no_using_flag() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // A query with no join carries no USING flag anywhere in its tree.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.has_using(), None);
+}
