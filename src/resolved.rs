@@ -28,6 +28,7 @@ const KIND_AGGREGATE_FUNCTION_CALL: &str = "ResolvedAggregateFunctionCall";
 const KIND_CAST: &str = "ResolvedCast";
 const KIND_PARAMETER: &str = "ResolvedParameter";
 const KIND_JOIN_SCAN: &str = "ResolvedJoinScan";
+const KIND_ORDER_BY_ITEM: &str = "ResolvedOrderByItem";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -75,6 +76,10 @@ const JOIN_TYPE_INNER: i32 = 1;
 const JOIN_TYPE_LEFT: i32 = 2;
 const JOIN_TYPE_RIGHT: i32 = 3;
 const JOIN_TYPE_FULL: i32 = 4;
+
+/// `ResolvedOrderByItem`: `IsDescending` is whether the item sorts `DESC`.
+const SVC_RESOLVED_ORDER_BY_ITEM: i32 = 1177;
+const MID_IS_DESCENDING: i32 = 11;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -259,6 +264,7 @@ pub struct ResolvedNode {
     scan_columns: Option<Vec<String>>,
     distinct: Option<bool>,
     join_type: Option<JoinType>,
+    is_descending: Option<bool>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -350,6 +356,13 @@ impl ResolvedNode {
     /// not a `ResolvedJoinScan`.
     pub const fn join_type(&self) -> Option<JoinType> {
         self.join_type
+    }
+
+    /// Whether this ORDER BY item sorts descending (`DESC`), or `None` if it is
+    /// not a `ResolvedOrderByItem`. Ascending is the default, so an item written
+    /// without `ASC`/`DESC` reports `Some(false)`.
+    pub const fn is_descending(&self) -> Option<bool> {
+        self.is_descending
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -522,6 +535,11 @@ impl Module {
         } else {
             None
         };
+        let is_descending = if kind == KIND_ORDER_BY_ITEM {
+            Some(self.node_is_descending(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -553,6 +571,7 @@ impl Module {
             scan_columns,
             distinct,
             join_type,
+            is_descending,
             parse_location,
             children,
         })
@@ -649,6 +668,20 @@ impl Module {
             Some(JOIN_TYPE_FULL) => Ok(JoinType::Full),
             other => Err(Error::GoogleSql(format!("unknown join type: {other:?}"))),
         }
+    }
+
+    /// Reads whether a `ResolvedOrderByItem` sorts descending.
+    ///
+    /// `is_descending()` is a bool; proto3 omits a false value, so a missing
+    /// field means the item sorts ascending (the default).
+    fn node_is_descending(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_ORDER_BY_ITEM,
+            MID_IS_DESCENDING,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.

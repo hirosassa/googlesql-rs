@@ -748,6 +748,50 @@ fn non_join_nodes_have_no_join_type() {
 }
 
 #[test]
+fn descending_order_by_item_reports_descending() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users ORDER BY id DESC", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let item = find_kind(&root, "ResolvedOrderByItem")
+        .expect("an ORDER BY produces a ResolvedOrderByItem");
+    assert_eq!(item.is_descending(), Some(true));
+}
+
+#[test]
+fn ascending_order_by_item_reports_not_descending() {
+    let mut module = Module::new().unwrap();
+
+    // Ascending is the default, so an item written without ASC/DESC still
+    // reports `Some(false)`.
+    let root = module
+        .resolved_tree("SELECT id FROM users ORDER BY id", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let item = find_kind(&root, "ResolvedOrderByItem")
+        .expect("an ORDER BY produces a ResolvedOrderByItem");
+    assert_eq!(item.is_descending(), Some(false));
+}
+
+#[test]
+fn non_order_by_nodes_have_no_direction() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not an ORDER BY item.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.is_descending().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
