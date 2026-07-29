@@ -21,6 +21,7 @@ const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
 const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
 const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
 const KIND_LITERAL: &str = "ResolvedLiteral";
+const KIND_FUNCTION_CALL: &str = "ResolvedFunctionCall";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -54,6 +55,13 @@ const MID_VALUE_BOOL: i32 = 110;
 const MID_VALUE_DOUBLE: i32 = 114;
 const MID_VALUE_INT64: i32 = 128;
 const MID_VALUE_STRING: i32 = 146;
+
+/// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
+/// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
+const SVC_RESOLVED_FUNCTION_CALL_BASE: i32 = 1004;
+const MID_FUNCTION: i32 = 19;
+const SVC_FUNCTION: i32 = 636;
+const MID_FUNCTION_NAME: i32 = 30;
 
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
 const SVC_RESOLVED_SCAN: i32 = 1251;
@@ -154,6 +162,7 @@ pub struct ResolvedNode {
     type_name: Option<String>,
     column_ref: Option<ColumnReference>,
     literal_value: Option<LiteralValue>,
+    function_name: Option<String>,
     children: Vec<Self>,
 }
 
@@ -179,6 +188,12 @@ impl ResolvedNode {
     /// (or its type is one this crate does not yet model).
     pub const fn literal_value(&self) -> Option<&LiteralValue> {
         self.literal_value.as_ref()
+    }
+
+    /// The name of the function this node invokes (e.g. `$add`, `lower`), or
+    /// `None` if it is not a `ResolvedFunctionCall`.
+    pub fn function_name(&self) -> Option<&str> {
+        self.function_name.as_deref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -311,6 +326,11 @@ impl Module {
         } else {
             None
         };
+        let function_name = if kind == KIND_FUNCTION_CALL {
+            Some(self.node_function_name(node)?)
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -322,8 +342,18 @@ impl Module {
             type_name,
             column_ref,
             literal_value,
+            function_name,
             children,
         })
+    }
+
+    /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
+    ///
+    /// `function()` yields the `zetasql::Function`, whose `Name` is the catalog
+    /// name (e.g. `$add` for `+`, `lower` for `LOWER()`).
+    fn node_function_name(&mut self, node: u64) -> Result<String, Error> {
+        let function = self.rpc_handle(SVC_RESOLVED_FUNCTION_CALL_BASE, MID_FUNCTION, node)?;
+        self.rpc_string(SVC_FUNCTION, MID_FUNCTION_NAME, function)
     }
 
     /// Reads the constant a `ResolvedLiteral` node carries.
