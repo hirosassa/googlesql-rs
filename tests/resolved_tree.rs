@@ -143,6 +143,68 @@ fn typed_null_literal_keeps_its_type_and_null_value() {
 }
 
 #[test]
+fn aggregate_scan_reports_its_aggregate_column() {
+    let mut module = Module::new().unwrap();
+
+    // `COUNT(*)` becomes one aggregate output column on the ResolvedAggregateScan,
+    // separate from the `name` grouping key.
+    let root = module
+        .resolved_tree("SELECT COUNT(*) FROM users GROUP BY name", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedAggregateScan")
+        .expect("a GROUP BY produces a ResolvedAggregateScan");
+    let aggregates = scan
+        .aggregate_columns()
+        .expect("a ResolvedAggregateScan reports its aggregate columns");
+
+    assert_eq!(aggregates.len(), 1);
+    assert!(
+        !aggregates[0].is_empty(),
+        "each aggregate output column has a (synthetic) name"
+    );
+}
+
+#[test]
+fn each_aggregate_gets_its_own_column_distinct_from_grouping() {
+    let mut module = Module::new().unwrap();
+
+    // Two aggregates yield two aggregate columns; the grouping key stays in the
+    // separate group-by list, so the two lists must not be conflated.
+    let root = module
+        .resolved_tree(
+            "SELECT name, COUNT(*), SUM(id) FROM users GROUP BY name",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedAggregateScan")
+        .expect("a GROUP BY produces a ResolvedAggregateScan");
+
+    assert_eq!(scan.aggregate_columns().map(<[String]>::len), Some(2));
+    assert_eq!(
+        scan.group_by_columns(),
+        Some(["name".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn non_aggregate_scan_has_no_aggregate_columns() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not an aggregate scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.aggregate_columns(), None);
+}
+
+#[test]
 fn root_of_a_query_is_a_resolved_query_stmt() {
     let mut module = Module::new().unwrap();
 

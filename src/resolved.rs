@@ -109,6 +109,7 @@ const OP_TYPE_EXCEPT_DISTINCT: i32 = 6;
 /// that define the query's grouping keys.
 const SVC_RESOLVED_AGGREGATE_SCAN_BASE: i32 = 730;
 const MID_GROUP_BY_LIST: i32 = 21;
+const MID_AGGREGATE_LIST: i32 = 15;
 
 /// `ResolvedComputedColumn`: `Column` is the `ResolvedColumn` it defines.
 const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 853;
@@ -415,6 +416,7 @@ pub struct ResolvedNode {
     set_operation: Option<SetOperation>,
     subquery_kind: Option<SubqueryKind>,
     group_by_columns: Option<Vec<String>>,
+    aggregate_columns: Option<Vec<String>>,
     limit_offset: Option<LimitOffset>,
     with_query_name: Option<String>,
     parse_location: Option<Range<usize>>,
@@ -544,6 +546,14 @@ impl ResolvedNode {
     /// `SELECT COUNT(*)`) reports `Some([])`.
     pub fn group_by_columns(&self) -> Option<&[String]> {
         self.group_by_columns.as_deref()
+    }
+
+    /// The names of this node's aggregate output columns (one per aggregate,
+    /// such as the `COUNT(*)` in `SELECT COUNT(*) ... GROUP BY ...`), or `None`
+    /// if it is not a `ResolvedAggregateScan`. Each name is synthetic (e.g.
+    /// `$agg1`); a scan that computes no aggregates reports `Some([])`.
+    pub fn aggregate_columns(&self) -> Option<&[String]> {
+        self.aggregate_columns.as_deref()
     }
 
     /// The `LIMIT`/`OFFSET` row counts of this node, or `None` if it is not a
@@ -753,6 +763,11 @@ impl Module {
         } else {
             None
         };
+        let aggregate_columns = if kind == KIND_AGGREGATE_SCAN {
+            Some(self.node_aggregate_columns(node)?)
+        } else {
+            None
+        };
         let limit_offset = if kind == KIND_LIMIT_OFFSET_SCAN {
             Some(self.node_limit_offset(node)?)
         } else {
@@ -799,6 +814,7 @@ impl Module {
             set_operation,
             subquery_kind,
             group_by_columns,
+            aggregate_columns,
             limit_offset,
             with_query_name,
             parse_location,
@@ -997,11 +1013,26 @@ impl Module {
     /// `group_by_list()` yields the `ResolvedComputedColumn`s that define the
     /// grouping keys; each one's `column()` is the `ResolvedColumn` naming it.
     fn node_group_by_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_AGGREGATE_SCAN_BASE,
-            MID_GROUP_BY_LIST,
-            &pb::handle_arg(node),
-        )?;
+        self.node_computed_column_names(node, MID_GROUP_BY_LIST)
+    }
+
+    /// Reads the names of a `ResolvedAggregateScan`'s aggregate output columns.
+    ///
+    /// `aggregate_list()` yields the `ResolvedComputedColumn`s that define the
+    /// aggregate results (one per aggregate in the `SELECT`/`HAVING`); each
+    /// one's `column()` is the `ResolvedColumn` naming it (a synthetic name such
+    /// as `$agg1`).
+    fn node_aggregate_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
+        self.node_computed_column_names(node, MID_AGGREGATE_LIST)
+    }
+
+    /// Reads the column names from a `ResolvedAggregateScanBase` computed-column
+    /// list (its `GroupByList` or `AggregateList`), selected by `mid`.
+    ///
+    /// Each entry is a `ResolvedComputedColumn` whose `column()` is the
+    /// `ResolvedColumn` naming it.
+    fn node_computed_column_names(&mut self, node: u64, mid: i32) -> Result<Vec<String>, Error> {
+        let resp = self.invoke(SVC_RESOLVED_AGGREGATE_SCAN_BASE, mid, &pb::handle_arg(node))?;
         check_error(&resp)?;
         pb::read_handles_at_field(&resp, 1)
             .into_iter()
