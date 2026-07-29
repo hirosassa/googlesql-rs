@@ -26,7 +26,12 @@ const SVC_ANALYZER_OPTIONS: i32 = 554;
 const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
 const MID_SET_PRUNE_UNUSED_COLUMNS: i32 = 80;
 const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
+const MID_SET_PARSE_LOCATION_RECORD_TYPE: i32 = 77;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
+
+/// `ParseLocationRecordType::PARSE_LOCATION_RECORD_FULL_NODE_SCOPE`: record a
+/// source byte range for every resolved node that maps to one.
+const PARSE_LOCATION_RECORD_FULL_NODE_SCOPE: i32 = 2;
 
 const SVC_TYPE_FACTORY: i32 = 1419;
 const MID_NEW_TYPE_FACTORY: i32 = 0;
@@ -152,6 +157,19 @@ pub struct TableDef {
     pub columns: Vec<ColumnDef>,
 }
 
+/// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
+///
+/// Each entry point requests only what it needs so the others stay unaffected:
+/// column pruning for [`Module::referenced_tables`], parse-location recording
+/// for [`Module::resolved_tree`].
+#[derive(Clone, Copy, Default)]
+struct AnalysisOptions {
+    /// Expose only the columns the query references on each table scan.
+    prune_columns: bool,
+    /// Record a source byte range on each resolved node.
+    record_parse_locations: bool,
+}
+
 impl Module {
     /// Analyzes a SQL statement against an empty catalog.
     ///
@@ -173,7 +191,7 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<(), Error> {
-        self.run_analysis(sql, tables, false, |_, _| Ok(()))
+        self.run_analysis(sql, tables, AnalysisOptions::default(), |_, _| Ok(()))
     }
 
     /// Analyzes a query and returns its resolved output schema.
@@ -188,7 +206,12 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<Vec<OutputColumn>, Error> {
-        self.run_analysis(sql, tables, false, Self::output_columns)
+        self.run_analysis(
+            sql,
+            tables,
+            AnalysisOptions::default(),
+            Self::output_columns,
+        )
     }
 
     /// Analyzes a query and returns the tables it reads, each with the columns
@@ -203,7 +226,11 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<Vec<TableRef>, Error> {
-        self.run_analysis(sql, tables, true, Self::referenced_tables_of)
+        let opts = AnalysisOptions {
+            prune_columns: true,
+            ..AnalysisOptions::default()
+        };
+        self.run_analysis(sql, tables, opts, Self::referenced_tables_of)
     }
 
     /// Analyzes a statement and returns its resolved AST as a self-contained tree.
@@ -217,7 +244,11 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<Option<ResolvedNode>, Error> {
-        self.run_analysis(sql, tables, false, Self::resolved_tree_of)
+        let opts = AnalysisOptions {
+            record_parse_locations: true,
+            ..AnalysisOptions::default()
+        };
+        self.run_analysis(sql, tables, opts, Self::resolved_tree_of)
     }
 
     /// Runs the full analysis pipeline, invoking `extract` on the resulting
@@ -236,7 +267,7 @@ impl Module {
         &mut self,
         sql: &str,
         tables: &[TableDef],
-        prune_columns: bool,
+        opts: AnalysisOptions,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
         self.with_frees(move |module| {
@@ -247,7 +278,7 @@ impl Module {
                 SVC_ANALYZER_OPTIONS,
                 MID_FREE_ANALYZER_OPTIONS,
             )?;
-            module.configure_options(options.ptr(), prune_columns)?;
+            module.configure_options(options.ptr(), opts)?;
             module.analyze_with_options(sql, options.ptr(), tables, extract)
         })
     }
@@ -256,11 +287,19 @@ impl Module {
     /// statement using `@param` resolves (with the parameter's type inferred from
     /// context) instead of erroring; this leaves parameter-free statements
     /// unaffected. Enables column pruning when requested so table scans expose
-    /// only referenced columns.
-    fn configure_options(&mut self, options: u64, prune_columns: bool) -> Result<(), Error> {
+    /// only referenced columns, and parse-location recording so resolved nodes
+    /// carry their source byte range.
+    fn configure_options(&mut self, options: u64, opts: AnalysisOptions) -> Result<(), Error> {
         self.set_options_bool(options, MID_SET_ALLOW_UNDECLARED_PARAMETERS, true)?;
-        if prune_columns {
+        if opts.prune_columns {
             self.set_options_bool(options, MID_SET_PRUNE_UNUSED_COLUMNS, true)?;
+        }
+        if opts.record_parse_locations {
+            self.set_options_int32(
+                options,
+                MID_SET_PARSE_LOCATION_RECORD_TYPE,
+                PARSE_LOCATION_RECORD_FULL_NODE_SCOPE,
+            )?;
         }
         Ok(())
     }
@@ -270,6 +309,15 @@ impl Module {
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, options);
         pb::append_bool(&mut req, 2, value);
+        let resp = self.invoke(SVC_ANALYZER_OPTIONS, mid, &req)?;
+        check_error(&resp)
+    }
+
+    /// Sets one enum/int32 option on an `AnalyzerOptions` handle.
+    fn set_options_int32(&mut self, options: u64, mid: i32, value: i32) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, options);
+        pb::append_int32(&mut req, 2, value);
         let resp = self.invoke(SVC_ANALYZER_OPTIONS, mid, &req)?;
         check_error(&resp)
     }

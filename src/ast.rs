@@ -120,6 +120,20 @@ impl Module {
     fn node_byte_range(&mut self, node_ptr: u64) -> Result<Option<Range<usize>>, Error> {
         let start_point = self.rpc_handle(SVC_AST_NODE_BASE, MID_START_LOCATION, node_ptr)?;
         let end_point = self.rpc_handle(SVC_AST_NODE_BASE, MID_END_LOCATION, node_ptr)?;
+        self.byte_range_from_points(start_point, end_point)
+    }
+
+    /// Converts a pair of `ParseLocationPoint` handles into a source byte range.
+    ///
+    /// Returns `None` when either point is null or the offsets do not form a
+    /// valid forward range (a negative offset or `end` before `start`), so
+    /// callers can treat "no usable location" uniformly. Shared by the parser
+    /// AST and the resolved AST, which obtain the two points differently.
+    pub(crate) fn byte_range_from_points(
+        &mut self,
+        start_point: u64,
+        end_point: u64,
+    ) -> Result<Option<Range<usize>>, Error> {
         if start_point == 0 || end_point == 0 {
             return Ok(None);
         }

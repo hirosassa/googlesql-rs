@@ -595,6 +595,65 @@ fn non_function_nodes_have_no_distinct_flag() {
     assert!(root.distinct().is_none());
 }
 
+/// Collects the parse-location text of every node that carries one.
+fn collect_parse_texts<'a>(node: &ResolvedNode, sql: &'a str, out: &mut Vec<&'a str>) {
+    if let Some(range) = node.parse_location() {
+        out.push(&sql[range]);
+    }
+    for child in node.children() {
+        collect_parse_texts(child, sql, out);
+    }
+}
+
+#[test]
+fn resolved_nodes_carry_their_parse_location() {
+    let mut module = Module::new().unwrap();
+
+    let sql = "SELECT id FROM users";
+    let root = module
+        .resolved_tree(sql, &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let mut texts = Vec::new();
+    collect_parse_texts(&root, sql, &mut texts);
+
+    assert!(
+        !texts.is_empty(),
+        "at least one resolved node should carry a parse location"
+    );
+    // The table scan spans its source table name.
+    assert!(
+        texts.contains(&"users"),
+        "expected a node whose parse location spans `users`, got {texts:?}"
+    );
+}
+
+#[test]
+fn parse_location_is_none_without_a_recorded_range() {
+    let mut module = Module::new().unwrap();
+
+    // A literal-only query still resolves; every reported range must be a valid
+    // slice of the source, and nodes without a recorded location report `None`.
+    let sql = "SELECT 42";
+    let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+
+    for_each_node(&root, &mut |node| {
+        if let Some(range) = node.parse_location() {
+            assert!(range.start <= range.end, "range must be well-formed");
+            assert!(range.end <= sql.len(), "range must stay within the source");
+        }
+    });
+}
+
+/// Applies `f` to `node` and every descendant.
+fn for_each_node(node: &ResolvedNode, f: &mut impl FnMut(&ResolvedNode)) {
+    f(node);
+    for child in node.children() {
+        for_each_node(child, f);
+    }
+}
+
 #[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
