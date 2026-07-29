@@ -37,6 +37,7 @@ const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
 const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
 const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
 const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
+const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -469,6 +470,7 @@ pub struct ResolvedNode {
     struct_field_index: Option<i32>,
     array_element_name: Option<String>,
     project_columns: Option<Vec<String>>,
+    computed_column_name: Option<String>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -666,6 +668,14 @@ impl ResolvedNode {
     /// or `None` if it is not a `ResolvedProjectScan`.
     pub fn project_columns(&self) -> Option<&[String]> {
         self.project_columns.as_deref()
+    }
+
+    /// The name of the column this node defines (the `n` in `id + 1 AS n`), or
+    /// `None` if it is not a `ResolvedComputedColumn`. A computed column pairs a
+    /// `SELECT`- or `GROUP BY`-list expression with the column that names its
+    /// result; this is that column's name.
+    pub fn computed_column_name(&self) -> Option<&str> {
+        self.computed_column_name.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -919,6 +929,11 @@ impl Module {
         } else {
             None
         };
+        let computed_column_name = if kind == KIND_COMPUTED_COLUMN {
+            Some(self.node_computed_column_name(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -965,6 +980,7 @@ impl Module {
             struct_field_index,
             array_element_name,
             project_columns,
+            computed_column_name,
             parse_location,
             children,
         })
@@ -1224,15 +1240,21 @@ impl Module {
         check_error(&resp)?;
         pb::read_handles_at_field(&resp, 1)
             .into_iter()
-            .map(|computed| {
-                let column = self.rpc_handle(
-                    SVC_RESOLVED_COMPUTED_COLUMN,
-                    MID_COMPUTED_COLUMN_COLUMN,
-                    computed,
-                )?;
-                self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
-            })
+            .map(|computed| self.node_computed_column_name(computed))
             .collect()
+    }
+
+    /// Reads the name of the column a single `ResolvedComputedColumn` defines.
+    ///
+    /// `column()` yields the `ResolvedColumn` naming the computed result; its
+    /// `Name` is that column's name (the `n` in `id + 1 AS n`).
+    fn node_computed_column_name(&mut self, computed: u64) -> Result<String, Error> {
+        let column = self.rpc_handle(
+            SVC_RESOLVED_COMPUTED_COLUMN,
+            MID_COMPUTED_COLUMN_COLUMN,
+            computed,
+        )?;
+        self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
     }
 
     /// Reads the `LIMIT`/`OFFSET` row counts of a `ResolvedLimitOffsetScan`.

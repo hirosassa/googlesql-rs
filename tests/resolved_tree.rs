@@ -1726,3 +1726,32 @@ fn non_project_scan_nodes_have_no_projected_columns() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.project_columns(), None);
 }
+
+#[test]
+fn computed_column_reports_the_column_it_defines() {
+    let mut module = Module::new().unwrap();
+
+    // `id + 1 AS n` becomes a ResolvedComputedColumn defining the column `n`.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS n FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let computed =
+        find_kind(&root, "ResolvedComputedColumn").expect("the projection computes a column");
+    assert_eq!(computed.computed_column_name(), Some("n"));
+}
+
+#[test]
+fn non_computed_column_nodes_have_no_computed_column_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root does not define a computed column.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.computed_column_name(), None);
+}
