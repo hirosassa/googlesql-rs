@@ -29,6 +29,7 @@ const KIND_CAST: &str = "ResolvedCast";
 const KIND_PARAMETER: &str = "ResolvedParameter";
 const KIND_JOIN_SCAN: &str = "ResolvedJoinScan";
 const KIND_ORDER_BY_ITEM: &str = "ResolvedOrderByItem";
+const KIND_SET_OPERATION_SCAN: &str = "ResolvedSetOperationScan";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -80,6 +81,19 @@ const JOIN_TYPE_FULL: i32 = 4;
 /// `ResolvedOrderByItem`: `IsDescending` is whether the item sorts `DESC`.
 const SVC_RESOLVED_ORDER_BY_ITEM: i32 = 1177;
 const MID_IS_DESCENDING: i32 = 11;
+
+/// `ResolvedSetOperationScan`: `OpType` is the set operator, as a
+/// `ResolvedSetOperationScanEnums::SetOperationType` (1=UNION ALL,
+/// 2=UNION DISTINCT, 3=INTERSECT ALL, 4=INTERSECT DISTINCT, 5=EXCEPT ALL,
+/// 6=EXCEPT DISTINCT).
+const SVC_RESOLVED_SET_OPERATION_SCAN: i32 = 1261;
+const MID_OP_TYPE: i32 = 16;
+const OP_TYPE_UNION_ALL: i32 = 1;
+const OP_TYPE_UNION_DISTINCT: i32 = 2;
+const OP_TYPE_INTERSECT_ALL: i32 = 3;
+const OP_TYPE_INTERSECT_DISTINCT: i32 = 4;
+const OP_TYPE_EXCEPT_ALL: i32 = 5;
+const OP_TYPE_EXCEPT_DISTINCT: i32 = 6;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -241,6 +255,28 @@ pub enum JoinType {
     Full,
 }
 
+/// The kind of a `ResolvedSetOperationScan`.
+///
+/// Each SQL set operator has an `ALL` form (keeps duplicates) and a `DISTINCT`
+/// form (removes them); a bare `UNION`/`INTERSECT`/`EXCEPT` is the `DISTINCT`
+/// form. Marked `#[non_exhaustive]` for parity with [`JoinType`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SetOperation {
+    /// `UNION ALL`.
+    UnionAll,
+    /// `UNION [DISTINCT]`.
+    UnionDistinct,
+    /// `INTERSECT ALL`.
+    IntersectAll,
+    /// `INTERSECT [DISTINCT]`.
+    IntersectDistinct,
+    /// `EXCEPT ALL`.
+    ExceptAll,
+    /// `EXCEPT [DISTINCT]`.
+    ExceptDistinct,
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
@@ -265,6 +301,7 @@ pub struct ResolvedNode {
     distinct: Option<bool>,
     join_type: Option<JoinType>,
     is_descending: Option<bool>,
+    set_operation: Option<SetOperation>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -363,6 +400,13 @@ impl ResolvedNode {
     /// without `ASC`/`DESC` reports `Some(false)`.
     pub const fn is_descending(&self) -> Option<bool> {
         self.is_descending
+    }
+
+    /// The set operator this node applies (`UNION`/`INTERSECT`/`EXCEPT`, in its
+    /// `ALL` or `DISTINCT` form), or `None` if it is not a
+    /// `ResolvedSetOperationScan`.
+    pub const fn set_operation(&self) -> Option<SetOperation> {
+        self.set_operation
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -540,6 +584,11 @@ impl Module {
         } else {
             None
         };
+        let set_operation = if kind == KIND_SET_OPERATION_SCAN {
+            Some(self.node_set_operation(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -572,6 +621,7 @@ impl Module {
             distinct,
             join_type,
             is_descending,
+            set_operation,
             parse_location,
             children,
         })
@@ -682,6 +732,31 @@ impl Module {
         )?;
         check_error(&resp)?;
         Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Reads the set operator of a `ResolvedSetOperationScan`.
+    ///
+    /// `op_type()` is a `ResolvedSetOperationScanEnums::SetOperationType`. As
+    /// with a join kind, the value always names a concrete operator (no zero
+    /// default), so an unrecognized or missing value is surfaced as an error.
+    fn node_set_operation(&mut self, node: u64) -> Result<SetOperation, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_SET_OPERATION_SCAN,
+            MID_OP_TYPE,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(OP_TYPE_UNION_ALL) => Ok(SetOperation::UnionAll),
+            Some(OP_TYPE_UNION_DISTINCT) => Ok(SetOperation::UnionDistinct),
+            Some(OP_TYPE_INTERSECT_ALL) => Ok(SetOperation::IntersectAll),
+            Some(OP_TYPE_INTERSECT_DISTINCT) => Ok(SetOperation::IntersectDistinct),
+            Some(OP_TYPE_EXCEPT_ALL) => Ok(SetOperation::ExceptAll),
+            Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
+            other => Err(Error::GoogleSql(format!(
+                "unknown set operation: {other:?}"
+            ))),
+        }
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
