@@ -30,10 +30,20 @@ const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
 const SVC_TYPE_FACTORY: i32 = 1419;
 const MID_NEW_TYPE_FACTORY: i32 = 0;
 const MID_FREE_TYPE_FACTORY: i32 = 62;
+const MID_GET_BIGNUMERIC: i32 = 41;
 const MID_GET_BOOL: i32 = 42;
+const MID_GET_BYTES: i32 = 43;
+const MID_GET_DATE: i32 = 44;
+const MID_GET_DATETIME: i32 = 45;
 const MID_GET_DOUBLE: i32 = 46;
+const MID_GET_GEOGRAPHY: i32 = 48;
 const MID_GET_INT64: i32 = 50;
+const MID_GET_INTERVAL: i32 = 51;
+const MID_GET_JSON: i32 = 52;
+const MID_GET_NUMERIC: i32 = 53;
 const MID_GET_STRING: i32 = 54;
+const MID_GET_TIME: i32 = 55;
+const MID_GET_TIMESTAMP: i32 = 56;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -64,7 +74,12 @@ const MID_FREE_ANALYZER_OUTPUT: i32 = 11;
 ///
 /// Each variant maps to a `TypeFactory` accessor for the corresponding
 /// GoogleSQL scalar type.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL has more scalar types than are
+/// modelled here; adding a variant later must not be a breaking change for
+/// callers that match on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColumnType {
     /// 64-bit signed integer (`INT64`).
     Int64,
@@ -74,6 +89,26 @@ pub enum ColumnType {
     Bool,
     /// Double-precision float (`FLOAT64`).
     Float64,
+    /// Variable-length bytes (`BYTES`).
+    Bytes,
+    /// Calendar date (`DATE`).
+    Date,
+    /// Date and time with no time zone (`DATETIME`).
+    Datetime,
+    /// Time of day (`TIME`).
+    Time,
+    /// Absolute point in time (`TIMESTAMP`).
+    Timestamp,
+    /// Exact decimal with fixed precision and scale (`NUMERIC`).
+    Numeric,
+    /// Exact decimal with extended precision and scale (`BIGNUMERIC`).
+    BigNumeric,
+    /// JSON value (`JSON`).
+    Json,
+    /// Duration between two points in time (`INTERVAL`).
+    Interval,
+    /// Geospatial value (`GEOGRAPHY`).
+    Geography,
 }
 
 impl ColumnType {
@@ -84,6 +119,16 @@ impl ColumnType {
             Self::String => MID_GET_STRING,
             Self::Bool => MID_GET_BOOL,
             Self::Float64 => MID_GET_DOUBLE,
+            Self::Bytes => MID_GET_BYTES,
+            Self::Date => MID_GET_DATE,
+            Self::Datetime => MID_GET_DATETIME,
+            Self::Time => MID_GET_TIME,
+            Self::Timestamp => MID_GET_TIMESTAMP,
+            Self::Numeric => MID_GET_NUMERIC,
+            Self::BigNumeric => MID_GET_BIGNUMERIC,
+            Self::Json => MID_GET_JSON,
+            Self::Interval => MID_GET_INTERVAL,
+            Self::Geography => MID_GET_GEOGRAPHY,
         }
     }
 }

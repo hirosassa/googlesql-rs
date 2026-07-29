@@ -105,6 +105,52 @@ fn returns_error_for_unknown_column_in_user_table() {
 }
 
 #[test]
+fn resolves_columns_of_each_scalar_type() {
+    let mut module = Module::new().unwrap();
+
+    // Each ColumnType maps to a TypeFactory getter; registering a column of that
+    // type and reading back the resolved output column's type name proves the
+    // round-trip (SQL type name == the type we asked the factory for).
+    let cases = [
+        (ColumnType::Bytes, "BYTES"),
+        (ColumnType::Date, "DATE"),
+        (ColumnType::Datetime, "DATETIME"),
+        (ColumnType::Time, "TIME"),
+        (ColumnType::Timestamp, "TIMESTAMP"),
+        (ColumnType::Numeric, "NUMERIC"),
+        (ColumnType::BigNumeric, "BIGNUMERIC"),
+        (ColumnType::Json, "JSON"),
+        (ColumnType::Interval, "INTERVAL"),
+        (ColumnType::Geography, "GEOGRAPHY"),
+    ];
+
+    for (ty, expected) in cases {
+        let table = TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "c".to_string(),
+                ty,
+            }],
+        };
+
+        let columns = module
+            .analyze_output_columns("SELECT c FROM t", &[table])
+            .unwrap_or_else(|e| panic!("analysis failed for {expected}: {e:?}"));
+
+        assert_eq!(
+            columns.len(),
+            1,
+            "expected one output column for {expected}"
+        );
+        assert_eq!(
+            columns[0].type_name(),
+            expected,
+            "resolved type name mismatch for {expected}"
+        );
+    }
+}
+
+#[test]
 fn analyze_statement_with_empty_catalog_matches_phase_one() {
     let mut module = Module::new().unwrap();
 
