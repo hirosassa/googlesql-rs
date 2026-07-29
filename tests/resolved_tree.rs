@@ -3,7 +3,7 @@
 
 use googlesql::{
     ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, SetOperation,
-    TableDef,
+    SubqueryKind, TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -977,4 +977,64 @@ fn non_limit_offset_nodes_have_no_limit_offset() {
     // The statement root is not a limit/offset scan.
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert!(root.limit_offset().is_none());
+}
+
+/// Resolves `sql` and returns the kind reported by the first
+/// `ResolvedSubqueryExpr` in the tree.
+fn subquery_kind_of(sql: &str) -> SubqueryKind {
+    let mut module = Module::new().unwrap();
+    let root = module
+        .resolved_tree(sql, &[users_table(), orders_table()])
+        .unwrap()
+        .unwrap();
+    find_kind(&root, "ResolvedSubqueryExpr")
+        .expect("the query contains a subquery expression")
+        .subquery_kind()
+        .expect("a ResolvedSubqueryExpr node exposes its kind")
+}
+
+#[test]
+fn scalar_subquery_reports_scalar() {
+    assert_eq!(
+        subquery_kind_of("SELECT (SELECT id FROM users LIMIT 1) AS x FROM users"),
+        SubqueryKind::Scalar
+    );
+}
+
+#[test]
+fn array_subquery_reports_array() {
+    assert_eq!(
+        subquery_kind_of("SELECT ARRAY(SELECT user_id FROM orders) AS a FROM users"),
+        SubqueryKind::Array
+    );
+}
+
+#[test]
+fn exists_subquery_reports_exists() {
+    assert_eq!(
+        subquery_kind_of("SELECT id FROM users WHERE EXISTS(SELECT 1 FROM orders)"),
+        SubqueryKind::Exists
+    );
+}
+
+#[test]
+fn in_subquery_reports_in() {
+    assert_eq!(
+        subquery_kind_of("SELECT id FROM users WHERE id IN (SELECT user_id FROM orders)"),
+        SubqueryKind::In
+    );
+}
+
+#[test]
+fn non_subquery_nodes_have_no_subquery_kind() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a subquery expression.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.subquery_kind().is_none());
 }
