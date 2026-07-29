@@ -36,6 +36,7 @@ const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
 const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
 const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
 const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
+const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -467,6 +468,7 @@ pub struct ResolvedNode {
     is_value_table: Option<bool>,
     struct_field_index: Option<i32>,
     array_element_name: Option<String>,
+    project_columns: Option<Vec<String>>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -657,6 +659,13 @@ impl ResolvedNode {
     /// `UNNEST(...) AS x`), or `None` if this node is not a `ResolvedArrayScan`.
     pub fn array_element_name(&self) -> Option<&str> {
         self.array_element_name.as_deref()
+    }
+
+    /// The names of the columns this node's projection produces — both columns
+    /// passed through from its input and columns computed by the `SELECT` list —
+    /// or `None` if it is not a `ResolvedProjectScan`.
+    pub fn project_columns(&self) -> Option<&[String]> {
+        self.project_columns.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -905,6 +914,11 @@ impl Module {
         } else {
             None
         };
+        let project_columns = if kind == KIND_PROJECT_SCAN {
+            Some(self.node_scan_columns(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -950,6 +964,7 @@ impl Module {
             is_value_table,
             struct_field_index,
             array_element_name,
+            project_columns,
             parse_location,
             children,
         })
@@ -1009,10 +1024,11 @@ impl Module {
         self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
     }
 
-    /// Reads the names of the columns a `ResolvedTableScan` produces.
+    /// Reads the names of the columns any `ResolvedScan` produces.
     ///
-    /// `column_list()` yields the scan's `ResolvedColumn`s (unpruned, so every
-    /// table column); each column's `Name` is its name within the table.
+    /// `column_list()` is defined on the `ResolvedScan` base, so this serves both
+    /// a table scan (its table columns, unpruned) and a project scan (the columns
+    /// its `SELECT` list produces); each column's `Name` is read in turn.
     fn node_scan_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
         let resp = self.invoke(
             SVC_RESOLVED_SCAN,

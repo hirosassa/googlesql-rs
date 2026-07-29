@@ -1694,3 +1694,35 @@ fn non_array_scan_nodes_have_no_element_column_name() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.array_element_name(), None);
 }
+
+#[test]
+fn project_scan_reports_its_projected_columns() {
+    let mut module = Module::new().unwrap();
+
+    // The projection computes a new column `n`, which appears in its column list.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS n FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let project =
+        find_kind(&root, "ResolvedProjectScan").expect("the query projects an expression");
+    let columns = project
+        .project_columns()
+        .expect("a project scan lists its columns");
+    assert!(columns.contains(&"n".to_string()));
+}
+
+#[test]
+fn non_project_scan_nodes_have_no_projected_columns() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a project scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.project_columns(), None);
+}
