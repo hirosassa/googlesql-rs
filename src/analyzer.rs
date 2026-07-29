@@ -17,7 +17,7 @@
 use crate::error::Error;
 use crate::pb;
 use crate::resolved::{OutputColumn, ResolvedNode, TableRef};
-use crate::runtime::Module;
+use crate::runtime::{Handle, Module};
 
 const SVC_ANALYZER: i32 = 0;
 const MID_ANALYZE_STATEMENT: i32 = 2;
@@ -181,7 +181,11 @@ impl Module {
     /// references; this matters only for extractors that inspect scan columns
     /// (i.e. lineage), so the schema/success APIs leave it off.
     ///
-    /// Frees the `AnalyzerOptions` handle regardless of success or failure.
+    /// Every wasm-side handle acquired during the analysis is an RAII [`Handle`]
+    /// that enqueues its own free on drop; a single [`flush_frees`](Module::flush_frees)
+    /// here releases them all, whether the analysis succeeded or failed. All the
+    /// handles stay alive until `extract` returns, so it reads the `AnalyzerOutput`
+    /// (and the catalog/type factory that own its nodes and types) intact.
     fn run_analysis<T>(
         &mut self,
         sql: &str,
@@ -189,21 +193,33 @@ impl Module {
         prune_columns: bool,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let options = self.new_handle(SVC_ANALYZER_OPTIONS, MID_NEW_ANALYZER_OPTIONS, &[])?;
-
-        // Free the options handle regardless of analysis success or failure.
-        let result = match self.configure_options(options, prune_columns) {
-            Ok(()) => self.analyze_with_options(sql, options, tables, extract),
-            Err(e) => Err(e),
-        };
-        let freed = self.invoke(
-            SVC_ANALYZER_OPTIONS,
-            MID_FREE_ANALYZER_OPTIONS,
-            &pb::handle_arg(options),
-        );
+        let result = self.run_analysis_inner(sql, tables, prune_columns, extract);
+        let freed = self.flush_frees();
         let value = result?;
         freed?;
         Ok(value)
+    }
+
+    /// Builds the analyzer handles and runs the analysis, leaving handle cleanup
+    /// to the caller's [`flush_frees`](Module::flush_frees). Handles drop (and so
+    /// enqueue their frees) as this call's frames unwind, on success and error
+    /// alike; keeping `options` bound here holds it alive across the whole chain.
+    fn run_analysis_inner<T>(
+        &mut self,
+        sql: &str,
+        tables: &[TableDef],
+        prune_columns: bool,
+        extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let options = self.acquire_handle(
+            SVC_ANALYZER_OPTIONS,
+            MID_NEW_ANALYZER_OPTIONS,
+            &[],
+            SVC_ANALYZER_OPTIONS,
+            MID_FREE_ANALYZER_OPTIONS,
+        )?;
+        self.configure_options(options.ptr(), prune_columns)?;
+        self.analyze_with_options(sql, options.ptr(), tables, extract)
     }
 
     /// Applies analysis options, enabling column pruning when requested so table
@@ -219,8 +235,9 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Builds the `TypeFactory` handle and runs the analysis against it,
-    /// freeing the factory regardless of success or failure.
+    /// Builds the `TypeFactory` handle and runs the analysis against it. The
+    /// factory outlives the analysis (it owns the resolved output's types) and is
+    /// freed by the top-level [`flush_frees`](Module::flush_frees).
     fn analyze_with_options<T>(
         &mut self,
         sql: &str,
@@ -228,22 +245,20 @@ impl Module {
         tables: &[TableDef],
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let type_factory = self.new_handle(SVC_TYPE_FACTORY, MID_NEW_TYPE_FACTORY, &[])?;
-
-        let result = self.analyze_with_catalog(sql, options, type_factory, tables, extract);
-        let freed = self.invoke(
+        let type_factory = self.acquire_handle(
+            SVC_TYPE_FACTORY,
+            MID_NEW_TYPE_FACTORY,
+            &[],
             SVC_TYPE_FACTORY,
             MID_FREE_TYPE_FACTORY,
-            &pb::handle_arg(type_factory),
-        );
-        let value = result?;
-        freed?;
-        Ok(value)
+        )?;
+        self.analyze_with_catalog(sql, options, type_factory.ptr(), tables, extract)
     }
 
     /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with
-    /// `tables`, and runs the analysis, freeing the catalog regardless of
-    /// success or failure.
+    /// `tables`, and runs the analysis. The catalog outlives the analysis (it
+    /// owns the resolved output's nodes) and is freed by the top-level
+    /// [`flush_frees`](Module::flush_frees).
     fn analyze_with_catalog<T>(
         &mut self,
         sql: &str,
@@ -255,27 +270,20 @@ impl Module {
         let mut catalog_req = Vec::new();
         pb::append_string(&mut catalog_req, 1, "");
         pb::append_handle(&mut catalog_req, 2, type_factory);
-        let catalog = self.new_handle(SVC_SIMPLE_CATALOG, MID_NEW_SIMPLE_CATALOG, &catalog_req)?;
-
-        let analyzed = match self.add_builtin_functions(catalog) {
-            Ok(()) => {
-                self.populate_and_analyze(sql, options, catalog, type_factory, tables, extract)
-            }
-            Err(e) => Err(e),
-        };
-        let freed = self.invoke(
+        let catalog = self.acquire_handle(
+            SVC_SIMPLE_CATALOG,
+            MID_NEW_SIMPLE_CATALOG,
+            &catalog_req,
             SVC_SIMPLE_CATALOG,
             MID_FREE_SIMPLE_CATALOG,
-            &pb::handle_arg(catalog),
-        );
-        let value = analyzed?;
-        freed?;
-        Ok(value)
+        )?;
+        self.add_builtin_functions(catalog.ptr())?;
+        self.populate_and_analyze(sql, options, catalog.ptr(), type_factory, tables, extract)
     }
 
-    /// Registers `tables` into `catalog`, runs the analysis, then frees the
-    /// created `SimpleTable` handles (which own their columns) regardless of
-    /// analysis success or failure.
+    /// Registers `tables` into `catalog` and runs the analysis. The created
+    /// `SimpleTable` handles (which own their columns) stay alive until `extract`
+    /// returns and are freed by the top-level [`flush_frees`](Module::flush_frees).
     fn populate_and_analyze<T>(
         &mut self,
         sql: &str,
@@ -285,62 +293,50 @@ impl Module {
         tables: &[TableDef],
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let table_handles = self.add_tables(catalog, type_factory, tables)?;
-
-        let analyzed = self.analyze(sql, options, catalog, type_factory, extract);
-        let freed = self.free_tables(&table_handles);
-        let value = analyzed?;
-        freed?;
-        Ok(value)
+        let _table_handles = self.add_tables(catalog, type_factory, tables)?;
+        self.analyze(sql, options, catalog, type_factory, extract)
     }
 
     /// Registers each table into `catalog`, returning the created `SimpleTable`
-    /// handles. On any failure the handles created so far are freed before the
-    /// error is returned.
+    /// handles so the caller keeps them alive across the analysis. A failure part
+    /// way through drops the handles built so far, enqueueing their frees.
     fn add_tables(
         &mut self,
         catalog: u64,
         type_factory: u64,
         tables: &[TableDef],
-    ) -> Result<Vec<u64>, Error> {
+    ) -> Result<Vec<Handle>, Error> {
         let mut handles = Vec::with_capacity(tables.len());
         for table in tables {
-            match self.add_table(catalog, type_factory, table) {
-                Ok(handle) => handles.push(handle),
-                Err(e) => {
-                    let _ = self.free_tables(&handles);
-                    return Err(e);
-                }
-            }
+            handles.push(self.add_table(catalog, type_factory, table)?);
         }
         Ok(handles)
     }
 
     /// Creates a `SimpleTable`, adds its columns, and registers it under its
-    /// name in `catalog`. On failure the partially built table is freed and the
-    /// error is returned; on success the table handle is returned for the caller
-    /// to free after analysis.
+    /// name in `catalog`, returning the table handle for the caller to keep alive
+    /// across the analysis. On failure the partially built table's handle drops,
+    /// enqueueing its free.
     fn add_table(
         &mut self,
         catalog: u64,
         type_factory: u64,
         table: &TableDef,
-    ) -> Result<u64, Error> {
+    ) -> Result<Handle, Error> {
         let mut table_req = Vec::new();
         pb::append_string(&mut table_req, 1, &table.name);
         pb::append_uint64(&mut table_req, 2, 0); // serialization id (unused)
-        let handle = self.new_handle(SVC_SIMPLE_TABLE, MID_NEW_SIMPLE_TABLE, &table_req)?;
+        let handle = self.acquire_handle(
+            SVC_SIMPLE_TABLE,
+            MID_NEW_SIMPLE_TABLE,
+            &table_req,
+            SVC_SIMPLE_TABLE,
+            MID_FREE_SIMPLE_TABLE,
+        )?;
 
-        let built = self
-            .add_columns(handle, type_factory, &table.name, &table.columns)
-            .and_then(|()| self.register_table(catalog, &table.name, handle));
-        match built {
-            Ok(()) => Ok(handle),
-            Err(e) => {
-                let _ = self.free_tables(&[handle]);
-                Err(e)
-            }
-        }
+        self.add_columns(handle.ptr(), type_factory, &table.name, &table.columns)?;
+        self.register_table(catalog, &table.name, handle.ptr())?;
+        Ok(handle)
     }
 
     /// Adds each column to `table`, transferring ownership so freeing the table
@@ -401,39 +397,19 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Frees every `SimpleTable` handle, returning the first error encountered
-    /// after attempting to free all of them.
-    fn free_tables(&mut self, handles: &[u64]) -> Result<(), Error> {
-        let mut first_error = None;
-        for &handle in handles {
-            let freed = self.invoke(
-                SVC_SIMPLE_TABLE,
-                MID_FREE_SIMPLE_TABLE,
-                &pb::handle_arg(handle),
-            );
-            if let (Err(e), None) = (freed, &first_error) {
-                first_error = Some(e);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
     /// Registers GoogleSQL's builtin functions and types (with default language
     /// options) into `catalog`, so operators like `+` and standard functions
     /// resolve during analysis.
     fn add_builtin_functions(&mut self, catalog: u64) -> Result<(), Error> {
-        let language = self.new_handle(SVC_LANGUAGE_OPTIONS, MID_NEW_LANGUAGE_OPTIONS, &[])?;
-
-        // Free the LanguageOptions handle regardless of registration success.
-        let added = self.add_builtins_with_language(catalog, language);
-        let freed = self.invoke(
+        let language = self.acquire_handle(
+            SVC_LANGUAGE_OPTIONS,
+            MID_NEW_LANGUAGE_OPTIONS,
+            &[],
             SVC_LANGUAGE_OPTIONS,
             MID_FREE_LANGUAGE_OPTIONS,
-            &pb::handle_arg(language),
-        );
-        added?;
-        freed?;
-        Ok(())
+        )?;
+        // `language` is consumed here; the top-level flush frees it afterwards.
+        self.add_builtins_with_language(catalog, language.ptr())
     }
 
     /// Invokes `AddBuiltinFunctionsAndTypes` with a `BuiltinFunctionOptions`
@@ -476,24 +452,17 @@ impl Module {
         let resp = self.invoke(SVC_ANALYZER, MID_ANALYZE_STATEMENT, &req)?;
         check_error(&resp)?;
 
-        let output = pb::read_handle_at_field(&resp, 2);
-        if output == 0 {
+        let output_ptr = pb::read_handle_at_field(&resp, 2);
+        if output_ptr == 0 {
             return extract(self, 0);
         }
 
         // Run the extractor while the output (and the catalog/type factory that
-        // own its nodes and types) is still alive, then free it. Any nodes the
-        // extractor visits are borrowed pointers into that tree, so none are
-        // freed here.
-        let extracted = extract(self, output);
-        let freed = self.invoke(
-            SVC_ANALYZER_OUTPUT,
-            MID_FREE_ANALYZER_OUTPUT,
-            &pb::handle_arg(output),
-        );
-        let value = extracted?;
-        freed?;
-        Ok(value)
+        // own its nodes and types) is still alive; the output is freed by the
+        // top-level flush afterwards. Any nodes the extractor visits are borrowed
+        // pointers into that tree, so none are freed here.
+        let output = self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
+        extract(self, output.ptr())
     }
 
     /// Invokes a constructor and returns the non-null handle from response field 1.
