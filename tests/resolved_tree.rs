@@ -1666,3 +1666,31 @@ fn non_struct_field_nodes_have_no_field_index() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.struct_field_index(), None);
 }
+
+#[test]
+fn array_scan_reports_its_element_column_name() {
+    let mut module = Module::new().unwrap();
+
+    // UNNEST binds each array element to the aliased column `x`.
+    let root = module
+        .resolved_tree("SELECT x FROM UNNEST([1, 2, 3]) AS x", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedArrayScan").expect("UNNEST produces an array scan");
+    assert_eq!(scan.array_element_name(), Some("x"));
+}
+
+#[test]
+fn non_array_scan_nodes_have_no_element_column_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // A query with no UNNEST carries no element column anywhere in its tree.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.array_element_name(), None);
+}
