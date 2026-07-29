@@ -841,6 +841,43 @@ fn non_table_scan_nodes_have_no_scan_columns() {
 }
 
 #[test]
+fn table_scan_nodes_report_their_column_indexes() {
+    let mut module = Module::new().unwrap();
+
+    // Each scanned column maps to its ordinal position in the base table. `users`
+    // declares `id` at 0 and `name` at 1, and `resolved_tree` does not prune, so
+    // the scan lists both indexes in table order.
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan =
+        find_kind(&root, "ResolvedTableScan").expect("`FROM users` produces a ResolvedTableScan");
+    assert_eq!(scan.column_index_list(), Some(&[0, 1][..]));
+
+    // The index list is positionally aligned with the scanned-column names.
+    let columns = scan
+        .scan_columns()
+        .expect("a ResolvedTableScan node lists its columns");
+    assert_eq!(
+        scan.column_index_list().map(<[i32]>::len),
+        Some(columns.len())
+    );
+}
+
+#[test]
+fn non_table_scan_nodes_have_no_column_index_list() {
+    let mut module = Module::new().unwrap();
+
+    // A literal query has no table scan anywhere in its tree.
+    let root = module.resolved_tree("SELECT 1 AS x", &[]).unwrap().unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.column_index_list().is_none());
+}
+
+#[test]
 fn aggregate_distinct_calls_report_distinct() {
     let mut module = Module::new().unwrap();
 

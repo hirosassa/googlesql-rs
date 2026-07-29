@@ -175,21 +175,56 @@ pub fn read_string_at_field(resp: &[u8], field: u32) -> Option<String> {
     None
 }
 
+/// Reinterprets a varint's low 32 bits as an `i32` (proto `int32` decoding), so
+/// a negative value serialized as its 64-bit two's-complement pattern reads back
+/// correctly.
+fn varint_as_i32(v: u64) -> i32 {
+    let low = u32::try_from(v & 0xFFFF_FFFF).unwrap_or(0);
+    i32::from_ne_bytes(low.to_ne_bytes())
+}
+
 /// Reads an int32 (varint) at the given field number from a response.
 pub fn read_int32_at_field(resp: &[u8], field: u32) -> Option<i32> {
     let mut cur = resp;
     while let Some((f, w)) = read_tag(&mut cur) {
         if f == field {
             if w == 0 {
-                let v = read_varint(&mut cur)?;
-                let low = u32::try_from(v & 0xFFFF_FFFF).ok()?;
-                return Some(i32::from_ne_bytes(low.to_ne_bytes()));
+                return read_varint(&mut cur).map(varint_as_i32);
             }
             return None;
         }
         skip(&mut cur, w)?;
     }
     None
+}
+
+/// Reads every int32 stored at the given repeated field number from a response.
+///
+/// GoogleSQL emits repeated `int32` either packed (a single length-delimited run
+/// of varints) or unpacked (one wire-type-0 field per element); this accepts
+/// both, so `column_index_list`-style accessors decode into one value per
+/// element, in order. An absent field yields an empty vector.
+pub fn read_int32s_at_field(resp: &[u8], field: u32) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field && w == 2 {
+            let Some(mut sub) = read_len_prefixed(&mut cur) else {
+                break;
+            };
+            while let Some(v) = read_varint(&mut sub) {
+                out.push(varint_as_i32(v));
+            }
+        } else if f == field && w == 0 {
+            let Some(v) = read_varint(&mut cur) else {
+                break;
+            };
+            out.push(varint_as_i32(v));
+        } else if skip(&mut cur, w).is_none() {
+            break;
+        }
+    }
+    out
 }
 
 /// Reads a bool (varint) at the given field number from a response.
@@ -423,6 +458,27 @@ mod tests {
         let mut neg = Vec::new();
         append_uint64(&mut neg, 1, u64::from(u32::MAX));
         assert_eq!(read_int32_at_field(&neg, 1), Some(-1));
+    }
+
+    #[test]
+    fn repeated_int32s_decode_packed_and_unpacked() {
+        // Packed encoding: a single length-delimited run of varints.
+        let mut inner = Vec::new();
+        append_varint(&mut inner, 0);
+        append_varint(&mut inner, 1);
+        append_varint(&mut inner, 300);
+        let mut packed = Vec::new();
+        append_submessage(&mut packed, 1, &inner);
+        assert_eq!(read_int32s_at_field(&packed, 1), vec![0, 1, 300]);
+
+        // Non-packed encoding: one wire-type-0 field per element.
+        let mut unpacked = Vec::new();
+        append_int32(&mut unpacked, 1, 7);
+        append_int32(&mut unpacked, 1, 8);
+        assert_eq!(read_int32s_at_field(&unpacked, 1), vec![7, 8]);
+
+        // An absent field yields no values.
+        assert!(read_int32s_at_field(&[], 1).is_empty());
     }
 
     #[test]

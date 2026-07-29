@@ -192,9 +192,11 @@ const MID_SCAN_COLUMN_LIST: i32 = 12;
 
 /// `ResolvedTableScan`: `Table` is the catalog table the scan reads, and
 /// `Table::Name` is its catalog name (the physical table, not any query alias).
+/// `ColumnIndexList` maps each scanned column to its ordinal in the base table.
 const SVC_RESOLVED_TABLE_SCAN: i32 = 1295;
 const MID_TABLE_SCAN_TABLE: i32 = 32;
 const MID_TABLE_SCAN_ALIAS: i32 = 10;
+const MID_TABLE_SCAN_COLUMN_INDEX_LIST: i32 = 11;
 const SVC_TABLE: i32 = 1406;
 const MID_TABLE_NAME: i32 = 9;
 
@@ -457,6 +459,7 @@ pub struct ResolvedNode {
     argument_count: Option<usize>,
     scan_columns: Option<Vec<String>>,
     alias: Option<String>,
+    column_index_list: Option<Vec<i32>>,
     distinct: Option<bool>,
     join_type: Option<JoinType>,
     has_using: Option<bool>,
@@ -545,6 +548,14 @@ impl ResolvedNode {
     /// See [`table_name`](Self::table_name) for the underlying table's name.
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    /// The ordinal position of each scanned column within the base table, aligned
+    /// with [`scan_columns`](Self::scan_columns), or `None` if this node is not a
+    /// `ResolvedTableScan`. For example, a scan of a table whose columns are
+    /// `(id, name)` reports `[0, 1]`.
+    pub fn column_index_list(&self) -> Option<&[i32]> {
+        self.column_index_list.as_deref()
     }
 
     /// The source and target types of this node's cast, or `None` if it is not a
@@ -864,6 +875,11 @@ impl Module {
         } else {
             None
         };
+        let column_index_list = if kind == KIND_TABLE_SCAN {
+            Some(self.node_column_index_list(node)?)
+        } else {
+            None
+        };
         let distinct = if kind == KIND_AGGREGATE_FUNCTION_CALL {
             Some(self.node_distinct(node)?)
         } else {
@@ -980,6 +996,7 @@ impl Module {
             argument_count,
             scan_columns,
             alias,
+            column_index_list,
             distinct,
             join_type,
             has_using,
@@ -1101,6 +1118,20 @@ impl Module {
         )?;
         check_error(&resp)?;
         Ok(pb::read_string_at_field(&resp, 1).unwrap_or_default())
+    }
+
+    /// Reads the base-table column indexes a `ResolvedTableScan` reads.
+    ///
+    /// `column_index_list()` is a repeated int32, one ordinal per scanned column
+    /// aligned with `column_list()`. An empty scan yields an empty vector.
+    fn node_column_index_list(&mut self, node: u64) -> Result<Vec<i32>, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_TABLE_SCAN,
+            MID_TABLE_SCAN_COLUMN_INDEX_LIST,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_int32s_at_field(&resp, 1))
     }
 
     /// Reads whether an aggregate function call applies DISTINCT.
