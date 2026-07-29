@@ -24,13 +24,20 @@ const WASM_URL: &str =
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=GOOGLESQL_WASM");
+    println!("cargo::rerun-if-env-changed=DOCS_RS");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let dest = out_dir.join("googlesql.wasm");
 
-    let bytes = resolve_wasm_bytes(&dest)?;
-    verify_sha256(&bytes)?;
-    fs::write(&dest, &bytes)?;
+    // docs.rs builds run offline and only generate documentation — they never
+    // execute the crate, and the wasm is loaded lazily at runtime (not embedded
+    // at compile time). Skip fetching it there so the build doesn't fail on the
+    // network; only the env var below needs to be set for compilation.
+    if env::var_os("DOCS_RS").is_none() {
+        let bytes = resolve_wasm_bytes(&dest)?;
+        verify_sha256(&bytes)?;
+        fs::write(&dest, &bytes)?;
+    }
 
     // Expose the absolute path to the wasm file for use at runtime.
     println!("cargo::rustc-env=GOOGLESQL_WASM_PATH={}", dest.display());

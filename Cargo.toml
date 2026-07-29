@@ -9,6 +9,11 @@ readme = "README.md"
 keywords = ["googlesql", "zetasql", "sql", "parser", "wasm"]
 categories = ["database", "parser-implementations", "api-bindings"]
 
+# docs.rs builds offline; build.rs detects the DOCS_RS env var and skips fetching
+# the wasm, so documentation builds without network access.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 wasmtime = "47"
 wasmtime-wasi = "47"
