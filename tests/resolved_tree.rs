@@ -498,6 +498,47 @@ fn non_function_nodes_have_no_argument_count() {
 }
 
 #[test]
+fn table_scan_nodes_list_their_columns() {
+    let mut module = Module::new().unwrap();
+
+    // The scan over `users` exposes the columns it produces. `resolved_tree` does
+    // not prune, so both table columns appear regardless of what the query reads.
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan =
+        find_kind(&root, "ResolvedTableScan").expect("`FROM users` produces a ResolvedTableScan");
+    let columns = scan
+        .scan_columns()
+        .expect("a ResolvedTableScan node lists its columns");
+
+    assert!(
+        columns.contains(&"id".to_string()),
+        "expected the scan to list `id`, got {columns:?}"
+    );
+    assert!(
+        columns.contains(&"name".to_string()),
+        "expected the scan to list `name`, got {columns:?}"
+    );
+}
+
+#[test]
+fn non_table_scan_nodes_have_no_scan_columns() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a table scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.scan_columns().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 

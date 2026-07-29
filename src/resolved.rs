@@ -212,6 +212,7 @@ pub struct ResolvedNode {
     cast: Option<CastInfo>,
     parameter_name: Option<String>,
     argument_count: Option<usize>,
+    scan_columns: Option<Vec<String>>,
     children: Vec<Self>,
 }
 
@@ -257,6 +258,15 @@ impl ResolvedNode {
     /// `ResolvedTableScan`. This is the physical table's name, not any query alias.
     pub fn table_name(&self) -> Option<&str> {
         self.table_name.as_deref()
+    }
+
+    /// The names of the columns this node's table scan produces, or `None` if it
+    /// is not a `ResolvedTableScan`. Because [`Module::resolved_tree`] does not
+    /// prune columns, this lists every column of the scanned table, not only the
+    /// ones the query references (use [`Module::referenced_tables`] for the
+    /// referenced-only, query-wide view).
+    pub fn scan_columns(&self) -> Option<&[String]> {
+        self.scan_columns.as_deref()
     }
 
     /// The source and target types of this node's cast, or `None` if it is not a
@@ -427,6 +437,11 @@ impl Module {
         } else {
             None
         };
+        let scan_columns = if kind == KIND_TABLE_SCAN {
+            Some(self.node_scan_columns(node)?)
+        } else {
+            None
+        };
         let cast = if kind == KIND_CAST {
             self.node_cast(node, type_name.as_deref())?
         } else {
@@ -453,6 +468,7 @@ impl Module {
             cast,
             parameter_name,
             argument_count,
+            scan_columns,
             children,
         })
     }
@@ -483,6 +499,23 @@ impl Module {
     fn node_table_name(&mut self, node: u64) -> Result<String, Error> {
         let table = self.rpc_handle(SVC_RESOLVED_TABLE_SCAN, MID_TABLE_SCAN_TABLE, node)?;
         self.rpc_string(SVC_TABLE, MID_TABLE_NAME, table)
+    }
+
+    /// Reads the names of the columns a `ResolvedTableScan` produces.
+    ///
+    /// `column_list()` yields the scan's `ResolvedColumn`s (unpruned, so every
+    /// table column); each column's `Name` is its name within the table.
+    fn node_scan_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_SCAN,
+            MID_SCAN_COLUMN_LIST,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        pb::read_handles_at_field(&resp, 1)
+            .into_iter()
+            .map(|column| self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column))
+            .collect()
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
