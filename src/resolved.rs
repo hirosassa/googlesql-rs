@@ -154,9 +154,11 @@ const SVC_RESOLVED_GET_STRUCT_FIELD: i32 = 1025;
 const MID_FIELD_IDX: i32 = 10;
 
 /// `ResolvedArrayScan`: `ElementColumn` is the column each array element is
-/// bound to (the `x` in `UNNEST(...) AS x`).
+/// bound to (the `x` in `UNNEST(...) AS x`); `IsOuter` is whether the scan was
+/// written as a `LEFT JOIN` (keeping input rows with empty arrays).
 const SVC_RESOLVED_ARRAY_SCAN: i32 = 809;
 const MID_ARRAY_SCAN_ELEMENT_COLUMN: i32 = 16;
+const MID_ARRAY_SCAN_IS_OUTER: i32 = 21;
 
 /// `Value` (zetasql::Value): scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
@@ -469,6 +471,7 @@ pub struct ResolvedNode {
     is_value_table: Option<bool>,
     struct_field_index: Option<i32>,
     array_element_name: Option<String>,
+    is_outer: Option<bool>,
     project_columns: Option<Vec<String>>,
     computed_column_name: Option<String>,
     parse_location: Option<Range<usize>>,
@@ -661,6 +664,13 @@ impl ResolvedNode {
     /// `UNNEST(...) AS x`), or `None` if this node is not a `ResolvedArrayScan`.
     pub fn array_element_name(&self) -> Option<&str> {
         self.array_element_name.as_deref()
+    }
+
+    /// Whether this array scan keeps input rows whose array is empty or `NULL`
+    /// (`true` for `LEFT JOIN UNNEST(...)`, `false` for a plain `FROM UNNEST`),
+    /// or `None` if this node is not a `ResolvedArrayScan`.
+    pub const fn is_outer(&self) -> Option<bool> {
+        self.is_outer
     }
 
     /// The names of the columns this node's projection produces — both columns
@@ -924,6 +934,11 @@ impl Module {
         } else {
             None
         };
+        let is_outer = if kind == KIND_ARRAY_SCAN {
+            Some(self.node_is_outer(node)?)
+        } else {
+            None
+        };
         let project_columns = if kind == KIND_PROJECT_SCAN {
             Some(self.node_scan_columns(node)?)
         } else {
@@ -979,6 +994,7 @@ impl Module {
             is_value_table,
             struct_field_index,
             array_element_name,
+            is_outer,
             project_columns,
             computed_column_name,
             parse_location,
@@ -1038,6 +1054,20 @@ impl Module {
         let column =
             self.rpc_handle(SVC_RESOLVED_ARRAY_SCAN, MID_ARRAY_SCAN_ELEMENT_COLUMN, node)?;
         self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
+    }
+
+    /// Reads whether a `ResolvedArrayScan` is an outer scan (a `LEFT JOIN`).
+    ///
+    /// `is_outer()` is a bool on the array scan. proto3 omits a false value, so a
+    /// missing field means a plain `FROM UNNEST` that drops empty-array rows.
+    fn node_is_outer(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_ARRAY_SCAN,
+            MID_ARRAY_SCAN_IS_OUTER,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads the names of the columns any `ResolvedScan` produces.
