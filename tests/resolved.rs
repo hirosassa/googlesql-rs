@@ -57,3 +57,33 @@ fn output_columns_propagates_analysis_error() {
         "expected a GoogleSql error, got: {result:?}"
     );
 }
+
+#[test]
+fn output_columns_carry_distinct_positive_column_ids() {
+    let mut module = Module::new().unwrap();
+
+    let users = TableDef {
+        name: "users".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "id".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "name".to_string(),
+                ty: ColumnType::String,
+            },
+        ],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT id, name FROM users", &[users])
+        .unwrap();
+
+    // GoogleSQL assigns every resolved column a unique positive id, so the two
+    // output columns expose distinct ids matching their underlying columns.
+    assert_eq!(columns.len(), 2);
+    assert!(columns[0].id() > 0);
+    assert!(columns[1].id() > 0);
+    assert_ne!(columns[0].id(), columns[1].id());
+}
