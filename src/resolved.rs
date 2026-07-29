@@ -63,9 +63,11 @@ const MID_RANGE_END: i32 = 8;
 const SVC_RESOLVED_EXPR: i32 = 979;
 const MID_EXPR_TYPE: i32 = 12;
 
-/// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads.
+/// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads;
+/// `IsCorrelated` is whether it reads a column from an enclosing query.
 const SVC_RESOLVED_COLUMN_REF: i32 = 849;
 const MID_COLUMN_REF_COLUMN: i32 = 8;
+const MID_COLUMN_REF_IS_CORRELATED: i32 = 9;
 
 /// `ResolvedCast`: `Expr` is the operand being cast; its resolved type is the
 /// cast's source type, while the cast node's own type is the target type.
@@ -403,6 +405,7 @@ pub struct ResolvedNode {
     distinct: Option<bool>,
     join_type: Option<JoinType>,
     is_descending: Option<bool>,
+    is_correlated: Option<bool>,
     set_operation: Option<SetOperation>,
     subquery_kind: Option<SubqueryKind>,
     group_by_columns: Option<Vec<String>>,
@@ -506,6 +509,14 @@ impl ResolvedNode {
     /// without `ASC`/`DESC` reports `Some(false)`.
     pub const fn is_descending(&self) -> Option<bool> {
         self.is_descending
+    }
+
+    /// Whether this column reference reads a column from an enclosing query (a
+    /// correlated reference, as in a correlated subquery), or `None` if it is
+    /// not a `ResolvedColumnRef`. A reference to a column of its own query
+    /// reports `Some(false)`.
+    pub const fn is_correlated(&self) -> Option<bool> {
+        self.is_correlated
     }
 
     /// The set operator this node applies (`UNION`/`INTERSECT`/`EXCEPT`, in its
@@ -716,6 +727,11 @@ impl Module {
         } else {
             None
         };
+        let is_correlated = if kind == KIND_COLUMN_REF {
+            Some(self.node_is_correlated(node)?)
+        } else {
+            None
+        };
         let set_operation = if kind == KIND_SET_OPERATION_SCAN {
             Some(self.node_set_operation(node)?)
         } else {
@@ -773,6 +789,7 @@ impl Module {
             distinct,
             join_type,
             is_descending,
+            is_correlated,
             set_operation,
             subquery_kind,
             group_by_columns,
@@ -900,6 +917,20 @@ impl Module {
         let resp = self.invoke(
             SVC_RESOLVED_ORDER_BY_ITEM,
             MID_IS_DESCENDING,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Reads whether a `ResolvedColumnRef` is a correlated reference.
+    ///
+    /// `is_correlated()` is a bool; proto3 omits a false value, so a missing
+    /// field means the reference reads a column of its own query.
+    fn node_is_correlated(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_COLUMN_REF,
+            MID_COLUMN_REF_IS_CORRELATED,
             &pb::handle_arg(node),
         )?;
         check_error(&resp)?;
