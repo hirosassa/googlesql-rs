@@ -25,6 +25,7 @@ const MID_ANALYZE_STATEMENT: i32 = 2;
 const SVC_ANALYZER_OPTIONS: i32 = 554;
 const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
 const MID_SET_PRUNE_UNUSED_COLUMNS: i32 = 80;
+const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
 
 const SVC_TYPE_FACTORY: i32 = 1419;
@@ -251,16 +252,25 @@ impl Module {
         })
     }
 
-    /// Applies analysis options, enabling column pruning when requested so table
-    /// scans expose only referenced columns.
+    /// Applies analysis options. Always accepts undeclared query parameters, so a
+    /// statement using `@param` resolves (with the parameter's type inferred from
+    /// context) instead of erroring; this leaves parameter-free statements
+    /// unaffected. Enables column pruning when requested so table scans expose
+    /// only referenced columns.
     fn configure_options(&mut self, options: u64, prune_columns: bool) -> Result<(), Error> {
-        if !prune_columns {
-            return Ok(());
+        self.set_options_bool(options, MID_SET_ALLOW_UNDECLARED_PARAMETERS, true)?;
+        if prune_columns {
+            self.set_options_bool(options, MID_SET_PRUNE_UNUSED_COLUMNS, true)?;
         }
+        Ok(())
+    }
+
+    /// Sets one boolean flag on an `AnalyzerOptions` handle.
+    fn set_options_bool(&mut self, options: u64, mid: i32, value: bool) -> Result<(), Error> {
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, options);
-        pb::append_bool(&mut req, 2, true);
-        let resp = self.invoke(SVC_ANALYZER_OPTIONS, MID_SET_PRUNE_UNUSED_COLUMNS, &req)?;
+        pb::append_bool(&mut req, 2, value);
+        let resp = self.invoke(SVC_ANALYZER_OPTIONS, mid, &req)?;
         check_error(&resp)
     }
 

@@ -361,6 +361,36 @@ fn non_cast_nodes_have_no_cast_info() {
 }
 
 #[test]
+fn parameter_nodes_carry_their_name() {
+    let mut module = Module::new().unwrap();
+
+    // A named query parameter `@p` resolves to a ResolvedParameter that reports
+    // its name. Its type is inferred from the `+ 1` context (no declaration).
+    let root = module
+        .resolved_tree("SELECT @p + 1 AS x", &[])
+        .unwrap()
+        .unwrap();
+
+    let parameter =
+        find_kind(&root, "ResolvedParameter").expect("`@p` produces a ResolvedParameter");
+    assert_eq!(parameter.parameter_name(), Some("p"));
+}
+
+#[test]
+fn non_parameter_nodes_have_no_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a parameter reference.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.parameter_name().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
