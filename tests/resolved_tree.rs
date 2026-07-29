@@ -854,3 +854,127 @@ fn propagates_analysis_error() {
         "expected a GoogleSql error, got: {result:?}"
     );
 }
+
+#[test]
+fn aggregate_scan_lists_its_group_by_columns() {
+    let mut module = Module::new().unwrap();
+
+    // `GROUP BY name` produces a ResolvedAggregateScan whose group-by list holds
+    // one computed column named after the grouping key.
+    let root = module
+        .resolved_tree(
+            "SELECT name, COUNT(id) FROM users GROUP BY name",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedAggregateScan")
+        .expect("`GROUP BY` produces a ResolvedAggregateScan");
+    let columns = scan
+        .group_by_columns()
+        .expect("a ResolvedAggregateScan node lists its group-by columns");
+    assert_eq!(columns, ["name"]);
+}
+
+#[test]
+fn multi_key_group_by_lists_every_column() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "SELECT id, name FROM users GROUP BY id, name",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedAggregateScan")
+        .expect("`GROUP BY` produces a ResolvedAggregateScan");
+    let columns = scan
+        .group_by_columns()
+        .expect("a ResolvedAggregateScan node lists its group-by columns");
+    assert!(columns.contains(&"id".to_string()), "got {columns:?}");
+    assert!(columns.contains(&"name".to_string()), "got {columns:?}");
+}
+
+#[test]
+fn non_aggregate_nodes_have_no_group_by_columns() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not an aggregate scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.group_by_columns().is_none());
+}
+
+#[test]
+fn limit_offset_scan_reports_both_values() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users LIMIT 10 OFFSET 5", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedLimitOffsetScan")
+        .expect("`LIMIT ... OFFSET` produces a ResolvedLimitOffsetScan");
+    let limit_offset = scan
+        .limit_offset()
+        .expect("a ResolvedLimitOffsetScan node exposes its limit and offset");
+    assert_eq!(limit_offset.limit(), Some(10));
+    assert_eq!(limit_offset.offset(), Some(5));
+}
+
+#[test]
+fn limit_without_offset_reports_no_offset() {
+    let mut module = Module::new().unwrap();
+
+    // A bare `LIMIT` records no OFFSET expression, so the offset is absent.
+    let root = module
+        .resolved_tree("SELECT id FROM users LIMIT 3", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedLimitOffsetScan")
+        .expect("`LIMIT` produces a ResolvedLimitOffsetScan");
+    let limit_offset = scan.limit_offset().expect("a limit/offset scan");
+    assert_eq!(limit_offset.limit(), Some(3));
+    assert_eq!(limit_offset.offset(), None);
+}
+
+#[test]
+fn parameterized_limit_reports_no_literal_value() {
+    let mut module = Module::new().unwrap();
+
+    // `LIMIT @n` is a parameter, not a literal, so no concrete value is exposed
+    // even though the node is still a ResolvedLimitOffsetScan.
+    let root = module
+        .resolved_tree("SELECT id FROM users LIMIT @n", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedLimitOffsetScan")
+        .expect("`LIMIT @n` produces a ResolvedLimitOffsetScan");
+    let limit_offset = scan.limit_offset().expect("a limit/offset scan");
+    assert_eq!(limit_offset.limit(), None);
+    assert_eq!(limit_offset.offset(), None);
+}
+
+#[test]
+fn non_limit_offset_nodes_have_no_limit_offset() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a limit/offset scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.limit_offset().is_none());
+}
