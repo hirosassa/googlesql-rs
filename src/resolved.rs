@@ -23,6 +23,7 @@ const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
 const KIND_LITERAL: &str = "ResolvedLiteral";
 const KIND_FUNCTION_CALL: &str = "ResolvedFunctionCall";
 const KIND_CAST: &str = "ResolvedCast";
+const KIND_PARAMETER: &str = "ResolvedParameter";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -49,6 +50,10 @@ const MID_COLUMN_REF_COLUMN: i32 = 8;
 /// cast's source type, while the cast node's own type is the target type.
 const SVC_RESOLVED_CAST: i32 = 829;
 const MID_CAST_EXPR: i32 = 8;
+
+/// `ResolvedParameter`: `Name` is the query parameter's name (e.g. `p` for `@p`).
+const SVC_RESOLVED_PARAMETER: i32 = 1185;
+const MID_PARAMETER_NAME: i32 = 9;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -190,10 +195,10 @@ impl CastInfo {
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
 /// node's kind, its resolved type (for expression nodes), the column it reads
 /// (for column-reference nodes), the table it scans (for table-scan nodes), the
-/// conversion it performs (for cast nodes), and its children, so it outlives the
-/// analysis that built it. Use [`Module::analyze_output_columns`] or
-/// [`Module::referenced_tables`] for the schema and lineage details this
-/// structural view omits.
+/// conversion it performs (for cast nodes), the parameter it references (for
+/// parameter nodes), and its children, so it outlives the analysis that built
+/// it. Use [`Module::analyze_output_columns`] or [`Module::referenced_tables`]
+/// for the schema and lineage details this structural view omits.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     kind: String,
@@ -203,6 +208,7 @@ pub struct ResolvedNode {
     function_name: Option<String>,
     table_name: Option<String>,
     cast: Option<CastInfo>,
+    parameter_name: Option<String>,
     children: Vec<Self>,
 }
 
@@ -246,6 +252,12 @@ impl ResolvedNode {
     /// `ResolvedCast`.
     pub const fn cast(&self) -> Option<&CastInfo> {
         self.cast.as_ref()
+    }
+
+    /// The name of the query parameter this node references (e.g. `p` for `@p`),
+    /// or `None` if it is not a `ResolvedParameter`.
+    pub fn parameter_name(&self) -> Option<&str> {
+        self.parameter_name.as_deref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -393,6 +405,11 @@ impl Module {
         } else {
             None
         };
+        let parameter_name = if kind == KIND_PARAMETER {
+            Some(self.rpc_string(SVC_RESOLVED_PARAMETER, MID_PARAMETER_NAME, node)?)
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -407,6 +424,7 @@ impl Module {
             function_name,
             table_name,
             cast,
+            parameter_name,
             children,
         })
     }
