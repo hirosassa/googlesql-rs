@@ -1045,13 +1045,7 @@ impl Module {
     /// `return_null_on_error()` is a bool; proto3 omits a false value, so a
     /// missing field means a plain `CAST`.
     fn node_cast_is_safe(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_CAST,
-            MID_CAST_RETURN_NULL_ON_ERROR,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_CAST, MID_CAST_RETURN_NULL_ON_ERROR, node)
     }
 
     /// Reads the catalog name of the table a `ResolvedTableScan` reads.
@@ -1078,13 +1072,7 @@ impl Module {
     /// `is_outer()` is a bool on the array scan. proto3 omits a false value, so a
     /// missing field means a plain `FROM UNNEST` that drops empty-array rows.
     fn node_is_outer(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_ARRAY_SCAN,
-            MID_ARRAY_SCAN_IS_OUTER,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_ARRAY_SCAN, MID_ARRAY_SCAN_IS_OUTER, node)
     }
 
     /// Reads the names of the columns any `ResolvedScan` produces.
@@ -1139,13 +1127,11 @@ impl Module {
     /// `distinct()` is a bool on `ResolvedNonScalarFunctionCallBase`. proto3
     /// omits a false value, so a missing field means the call is not DISTINCT.
     fn node_distinct(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
+        self.rpc_bool(
             SVC_RESOLVED_NON_SCALAR_FUNCTION_CALL_BASE,
             MID_DISTINCT,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+            node,
+        )
     }
 
     /// Reads the source byte range a resolved node spans, if one was recorded.
@@ -1187,13 +1173,7 @@ impl Module {
     /// `has_using()` is a bool on the join scan. proto3 omits a false value, so a
     /// missing field means the join uses no `USING` clause.
     fn node_has_using(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_JOIN_SCAN,
-            MID_JOIN_SCAN_HAS_USING,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_JOIN_SCAN, MID_JOIN_SCAN_HAS_USING, node)
     }
 
     /// Reads whether a `ResolvedOrderByItem` sorts descending.
@@ -1201,13 +1181,7 @@ impl Module {
     /// `is_descending()` is a bool; proto3 omits a false value, so a missing
     /// field means the item sorts ascending (the default).
     fn node_is_descending(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_ORDER_BY_ITEM,
-            MID_IS_DESCENDING,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_ORDER_BY_ITEM, MID_IS_DESCENDING, node)
     }
 
     /// Reads whether a `ResolvedColumnRef` is a correlated reference.
@@ -1215,13 +1189,7 @@ impl Module {
     /// `is_correlated()` is a bool; proto3 omits a false value, so a missing
     /// field means the reference reads a column of its own query.
     fn node_is_correlated(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_COLUMN_REF,
-            MID_COLUMN_REF_IS_CORRELATED,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_COLUMN_REF, MID_COLUMN_REF_IS_CORRELATED, node)
     }
 
     /// Reads the set operator of a `ResolvedSetOperationScan`.
@@ -1378,13 +1346,7 @@ impl Module {
     /// `is_value_table()` is a bool on the statement. proto3 omits a false value,
     /// so a missing field means the query produces ordinary named-column rows.
     fn node_is_value_table(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_QUERY_STMT,
-            MID_QUERY_STMT_IS_VALUE_TABLE,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_QUERY_STMT, MID_QUERY_STMT_IS_VALUE_TABLE, node)
     }
 
     /// Reads whether a `ResolvedLiteral`'s type was stated explicitly.
@@ -1392,13 +1354,7 @@ impl Module {
     /// `has_explicit_type()` is a bool on the literal. proto3 omits a false
     /// value, so a missing field means the type was inferred, not stated.
     fn node_has_explicit_type(&mut self, node: u64) -> Result<bool, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_LITERAL,
-            MID_LITERAL_HAS_EXPLICIT_TYPE,
-            &pb::handle_arg(node),
-        )?;
-        check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        self.rpc_bool(SVC_RESOLVED_LITERAL, MID_LITERAL_HAS_EXPLICIT_TYPE, node)
     }
 
     /// Reads the constant a `ResolvedLiteral` node carries.
@@ -1579,6 +1535,14 @@ impl Module {
         let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
         check_error(&resp)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
+    }
+
+    /// Common helper: passes a single handle and returns the bool from field 1.
+    /// An absent field decodes as `false` (proto3 omits a false default).
+    fn rpc_bool(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<bool, Error> {
+        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 }
 
