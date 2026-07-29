@@ -46,25 +46,30 @@ impl Module {
     /// Parses a SQL statement and returns the normalized result.
     ///
     /// Returns [`Error::GoogleSql`] on a syntax error.
+    ///
+    /// Every wasm-side handle acquired during the parse is an RAII [`Handle`]
+    /// that enqueues its own free on drop; a single [`flush_frees`](Module::flush_frees)
+    /// here releases them all, whether the parse succeeded or failed.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
-        let options = self.invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])?;
-        check_error(&options)?;
-        let options_ptr = pb::read_handle_at_field(&options, 1);
-        if options_ptr == 0 {
-            return Err(Error::GoogleSql("NewParserOptions returned null".into()));
-        }
-
-        // Free the options handle regardless of parse success or failure.
-        let parsed = self.parse_with_options(sql, options_ptr);
-        let freed = self.invoke(
-            SVC_PARSER_OPTIONS,
-            MID_FREE_PARSER_OPTIONS,
-            &pb::handle_arg(options_ptr),
-        );
-
+        let parsed = self.parse_statement_inner(sql);
+        let freed = self.flush_frees();
         let parsed = parsed?;
         freed?;
         Ok(parsed)
+    }
+
+    /// Runs the parse pipeline, leaving handle cleanup to the caller's
+    /// [`flush_frees`](Module::flush_frees). Handles drop (and so enqueue their
+    /// frees) as this call's frames unwind, on both the success and error paths.
+    fn parse_statement_inner(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
+        let options = self.acquire_handle(
+            SVC_PARSER_OPTIONS,
+            MID_NEW_PARSER_OPTIONS,
+            &[],
+            SVC_PARSER_OPTIONS,
+            MID_FREE_PARSER_OPTIONS,
+        )?;
+        self.parse_with_options(sql, options.ptr())
     }
 
     /// Parses using a pre-built `ParserOptions` handle and produces the canonical SQL.
@@ -82,17 +87,11 @@ impl Module {
         if output_ptr == 0 {
             return Err(Error::GoogleSql("ParseStatement returned null".into()));
         }
+        // The ParserOutput handle (which also owns the AST arena) is freed by the
+        // top-level `flush_frees` after `build_from_output` has read the tree.
+        let output = self.register_free(SVC_PARSER_OUTPUT, MID_FREE_PARSER_OUTPUT, output_ptr);
 
-        // Free the ParserOutput handle regardless of success or failure (also frees the AST arena).
-        let built = self.build_from_output(output_ptr);
-        let freed = self.invoke(
-            SVC_PARSER_OUTPUT,
-            MID_FREE_PARSER_OUTPUT,
-            &pb::handle_arg(output_ptr),
-        );
-
-        let (canonical_sql, root) = built?;
-        freed?;
+        let (canonical_sql, root) = self.build_from_output(output.ptr())?;
         Ok(ParsedStatement {
             canonical_sql,
             root,
