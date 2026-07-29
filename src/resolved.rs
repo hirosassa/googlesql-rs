@@ -210,6 +210,7 @@ const MID_TYPE_DEBUG_STRING: i32 = 14;
 pub struct OutputColumn {
     name: String,
     type_name: String,
+    id: i32,
 }
 
 impl OutputColumn {
@@ -221,6 +222,15 @@ impl OutputColumn {
     /// The resolved type name (e.g. `INT64`, `STRING`).
     pub fn type_name(&self) -> &str {
         &self.type_name
+    }
+
+    /// The unique id of the column this output exposes.
+    ///
+    /// GoogleSQL assigns every resolved column a distinct positive id; this is
+    /// the id of the underlying column, letting callers link an output column to
+    /// the [`ColumnReference`]s that read the same column elsewhere in the tree.
+    pub const fn id(&self) -> i32 {
+        self.id
     }
 }
 
@@ -703,7 +713,13 @@ impl Module {
         )?;
         let type_handle = self.rpc_handle(SVC_RESOLVED_COLUMN, MID_COLUMN_TYPE, column)?;
         let type_name = self.type_debug_string(type_handle)?;
-        Ok(OutputColumn { name, type_name })
+        // column_id is always positive; the proto3 zero default never occurs.
+        let id = self.rpc_int32(SVC_RESOLVED_COLUMN, MID_COLUMN_ID, column)?;
+        Ok(OutputColumn {
+            name,
+            type_name,
+            id,
+        })
     }
 
     /// Collects the tables a resolved statement reads, with referenced columns.
