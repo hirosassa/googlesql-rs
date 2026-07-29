@@ -61,12 +61,13 @@ jobs:
       - name: Cache llvm-cov instrumented target
         uses: actions/cache@v4
         with:
-          # The ~20 min coverage runtime is entirely the instrumented build of
-          # the wasmtime/cranelift tree. Persist it wholesale so only changed
-          # workspace crates recompile. The key rotates with Cargo.lock; the
-          # restore-key fallback reuses the previous tree when deps are unchanged.
+          # Persist the instrumented wasmtime/cranelift tree wholesale so only
+          # changed workspace crates recompile. Key on Cargo.lock AND Cargo.toml
+          # so a profile change (e.g. the deps' opt-level) rotates the key and
+          # the rebuilt tree gets saved; the restore-key fallback still warms the
+          # build from the previous tree.
           path: target/llvm-cov-target
-          key: llvm-cov-target-${{ hashFiles('**/Cargo.lock') }}
+          key: llvm-cov-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: llvm-cov-target-
 
       - name: Install cargo-llvm-cov
