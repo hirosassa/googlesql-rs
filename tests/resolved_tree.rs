@@ -2,7 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 use googlesql::{
-    ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, TableDef,
+    ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, SetOperation,
+    TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -789,6 +790,57 @@ fn non_order_by_nodes_have_no_direction() {
     // The statement root is not an ORDER BY item.
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert!(root.is_descending().is_none());
+}
+
+/// Resolves `<SELECT id FROM users> <op> <SELECT id FROM users>` and returns
+/// the set operation reported by the resulting `ResolvedSetOperationScan`.
+fn set_operation_of(op: &str) -> SetOperation {
+    let mut module = Module::new().unwrap();
+    let sql = format!("SELECT id FROM users {op} SELECT id FROM users");
+    let root = module
+        .resolved_tree(&sql, &[users_table()])
+        .unwrap()
+        .unwrap();
+    find_kind(&root, "ResolvedSetOperationScan")
+        .expect("a set operation produces a ResolvedSetOperationScan")
+        .set_operation()
+        .expect("a ResolvedSetOperationScan node exposes its operation")
+}
+
+#[test]
+fn set_operation_scans_report_their_operation() {
+    assert_eq!(set_operation_of("UNION ALL"), SetOperation::UnionAll);
+    assert_eq!(
+        set_operation_of("UNION DISTINCT"),
+        SetOperation::UnionDistinct
+    );
+    assert_eq!(
+        set_operation_of("INTERSECT ALL"),
+        SetOperation::IntersectAll
+    );
+    assert_eq!(
+        set_operation_of("INTERSECT DISTINCT"),
+        SetOperation::IntersectDistinct
+    );
+    assert_eq!(set_operation_of("EXCEPT ALL"), SetOperation::ExceptAll);
+    assert_eq!(
+        set_operation_of("EXCEPT DISTINCT"),
+        SetOperation::ExceptDistinct
+    );
+}
+
+#[test]
+fn non_set_operation_nodes_have_no_operation() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a set operation.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.set_operation().is_none());
 }
 
 #[test]
