@@ -236,6 +236,51 @@ fn non_literal_nodes_have_no_literal_value() {
 }
 
 #[test]
+fn function_call_nodes_carry_their_function_name() {
+    let mut module = Module::new().unwrap();
+
+    // `id + 1` resolves to a scalar function call over the built-in add function,
+    // whose catalog name is `$add`.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS x FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call =
+        find_kind(&root, "ResolvedFunctionCall").expect("`id + 1` produces a ResolvedFunctionCall");
+    assert_eq!(call.function_name(), Some("$add"));
+}
+
+#[test]
+fn named_function_calls_report_their_catalog_name() {
+    let mut module = Module::new().unwrap();
+
+    // A named scalar function keeps its plain catalog name (no `$` prefix).
+    let root = module
+        .resolved_tree("SELECT lower(name) AS n FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call = find_kind(&root, "ResolvedFunctionCall")
+        .expect("`lower(name)` produces a ResolvedFunctionCall");
+    assert_eq!(call.function_name(), Some("lower"));
+}
+
+#[test]
+fn non_function_call_nodes_have_no_function_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a function call.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.function_name().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
