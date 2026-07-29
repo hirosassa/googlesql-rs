@@ -20,9 +20,15 @@ const MID_RESOLVED_STATEMENT: i32 = 8;
 const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
 const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
 
-/// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children.
+/// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
+/// `IsExpression` reports whether a node carries a resolved type.
 const SVC_RESOLVED_NODE: i32 = 1167;
 const MID_GET_CHILD_NODES: i32 = 9;
+const MID_IS_EXPRESSION: i32 = 17;
+
+/// `ResolvedExpr` base class: `Type` is the expression's resolved type.
+const SVC_RESOLVED_EXPR: i32 = 979;
+const MID_EXPR_TYPE: i32 = 12;
 
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
 const SVC_RESOLVED_SCAN: i32 = 1251;
@@ -67,13 +73,15 @@ impl OutputColumn {
 
 /// A node in the analyzer's resolved AST.
 ///
-/// Produced by [`Module::resolved_tree`]; a self-contained tree that holds only
-/// each node's kind and its children, so it outlives the analysis that built it.
-/// Use [`Module::analyze_output_columns`] or [`Module::referenced_tables`] for
-/// the schema and lineage details this structural view omits.
+/// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
+/// node's kind, its resolved type (for expression nodes), and its children, so
+/// it outlives the analysis that built it. Use [`Module::analyze_output_columns`]
+/// or [`Module::referenced_tables`] for the schema and lineage details this
+/// structural view omits.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     kind: String,
+    type_name: Option<String>,
     children: Vec<Self>,
 }
 
@@ -81,6 +89,13 @@ impl ResolvedNode {
     /// The node's kind (e.g. `ResolvedQueryStmt`, `ResolvedTableScan`).
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    /// The node's resolved type name (e.g. `INT64`, `STRING`), or `None` for
+    /// nodes that are not expressions (scans, statements, and other structural
+    /// nodes carry no type).
+    pub fn type_name(&self) -> Option<&str> {
+        self.type_name.as_deref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -198,16 +213,40 @@ impl Module {
         self.build_resolved_node(statement).map(Some)
     }
 
-    /// Recursively copies `node`'s kind and children into an owned tree.
+    /// Recursively copies `node`'s kind, resolved type, and children into an
+    /// owned tree.
     fn build_resolved_node(&mut self, node: u64) -> Result<ResolvedNode, Error> {
         let kind = self.node_kind(node)?;
+        let type_name = self.node_type_name(node)?;
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
                 children.push(self.build_resolved_node(child)?);
             }
         }
-        Ok(ResolvedNode { kind, children })
+        Ok(ResolvedNode {
+            kind,
+            type_name,
+            children,
+        })
+    }
+
+    /// Returns a node's resolved type name, or `None` if it is not an expression.
+    ///
+    /// Only `ResolvedExpr` subclasses carry a type; asking a scan or statement
+    /// for one would be meaningless, so `IsExpression` gates the lookup.
+    fn node_type_name(&mut self, node: u64) -> Result<Option<String>, Error> {
+        let is_expr = self.invoke(SVC_RESOLVED_NODE, MID_IS_EXPRESSION, &pb::handle_arg(node))?;
+        check_error(&is_expr)?;
+        if !pb::read_bool_at_field(&is_expr, 1) {
+            return Ok(None);
+        }
+
+        let type_handle = self.rpc_handle(SVC_RESOLVED_EXPR, MID_EXPR_TYPE, node)?;
+        if type_handle == 0 {
+            return Ok(None);
+        }
+        self.type_debug_string(type_handle).map(Some)
     }
 
     /// Records `node` if it is a table scan, then recurses into its children.

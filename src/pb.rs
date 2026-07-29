@@ -173,6 +173,14 @@ pub fn read_int32_at_field(resp: &[u8], field: u32) -> Option<i32> {
     None
 }
 
+/// Reads a bool (varint) at the given field number from a response.
+///
+/// Returns `false` when the field is absent, matching proto3 scalar defaults
+/// (a `false` value is not serialized).
+pub fn read_bool_at_field(resp: &[u8], field: u32) -> bool {
+    read_int32_at_field(resp, field).is_some_and(|v| v != 0)
+}
+
 /// Reads a handle (pointer) at the given field number from a response. Returns `0` if absent.
 pub fn read_handle_at_field(resp: &[u8], field: u32) -> u64 {
     if field == 1 {
@@ -274,6 +282,22 @@ mod tests {
         let mut buf = Vec::new();
         append_string(&mut buf, 1, "SELECT 1");
         assert_eq!(read_string_at_field(&buf, 1).as_deref(), Some("SELECT 1"));
+    }
+
+    #[test]
+    fn bool_field_reads_true_false_and_default() {
+        // An explicit `true` reads back as true.
+        let mut t = Vec::new();
+        append_bool(&mut t, 1, true);
+        assert!(read_bool_at_field(&t, 1));
+
+        // An explicit `false` (varint 0) reads back as false.
+        let mut f = Vec::new();
+        append_bool(&mut f, 1, false);
+        assert!(!read_bool_at_field(&f, 1));
+
+        // An absent field defaults to false (proto3 does not serialize `false`).
+        assert!(!read_bool_at_field(&[], 1));
     }
 
     #[test]
