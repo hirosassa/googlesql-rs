@@ -391,6 +391,53 @@ fn non_parameter_nodes_have_no_name() {
 }
 
 #[test]
+fn aggregate_function_calls_are_flagged_and_named() {
+    let mut module = Module::new().unwrap();
+
+    // `COUNT(id)` is an aggregate function call, a different node kind than a
+    // scalar call, but it still exposes the catalog function name it invokes.
+    let root = module
+        .resolved_tree("SELECT COUNT(id) FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call = find_kind(&root, "ResolvedAggregateFunctionCall")
+        .expect("`COUNT(id)` produces a ResolvedAggregateFunctionCall");
+    assert!(call.is_aggregate());
+    assert_eq!(call.function_name(), Some("count"));
+}
+
+#[test]
+fn scalar_function_calls_are_not_aggregate() {
+    let mut module = Module::new().unwrap();
+
+    // `id + 1` is a scalar function call, so it is named but not an aggregate.
+    let root = module
+        .resolved_tree("SELECT id + 1 AS x FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let call =
+        find_kind(&root, "ResolvedFunctionCall").expect("`id + 1` produces a ResolvedFunctionCall");
+    assert!(!call.is_aggregate());
+    assert_eq!(call.function_name(), Some("$add"));
+}
+
+#[test]
+fn non_function_nodes_are_not_aggregate() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a function call at all.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(!root.is_aggregate());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
