@@ -4,8 +4,8 @@ Rust bindings for GoogleSQL (ZetaSQL).
 
 Drives the prebuilt WebAssembly module published by
 [goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm) on top of
-[wasmtime](https://wasmtime.dev/), giving you GoogleSQL parser and formatter
-functionality without requiring a massive C++ / Bazel toolchain.
+[wasmtime](https://wasmtime.dev/), giving you GoogleSQL's parser, formatter, and
+analyzer without requiring a massive C++ / Bazel toolchain.
 
 ## Features
 
@@ -110,6 +110,107 @@ assert!(module.analyze_statement("SELECT x FROM missing_table").is_err());
 
 Syntax errors and unresolved names are returned as `Error::GoogleSql`.
 
+To resolve real queries, register your tables as a catalog of `TableDef`s. The
+richer analyzer APIs below all take `&[TableDef]`.
+
+#### Output schema
+
+`analyze_output_columns` returns the columns a query produces, each with its
+(aliased) name, resolved type, and unique resolved-column id.
+
+```rust
+use googlesql::{ColumnDef, ColumnType, Module, TableDef};
+
+let mut module = Module::new()?;
+let users = TableDef {
+    name: "users".to_string(),
+    columns: vec![
+        ColumnDef { name: "id".to_string(), ty: ColumnType::Int64 },
+        ColumnDef { name: "name".to_string(), ty: ColumnType::String },
+    ],
+};
+
+let columns = module.analyze_output_columns("SELECT id, name AS full_name FROM users", &[users])?;
+for col in &columns {
+    println!("{} : {} (id {})", col.name(), col.type_name(), col.id());
+}
+// id : INT64 (id 1)
+// full_name : STRING (id 2)
+```
+
+#### Table and column lineage
+
+`referenced_tables` reports the tables a query reads, each with the columns it
+actually references (pruned to what the query needs).
+
+```rust
+let tables = module.referenced_tables(
+    "SELECT u.name FROM users u JOIN orders o ON o.user_id = u.id",
+    &[users, orders],
+)?;
+for table in &tables {
+    println!("{} reads: {}", table.name(), table.columns().join(", "));
+}
+```
+
+#### Resolved AST
+
+`resolved_tree` returns the analyzer's fully typed output as a self-contained
+tree of `ResolvedNode`s. Each node exposes its kind, resolved type, children,
+and kind-specific details (column references, literal values, function and table
+names, join/set-operation kinds, and more).
+
+```rust
+use googlesql::ResolvedNode;
+
+fn print_tree(node: &ResolvedNode, depth: usize) {
+    println!("{}{}", "  ".repeat(depth), node.kind());
+    for child in node.children() {
+        print_tree(child, depth + 1);
+    }
+}
+
+if let Some(root) = module.resolved_tree("SELECT id FROM users WHERE id > 0", &[users])? {
+    print_tree(&root, 0);
+}
+// ResolvedQueryStmt
+//   ResolvedOutputColumn
+//   ResolvedProjectScan
+//     ResolvedFilterScan
+//       ResolvedTableScan
+//       ResolvedFunctionCall
+//         ...
+```
+
+### Error handling
+
+Every fallible call returns `Error`. A problem reported by GoogleSQL itself
+surfaces as `Error::GoogleSql`, carrying a `SqlError` whose `location()` gives
+the offending line and column when GoogleSQL supplied one.
+
+```rust
+use googlesql::Error;
+
+if let Err(Error::GoogleSql(err)) = module.analyze_output_columns("SELECT missing_col FROM users", &[users]) {
+    println!("{}", err.message());        // Unrecognized name: missing_col [at 1:8]
+    if let Some(loc) = err.location() {
+        println!("line {}, column {}", loc.line(), loc.column()); // line 1, column 8
+    }
+}
+```
+
+## Examples
+
+Runnable examples live in [`examples/`](examples). Each builds its own catalog
+and prints real output:
+
+```sh
+cargo run --example output_columns
+cargo run --example referenced_tables
+cargo run --example resolved_tree
+cargo run --example error_location
+```
+
 ## Status
 
 - ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
@@ -119,8 +220,8 @@ Syntax errors and unresolved names are returned as `Error::GoogleSql`.
 - ✅ Analyzer: user-defined tables in the catalog (`TableDef`, `analyze_statement_with_catalog`)
 - ✅ Analyzer: resolved query output schema (`analyze_output_columns` → `OutputColumn`)
 - ✅ Analyzer: table and column lineage (`referenced_tables` → `TableRef`)
-- ✅ Analyzer: typed access to the resolved AST (`resolved_tree` → `ResolvedNode`: kind, resolved type, column references, and literal values)
-- 🟡 Analyzer: further resolved-node details (function and table names, cast types, parameters, aggregates) — rolling out
+- ✅ Analyzer: typed access to the resolved AST (`resolved_tree` → `ResolvedNode`: kind, resolved type, column references, literal values, function/table names, cast types, parameters, aggregates, join/set-operation kinds, CTE names, and more)
+- ✅ Structured error locations (`SqlError::location` → `ErrorLocation`: line and column of a GoogleSQL error)
 
 ## Building
 
