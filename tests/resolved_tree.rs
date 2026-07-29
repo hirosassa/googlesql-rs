@@ -112,6 +112,37 @@ fn non_column_ref_nodes_have_no_correlation() {
 }
 
 #[test]
+fn null_literal_carries_the_null_value() {
+    let mut module = Module::new().unwrap();
+
+    // A bare NULL resolves to a ResolvedLiteral holding a NULL value. Reading a
+    // typed value out of it would trap in the wasm module, so it must decode as
+    // the NULL variant instead.
+    let root = module.resolved_tree("SELECT NULL", &[]).unwrap().unwrap();
+
+    let literal = find_kind(&root, "ResolvedLiteral")
+        .expect("a NULL constant in the SELECT list produces a ResolvedLiteral");
+    assert_eq!(literal.literal_value(), Some(&LiteralValue::Null));
+}
+
+#[test]
+fn typed_null_literal_keeps_its_type_and_null_value() {
+    let mut module = Module::new().unwrap();
+
+    // `CAST(NULL AS INT64)` is a typed NULL: its value is NULL, but the node
+    // still reports its resolved type.
+    let root = module
+        .resolved_tree("SELECT CAST(NULL AS INT64)", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal = find_kind(&root, "ResolvedLiteral")
+        .expect("a typed NULL constant produces a ResolvedLiteral");
+    assert_eq!(literal.literal_value(), Some(&LiteralValue::Null));
+    assert_eq!(literal.type_name(), Some("INT64"));
+}
+
+#[test]
 fn root_of_a_query_is_a_resolved_query_stmt() {
     let mut module = Module::new().unwrap();
 
