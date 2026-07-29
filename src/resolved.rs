@@ -194,6 +194,7 @@ const MID_OUTPUT_COLUMN_GET_COLUMN: i32 = 8;
 const MID_OUTPUT_COLUMN_NAME: i32 = 9;
 
 const SVC_RESOLVED_COLUMN: i32 = 839;
+const MID_COLUMN_ID: i32 = 8;
 const MID_COLUMN_NAME: i32 = 9;
 const MID_COLUMN_TABLE_NAME: i32 = 11;
 const MID_COLUMN_TYPE: i32 = 13;
@@ -231,6 +232,7 @@ impl OutputColumn {
 pub struct ColumnReference {
     table: String,
     name: String,
+    id: i32,
 }
 
 impl ColumnReference {
@@ -246,6 +248,15 @@ impl ColumnReference {
     /// The referenced column's name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The referenced column's unique id within the query.
+    ///
+    /// GoogleSQL assigns every resolved column a distinct positive id, so this
+    /// disambiguates columns that share a name — for example the `id` columns of
+    /// two separate scans of the same table in a self-join carry different ids.
+    pub const fn id(&self) -> i32 {
+        self.id
     }
 }
 
@@ -1316,7 +1327,9 @@ impl Module {
         let column = self.rpc_handle(SVC_RESOLVED_COLUMN_REF, MID_COLUMN_REF_COLUMN, node)?;
         let table = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_TABLE_NAME, column)?;
         let name = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)?;
-        Ok(ColumnReference { table, name })
+        // column_id is always positive; the proto3 zero default never occurs.
+        let id = self.rpc_int32(SVC_RESOLVED_COLUMN, MID_COLUMN_ID, column)?;
+        Ok(ColumnReference { table, name, id })
     }
 
     /// Returns a node's resolved type name, or `None` if it is not an expression.
@@ -1394,6 +1407,14 @@ impl Module {
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::GoogleSql("string field not found".into()))
+    }
+
+    /// Common helper: passes a single handle and returns the int32 from field 1.
+    /// An absent field decodes as `0` (proto3 omits a zero default).
+    fn rpc_int32(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<i32, Error> {
+        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        check_error(&resp)?;
+        Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
     }
 }
 
