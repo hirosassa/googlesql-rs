@@ -1383,6 +1383,25 @@ fn with_entry_reports_its_cte_name() {
 }
 
 #[test]
+fn with_ref_scan_reports_referenced_cte_name() {
+    let mut module = Module::new().unwrap();
+
+    // `FROM t` inside a WITH query resolves to a ResolvedWithRefScan that reads
+    // the CTE named `t`; its CTE name matches the entry that defines it.
+    let root = module
+        .resolved_tree(
+            "WITH t AS (SELECT id FROM users) SELECT id FROM t",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let ref_scan = find_kind(&root, "ResolvedWithRefScan")
+        .expect("a reference to a CTE should produce a ResolvedWithRefScan");
+    assert_eq!(ref_scan.with_query_name(), Some("t"));
+}
+
+#[test]
 fn multiple_ctes_report_each_name() {
     let mut module = Module::new().unwrap();
 
@@ -1394,10 +1413,14 @@ fn multiple_ctes_report_each_name() {
         .unwrap()
         .unwrap();
 
+    // Collect the names the WITH entries define; a WithRefScan also carries a
+    // CTE name (the one it reads), so restrict to the defining nodes here.
     let mut names = Vec::new();
     for_each_node(&root, &mut |node| {
-        if let Some(name) = node.with_query_name() {
-            names.push(name.to_owned());
+        if node.kind() == "ResolvedWithEntry" {
+            if let Some(name) = node.with_query_name() {
+                names.push(name.to_owned());
+            }
         }
     });
 

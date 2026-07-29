@@ -34,6 +34,7 @@ const KIND_AGGREGATE_SCAN: &str = "ResolvedAggregateScan";
 const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
 const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
 const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
+const KIND_WITH_REF_SCAN: &str = "ResolvedWithRefScan";
 const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
 const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
 const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
@@ -141,6 +142,11 @@ const SUBQUERY_TYPE_IN: i32 = 4;
 /// `WITH t AS (...)`), returned as a string.
 const SVC_RESOLVED_WITH_ENTRY: i32 = 1327;
 const MID_WITH_QUERY_NAME: i32 = 13;
+
+/// `ResolvedWithRefScan`: `WithQueryName` is the CTE name this scan reads (the
+/// `t` in `... SELECT id FROM t`), returned as a string.
+const SVC_RESOLVED_WITH_REF_SCAN: i32 = 1333;
+const MID_WITH_REF_SCAN_QUERY_NAME: i32 = 11;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries;
 /// `HasExplicitType` is whether its type was stated rather than inferred.
@@ -651,8 +657,10 @@ impl ResolvedNode {
         self.limit_offset.as_ref()
     }
 
-    /// The name of the CTE this node defines (the `t` in `WITH t AS (...)`), or
-    /// `None` if it is not a `ResolvedWithEntry`.
+    /// The name of the CTE this node defines or reads (the `t` in
+    /// `WITH t AS (...)`, or in a `... FROM t` that references it), or `None` if
+    /// it is neither a `ResolvedWithEntry` nor a `ResolvedWithRefScan`. Use
+    /// [`kind`](Self::kind) to tell a definition from a reference.
     pub fn with_query_name(&self) -> Option<&str> {
         self.with_query_name.as_deref()
     }
@@ -932,6 +940,12 @@ impl Module {
         };
         let with_query_name = if kind == KIND_WITH_ENTRY {
             Some(self.rpc_string(SVC_RESOLVED_WITH_ENTRY, MID_WITH_QUERY_NAME, node)?)
+        } else if kind == KIND_WITH_REF_SCAN {
+            Some(self.rpc_string(
+                SVC_RESOLVED_WITH_REF_SCAN,
+                MID_WITH_REF_SCAN_QUERY_NAME,
+                node,
+            )?)
         } else {
             None
         };
