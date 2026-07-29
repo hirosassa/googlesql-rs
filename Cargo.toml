@@ -5,6 +5,9 @@ edition = "2024"
 description = "Rust bindings for GoogleSQL (ZetaSQL) via a prebuilt WebAssembly module"
 license = "Apache-2.0"
 repository = "https://github.com/hirosassa/googlesql-rs"
+readme = "README.md"
+keywords = ["googlesql", "zetasql", "sql", "parser", "wasm"]
+categories = ["database", "parser-implementations", "api-bindings"]
 
 [dependencies]
 wasmtime = "47"
