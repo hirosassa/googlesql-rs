@@ -1038,3 +1038,56 @@ fn non_subquery_nodes_have_no_subquery_kind() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert!(root.subquery_kind().is_none());
 }
+
+#[test]
+fn with_entry_reports_its_cte_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "WITH t AS (SELECT id FROM users) SELECT id FROM t",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let entry = find_kind(&root, "ResolvedWithEntry")
+        .expect("a WITH query should produce a ResolvedWithEntry");
+    assert_eq!(entry.with_query_name(), Some("t"));
+}
+
+#[test]
+fn multiple_ctes_report_each_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "WITH a AS (SELECT id FROM users), b AS (SELECT id FROM a) SELECT id FROM b",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let mut names = Vec::new();
+    for_each_node(&root, &mut |node| {
+        if let Some(name) = node.with_query_name() {
+            names.push(name.to_owned());
+        }
+    });
+
+    assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn non_with_entry_nodes_have_no_cte_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // A query with no WITH clause carries no CTE names anywhere in its tree.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.with_query_name().is_none());
+}

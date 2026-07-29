@@ -33,6 +33,7 @@ const KIND_SET_OPERATION_SCAN: &str = "ResolvedSetOperationScan";
 const KIND_AGGREGATE_SCAN: &str = "ResolvedAggregateScan";
 const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
 const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
+const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -122,6 +123,11 @@ const SUBQUERY_TYPE_SCALAR: i32 = 1;
 const SUBQUERY_TYPE_ARRAY: i32 = 2;
 const SUBQUERY_TYPE_EXISTS: i32 = 3;
 const SUBQUERY_TYPE_IN: i32 = 4;
+
+/// `ResolvedWithEntry`: `WithQueryName` is the CTE alias (the `t` in
+/// `WITH t AS (...)`), returned as a string.
+const SVC_RESOLVED_WITH_ENTRY: i32 = 1327;
+const MID_WITH_QUERY_NAME: i32 = 13;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -379,6 +385,7 @@ pub struct ResolvedNode {
     subquery_kind: Option<SubqueryKind>,
     group_by_columns: Option<Vec<String>>,
     limit_offset: Option<LimitOffset>,
+    with_query_name: Option<String>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -504,6 +511,12 @@ impl ResolvedNode {
     /// `ResolvedLimitOffsetScan`.
     pub const fn limit_offset(&self) -> Option<&LimitOffset> {
         self.limit_offset.as_ref()
+    }
+
+    /// The name of the CTE this node defines (the `t` in `WITH t AS (...)`), or
+    /// `None` if it is not a `ResolvedWithEntry`.
+    pub fn with_query_name(&self) -> Option<&str> {
+        self.with_query_name.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -701,6 +714,11 @@ impl Module {
         } else {
             None
         };
+        let with_query_name = if kind == KIND_WITH_ENTRY {
+            Some(self.rpc_string(SVC_RESOLVED_WITH_ENTRY, MID_WITH_QUERY_NAME, node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -737,6 +755,7 @@ impl Module {
             subquery_kind,
             group_by_columns,
             limit_offset,
+            with_query_name,
             parse_location,
             children,
         })
