@@ -266,6 +266,57 @@ fn date_literal_carries_its_day_number() {
 }
 
 #[test]
+fn timestamp_literal_carries_its_unix_micros() {
+    let mut module = Module::new().unwrap();
+
+    // A TIMESTAMP constant resolves to a ResolvedLiteral holding the count of
+    // microseconds since the 1970-01-01 epoch, so one second past the epoch is
+    // 1_000_000 microseconds. The offset is fixed to UTC to keep the value
+    // independent of the analyzer's default time zone.
+    let cases: [(&str, i64); 2] = [
+        ("SELECT TIMESTAMP '1970-01-01 00:00:00+00'", 0),
+        ("SELECT TIMESTAMP '1970-01-01 00:00:01+00'", 1_000_000),
+    ];
+
+    for (sql, micros) in cases {
+        let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+        let literal = find_kind(&root, "ResolvedLiteral")
+            .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
+        assert_eq!(
+            literal.literal_value(),
+            Some(&LiteralValue::Timestamp(micros)),
+            "for {sql}"
+        );
+    }
+}
+
+#[test]
+fn zero_value_literals_decode_as_zero() {
+    let mut module = Module::new().unwrap();
+
+    // A proto3 scalar equal to its zero default is omitted on the wire, so a
+    // zero-valued literal must still decode to its zero variant, not vanish or
+    // error. This covers every value type that reads a numeric or bytes field.
+    let cases: [(&str, LiteralValue); 5] = [
+        ("SELECT 0", LiteralValue::Int64(0)),
+        ("SELECT 0.0", LiteralValue::Double(0.0)),
+        ("SELECT DATE '1970-01-01'", LiteralValue::Date(0)),
+        ("SELECT b''", LiteralValue::Bytes(Vec::new())),
+        (
+            "SELECT TIMESTAMP '1970-01-01 00:00:00+00'",
+            LiteralValue::Timestamp(0),
+        ),
+    ];
+
+    for (sql, expected) in cases {
+        let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+        let literal = find_kind(&root, "ResolvedLiteral")
+            .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
+        assert_eq!(literal.literal_value(), Some(&expected), "for {sql}");
+    }
+}
+
+#[test]
 fn non_literal_nodes_have_no_literal_value() {
     let mut module = Module::new().unwrap();
 
