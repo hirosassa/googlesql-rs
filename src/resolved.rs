@@ -22,6 +22,7 @@ const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
 const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
 const KIND_LITERAL: &str = "ResolvedLiteral";
 const KIND_FUNCTION_CALL: &str = "ResolvedFunctionCall";
+const KIND_CAST: &str = "ResolvedCast";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -43,6 +44,11 @@ const MID_EXPR_TYPE: i32 = 12;
 /// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads.
 const SVC_RESOLVED_COLUMN_REF: i32 = 849;
 const MID_COLUMN_REF_COLUMN: i32 = 8;
+
+/// `ResolvedCast`: `Expr` is the operand being cast; its resolved type is the
+/// cast's source type, while the cast node's own type is the target type.
+const SVC_RESOLVED_CAST: i32 = 829;
+const MID_CAST_EXPR: i32 = 8;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -155,14 +161,39 @@ pub enum LiteralValue {
     Double(f64),
 }
 
+/// The source and target types of a `ResolvedCast` node.
+///
+/// Carried by cast nodes in a [`ResolvedNode`] tree; holds only owned data, so
+/// it outlives the analysis that produced it. Groups the two ends of the
+/// conversion (`from_type` → `to_type`), the way [`ColumnReference`] groups a
+/// column's table and name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CastInfo {
+    from_type: String,
+    to_type: String,
+}
+
+impl CastInfo {
+    /// The resolved type the cast converts from (its operand's type).
+    pub fn from_type(&self) -> &str {
+        &self.from_type
+    }
+
+    /// The resolved type the cast converts to (the cast's own type).
+    pub fn to_type(&self) -> &str {
+        &self.to_type
+    }
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
 /// node's kind, its resolved type (for expression nodes), the column it reads
-/// (for column-reference nodes), the table it scans (for table-scan nodes), and
-/// its children, so it outlives the analysis that built it. Use
-/// [`Module::analyze_output_columns`] or [`Module::referenced_tables`] for the
-/// schema and lineage details this structural view omits.
+/// (for column-reference nodes), the table it scans (for table-scan nodes), the
+/// conversion it performs (for cast nodes), and its children, so it outlives the
+/// analysis that built it. Use [`Module::analyze_output_columns`] or
+/// [`Module::referenced_tables`] for the schema and lineage details this
+/// structural view omits.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     kind: String,
@@ -171,6 +202,7 @@ pub struct ResolvedNode {
     literal_value: Option<LiteralValue>,
     function_name: Option<String>,
     table_name: Option<String>,
+    cast: Option<CastInfo>,
     children: Vec<Self>,
 }
 
@@ -208,6 +240,12 @@ impl ResolvedNode {
     /// `ResolvedTableScan`. This is the physical table's name, not any query alias.
     pub fn table_name(&self) -> Option<&str> {
         self.table_name.as_deref()
+    }
+
+    /// The source and target types of this node's cast, or `None` if it is not a
+    /// `ResolvedCast`.
+    pub const fn cast(&self) -> Option<&CastInfo> {
+        self.cast.as_ref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -350,6 +388,11 @@ impl Module {
         } else {
             None
         };
+        let cast = if kind == KIND_CAST {
+            self.node_cast(node, type_name.as_deref())?
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -363,8 +406,28 @@ impl Module {
             literal_value,
             function_name,
             table_name,
+            cast,
             children,
         })
+    }
+
+    /// Reads the source and target types of a `ResolvedCast` node.
+    ///
+    /// The cast is an expression, so `to_type` (its own resolved type) is already
+    /// known; `expr()` yields the operand, whose type is the `from_type`. Returns
+    /// `None` if the operand carries no type, which a real cast never does.
+    fn node_cast(&mut self, node: u64, to_type: Option<&str>) -> Result<Option<CastInfo>, Error> {
+        let Some(to_type) = to_type else {
+            return Ok(None);
+        };
+        let operand = self.rpc_handle(SVC_RESOLVED_CAST, MID_CAST_EXPR, node)?;
+        let Some(from_type) = self.node_type_name(operand)? else {
+            return Ok(None);
+        };
+        Ok(Some(CastInfo {
+            from_type,
+            to_type: to_type.to_owned(),
+        }))
     }
 
     /// Reads the catalog name of the table a `ResolvedTableScan` reads.

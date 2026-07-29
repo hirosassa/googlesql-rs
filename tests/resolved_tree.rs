@@ -326,6 +326,41 @@ fn non_table_scan_nodes_have_no_table_name() {
 }
 
 #[test]
+fn cast_nodes_carry_their_source_and_target_types() {
+    let mut module = Module::new().unwrap();
+
+    // `CAST(id AS STRING)` converts the INT64 column `id` to STRING, producing a
+    // ResolvedCast whose node reports both ends of the conversion.
+    let root = module
+        .resolved_tree("SELECT CAST(id AS STRING) FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let cast =
+        find_kind(&root, "ResolvedCast").expect("`CAST(id AS STRING)` produces a ResolvedCast");
+    let info = cast
+        .cast()
+        .expect("a ResolvedCast node exposes its cast type information");
+
+    assert_eq!(info.from_type(), "INT64");
+    assert_eq!(info.to_type(), "STRING");
+}
+
+#[test]
+fn non_cast_nodes_have_no_cast_info() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a cast.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.cast().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
