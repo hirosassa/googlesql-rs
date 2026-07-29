@@ -76,6 +76,12 @@ const MID_ARGUMENT_LIST_SIZE: i32 = 14;
 const SVC_FUNCTION: i32 = 636;
 const MID_FUNCTION_NAME: i32 = 30;
 
+/// `ResolvedNonScalarFunctionCallBase`: `Distinct` is whether the aggregate or
+/// analytic call applies DISTINCT (e.g. `COUNT(DISTINCT x)`). Scalar
+/// `ResolvedFunctionCall`s do not inherit this base.
+const SVC_RESOLVED_NON_SCALAR_FUNCTION_CALL_BASE: i32 = 1169;
+const MID_DISTINCT: i32 = 8;
+
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
 const SVC_RESOLVED_SCAN: i32 = 1251;
 const MID_SCAN_COLUMN_LIST: i32 = 12;
@@ -213,6 +219,7 @@ pub struct ResolvedNode {
     parameter_name: Option<String>,
     argument_count: Option<usize>,
     scan_columns: Option<Vec<String>>,
+    distinct: Option<bool>,
     children: Vec<Self>,
 }
 
@@ -289,6 +296,14 @@ impl ResolvedNode {
     /// only the value arguments.
     pub const fn argument_count(&self) -> Option<usize> {
         self.argument_count
+    }
+
+    /// Whether this node's aggregate function call applies DISTINCT
+    /// (e.g. `COUNT(DISTINCT x)`), or `None` if it is not an aggregate function
+    /// call. Scalar function calls never carry DISTINCT, so they report `None`,
+    /// not `Some(false)`.
+    pub const fn distinct(&self) -> Option<bool> {
+        self.distinct
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -442,6 +457,11 @@ impl Module {
         } else {
             None
         };
+        let distinct = if kind == KIND_AGGREGATE_FUNCTION_CALL {
+            Some(self.node_distinct(node)?)
+        } else {
+            None
+        };
         let cast = if kind == KIND_CAST {
             self.node_cast(node, type_name.as_deref())?
         } else {
@@ -469,6 +489,7 @@ impl Module {
             parameter_name,
             argument_count,
             scan_columns,
+            distinct,
             children,
         })
     }
@@ -516,6 +537,20 @@ impl Module {
             .into_iter()
             .map(|column| self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column))
             .collect()
+    }
+
+    /// Reads whether an aggregate function call applies DISTINCT.
+    ///
+    /// `distinct()` is a bool on `ResolvedNonScalarFunctionCallBase`. proto3
+    /// omits a false value, so a missing field means the call is not DISTINCT.
+    fn node_distinct(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_NON_SCALAR_FUNCTION_CALL_BASE,
+            MID_DISTINCT,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.
