@@ -442,6 +442,50 @@ fn cast_nodes_carry_their_source_and_target_types() {
 }
 
 #[test]
+fn safe_cast_is_flagged() {
+    let mut module = Module::new().unwrap();
+
+    // `SAFE_CAST` returns NULL instead of erroring on a failed conversion, which
+    // the resolver records on the ResolvedCast as return-null-on-error.
+    let root = module
+        .resolved_tree(
+            "SELECT SAFE_CAST(id AS STRING) FROM users",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let cast = find_kind(&root, "ResolvedCast")
+        .expect("`SAFE_CAST(id AS STRING)` produces a ResolvedCast");
+    let info = cast
+        .cast()
+        .expect("a ResolvedCast node exposes its cast type information");
+
+    assert!(info.is_safe());
+}
+
+#[test]
+fn plain_cast_is_not_safe() {
+    let mut module = Module::new().unwrap();
+
+    // A plain `CAST` errors on a failed conversion, so return-null-on-error is
+    // false. proto3 omits that false value on the wire; it must still decode as
+    // false, not an error.
+    let root = module
+        .resolved_tree("SELECT CAST(id AS STRING) FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let cast =
+        find_kind(&root, "ResolvedCast").expect("`CAST(id AS STRING)` produces a ResolvedCast");
+    let info = cast
+        .cast()
+        .expect("a ResolvedCast node exposes its cast type information");
+
+    assert!(!info.is_safe());
+}
+
+#[test]
 fn non_cast_nodes_have_no_cast_info() {
     let mut module = Module::new().unwrap();
 
