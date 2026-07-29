@@ -138,9 +138,11 @@ const SUBQUERY_TYPE_IN: i32 = 4;
 const SVC_RESOLVED_WITH_ENTRY: i32 = 1327;
 const MID_WITH_QUERY_NAME: i32 = 13;
 
-/// `ResolvedLiteral`: `Value` is the constant the literal carries.
+/// `ResolvedLiteral`: `Value` is the constant the literal carries;
+/// `HasExplicitType` is whether its type was stated rather than inferred.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
 const MID_LITERAL_VALUE: i32 = 17;
+const MID_LITERAL_HAS_EXPLICIT_TYPE: i32 = 9;
 
 /// `Value` (zetasql::Value): scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
@@ -406,6 +408,7 @@ pub struct ResolvedNode {
     type_name: Option<String>,
     column_ref: Option<ColumnReference>,
     literal_value: Option<LiteralValue>,
+    has_explicit_type: Option<bool>,
     function_name: Option<String>,
     table_name: Option<String>,
     cast: Option<CastInfo>,
@@ -450,6 +453,14 @@ impl ResolvedNode {
     /// (or its type is one this crate does not yet model).
     pub const fn literal_value(&self) -> Option<&LiteralValue> {
         self.literal_value.as_ref()
+    }
+
+    /// Whether this literal's type was stated explicitly (e.g. via a `CAST`)
+    /// rather than inferred from the constant, or `None` if it is not a
+    /// `ResolvedLiteral`. `SELECT CAST(NULL AS INT64)` yields `Some(true)`,
+    /// while a bare `SELECT 1` yields `Some(false)`.
+    pub const fn has_explicit_type(&self) -> Option<bool> {
+        self.has_explicit_type
     }
 
     /// The name of the function this node invokes (e.g. `$add`, `lower`,
@@ -727,6 +738,11 @@ impl Module {
         } else {
             None
         };
+        let has_explicit_type = if kind == KIND_LITERAL {
+            Some(self.node_has_explicit_type(node)?)
+        } else {
+            None
+        };
         let is_function_call = kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL;
         let function_name = if is_function_call {
             Some(self.node_function_name(node)?)
@@ -831,6 +847,7 @@ impl Module {
             type_name,
             column_ref,
             literal_value,
+            has_explicit_type,
             function_name,
             table_name,
             cast,
@@ -1161,6 +1178,20 @@ impl Module {
         check_error(&resp)?;
         let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
         usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string()))
+    }
+
+    /// Reads whether a `ResolvedLiteral`'s type was stated explicitly.
+    ///
+    /// `has_explicit_type()` is a bool on the literal. proto3 omits a false
+    /// value, so a missing field means the type was inferred, not stated.
+    fn node_has_explicit_type(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_LITERAL,
+            MID_LITERAL_HAS_EXPLICIT_TYPE,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads the constant a `ResolvedLiteral` node carries.

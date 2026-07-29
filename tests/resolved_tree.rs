@@ -1479,3 +1479,46 @@ fn non_join_scan_nodes_have_no_using_flag() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.has_using(), None);
 }
+
+#[test]
+fn cast_literal_has_an_explicit_type() {
+    let mut module = Module::new().unwrap();
+
+    // `CAST(NULL AS INT64)` folds to a literal whose type was stated explicitly.
+    let root = module
+        .resolved_tree("SELECT CAST(NULL AS INT64)", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let literal = find_kind(&root, "ResolvedLiteral").expect("the cast folds to a literal");
+    assert_eq!(literal.has_explicit_type(), Some(true));
+}
+
+#[test]
+fn inferred_literal_has_no_explicit_type() {
+    let mut module = Module::new().unwrap();
+
+    // A bare `1` has its INT64 type inferred, not stated; proto3 omits that false
+    // flag, which must decode as `Some(false)`, not `None` and not an error.
+    let root = module
+        .resolved_tree("SELECT 1", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let literal = find_kind(&root, "ResolvedLiteral").expect("`1` is a literal");
+    assert_eq!(literal.has_explicit_type(), Some(false));
+}
+
+#[test]
+fn non_literal_nodes_have_no_explicit_type_flag() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a literal.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.has_explicit_type(), None);
+}
