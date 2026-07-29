@@ -1,7 +1,49 @@
 //! Rust bindings for GoogleSQL (ZetaSQL).
 //!
 //! Drives the prebuilt WebAssembly module published by goccy/googlesql-wasm on
-//! top of wasmtime to provide GoogleSQL parser and formatter functionality.
+//! top of wasmtime, so you get GoogleSQL's parser, formatter, and analyzer
+//! without building the C++ library or writing any `unsafe` FFI.
+//!
+//! # Quick start
+//!
+//! Everything hangs off a single [`Module`], which owns the wasm instance.
+//! Create one and reuse it across queries:
+//!
+//! ```rust,no_run
+//! use googlesql::Module;
+//!
+//! let mut module = Module::new()?;
+//!
+//! // Parse a statement, then re-print it in canonical form.
+//! let stmt = module.parse_statement("SELECT 1 AS n")?;
+//! println!("parsed: {}", stmt.canonical_sql());
+//!
+//! // Pretty-print (format) a query.
+//! println!("formatted: {}", module.format_sql("select 1")?);
+//! # Ok::<(), googlesql::Error>(())
+//! ```
+//!
+//! # What you can do
+//!
+//! - **Parse** SQL into an untyped syntax tree — [`Module::parse_statement`]
+//!   returns a [`ParsedStatement`] whose [`root`](ParsedStatement::root) is an
+//!   [`AstNode`] you can walk.
+//! - **Format** SQL — [`Module::format_sql`] canonicalizes and pretty-prints a
+//!   statement.
+//! - **Analyze** SQL against a catalog of [`TableDef`]s — check that a statement
+//!   resolves ([`Module::analyze_statement`]), read its output schema
+//!   ([`Module::analyze_output_columns`] → [`OutputColumn`]), find the tables and
+//!   columns it reads ([`Module::referenced_tables`] → [`TableRef`]), or walk its
+//!   fully typed resolved AST ([`Module::resolved_tree`] → [`ResolvedNode`]).
+//!
+//! # Errors
+//!
+//! Every fallible call returns [`Error`]. A problem reported by GoogleSQL itself
+//! (a syntax error, an unresolved name, an unsupported feature) surfaces as
+//! [`Error::GoogleSql`], carrying a [`SqlError`] whose
+//! [`location`](SqlError::location) exposes the offending [`ErrorLocation`] when
+//! GoogleSQL supplied one.
+#![warn(missing_docs)]
 
 mod analyzer;
 mod ast;

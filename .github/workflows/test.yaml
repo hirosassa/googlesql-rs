@@ -36,6 +36,11 @@ jobs:
       - name: Run cargo clippy
         run: cargo clippy -- -D warnings -W clippy::nursery
 
+      - name: Run cargo doc
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
       - name: Run cargo test
         run: cargo test --release
 
