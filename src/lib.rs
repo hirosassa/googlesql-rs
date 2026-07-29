@@ -17,7 +17,7 @@ pub use ast::AstNode;
 pub use error::Error;
 pub use parser::ParsedStatement;
 pub use resolved::{
-    CastInfo, ColumnReference, JoinType, LiteralValue, OutputColumn, ResolvedNode, SetOperation,
-    TableRef,
+    CastInfo, ColumnReference, JoinType, LimitOffset, LiteralValue, OutputColumn, ResolvedNode,
+    SetOperation, TableRef,
 };
 pub use runtime::Module;

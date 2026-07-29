@@ -30,6 +30,8 @@ const KIND_PARAMETER: &str = "ResolvedParameter";
 const KIND_JOIN_SCAN: &str = "ResolvedJoinScan";
 const KIND_ORDER_BY_ITEM: &str = "ResolvedOrderByItem";
 const KIND_SET_OPERATION_SCAN: &str = "ResolvedSetOperationScan";
+const KIND_AGGREGATE_SCAN: &str = "ResolvedAggregateScan";
+const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -94,6 +96,21 @@ const OP_TYPE_INTERSECT_ALL: i32 = 3;
 const OP_TYPE_INTERSECT_DISTINCT: i32 = 4;
 const OP_TYPE_EXCEPT_ALL: i32 = 5;
 const OP_TYPE_EXCEPT_DISTINCT: i32 = 6;
+
+/// `ResolvedAggregateScanBase`: `GroupByList` holds the `ResolvedComputedColumn`s
+/// that define the query's grouping keys.
+const SVC_RESOLVED_AGGREGATE_SCAN_BASE: i32 = 730;
+const MID_GROUP_BY_LIST: i32 = 21;
+
+/// `ResolvedComputedColumn`: `Column` is the `ResolvedColumn` it defines.
+const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 853;
+const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
+
+/// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
+/// (each a literal or parameter, or a null handle when the clause is absent).
+const SVC_RESOLVED_LIMIT_OFFSET_SCAN: i32 = 1125;
+const MID_LIMIT: i32 = 9;
+const MID_OFFSET: i32 = 12;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries.
 const SVC_RESOLVED_LITERAL: i32 = 1127;
@@ -277,6 +294,33 @@ pub enum SetOperation {
     ExceptDistinct,
 }
 
+/// The row counts of a `ResolvedLimitOffsetScan`.
+///
+/// Carried by limit/offset scan nodes in a [`ResolvedNode`] tree; holds only
+/// owned data. Each field is the constant value of its clause when that clause
+/// is an `INT64` literal, and `None` when the clause is absent (a bare `LIMIT`
+/// has no offset) or its value is not an integer literal (e.g. a query
+/// parameter such as `LIMIT @n`). Groups the two related counts the way
+/// [`CastInfo`] groups a cast's two ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimitOffset {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+impl LimitOffset {
+    /// The `LIMIT` row count, or `None` if it is not an `INT64` literal.
+    pub const fn limit(&self) -> Option<i64> {
+        self.limit
+    }
+
+    /// The `OFFSET` row count, or `None` if there is no `OFFSET` clause or its
+    /// value is not an `INT64` literal.
+    pub const fn offset(&self) -> Option<i64> {
+        self.offset
+    }
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
@@ -302,6 +346,8 @@ pub struct ResolvedNode {
     join_type: Option<JoinType>,
     is_descending: Option<bool>,
     set_operation: Option<SetOperation>,
+    group_by_columns: Option<Vec<String>>,
+    limit_offset: Option<LimitOffset>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -407,6 +453,20 @@ impl ResolvedNode {
     /// `ResolvedSetOperationScan`.
     pub const fn set_operation(&self) -> Option<SetOperation> {
         self.set_operation
+    }
+
+    /// The names of this node's `GROUP BY` columns, or `None` if it is not a
+    /// `ResolvedAggregateScan`. Grouping keys keep the order they are written;
+    /// an aggregate scan with no keys (a bare aggregate such as
+    /// `SELECT COUNT(*)`) reports `Some([])`.
+    pub fn group_by_columns(&self) -> Option<&[String]> {
+        self.group_by_columns.as_deref()
+    }
+
+    /// The `LIMIT`/`OFFSET` row counts of this node, or `None` if it is not a
+    /// `ResolvedLimitOffsetScan`.
+    pub const fn limit_offset(&self) -> Option<&LimitOffset> {
+        self.limit_offset.as_ref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -589,6 +649,16 @@ impl Module {
         } else {
             None
         };
+        let group_by_columns = if kind == KIND_AGGREGATE_SCAN {
+            Some(self.node_group_by_columns(node)?)
+        } else {
+            None
+        };
+        let limit_offset = if kind == KIND_LIMIT_OFFSET_SCAN {
+            Some(self.node_limit_offset(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -622,6 +692,8 @@ impl Module {
             join_type,
             is_descending,
             set_operation,
+            group_by_columns,
+            limit_offset,
             parse_location,
             children,
         })
@@ -756,6 +828,59 @@ impl Module {
             other => Err(Error::GoogleSql(format!(
                 "unknown set operation: {other:?}"
             ))),
+        }
+    }
+
+    /// Reads the names of a `ResolvedAggregateScan`'s `GROUP BY` columns.
+    ///
+    /// `group_by_list()` yields the `ResolvedComputedColumn`s that define the
+    /// grouping keys; each one's `column()` is the `ResolvedColumn` naming it.
+    fn node_group_by_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_AGGREGATE_SCAN_BASE,
+            MID_GROUP_BY_LIST,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        pb::read_handles_at_field(&resp, 1)
+            .into_iter()
+            .map(|computed| {
+                let column = self.rpc_handle(
+                    SVC_RESOLVED_COMPUTED_COLUMN,
+                    MID_COMPUTED_COLUMN_COLUMN,
+                    computed,
+                )?;
+                self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)
+            })
+            .collect()
+    }
+
+    /// Reads the `LIMIT`/`OFFSET` row counts of a `ResolvedLimitOffsetScan`.
+    ///
+    /// `limit()`/`offset()` are expressions (a null handle for an absent
+    /// clause); each contributes a value only when it is an `INT64` literal.
+    fn node_limit_offset(&mut self, node: u64) -> Result<LimitOffset, Error> {
+        let limit_expr = self.rpc_handle(SVC_RESOLVED_LIMIT_OFFSET_SCAN, MID_LIMIT, node)?;
+        let offset_expr = self.rpc_handle(SVC_RESOLVED_LIMIT_OFFSET_SCAN, MID_OFFSET, node)?;
+        Ok(LimitOffset {
+            limit: self.literal_int64_value(limit_expr)?,
+            offset: self.literal_int64_value(offset_expr)?,
+        })
+    }
+
+    /// Reads an expression's value as an `i64` when it is an `INT64` literal.
+    ///
+    /// Returns `None` for a null handle (an absent clause) or any expression
+    /// that is not an integer literal (e.g. a query parameter), reusing the
+    /// literal machinery so the type dispatch stays in one place.
+    fn literal_int64_value(&mut self, expr: u64) -> Result<Option<i64>, Error> {
+        if expr == 0 || self.node_kind(expr)? != KIND_LITERAL {
+            return Ok(None);
+        }
+        let type_name = self.node_type_name(expr)?;
+        match self.node_literal_value(expr, type_name.as_deref())? {
+            Some(LiteralValue::Int64(value)) => Ok(Some(value)),
+            _ => Ok(None),
         }
     }
 
