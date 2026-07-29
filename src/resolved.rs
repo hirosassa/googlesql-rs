@@ -174,6 +174,7 @@ const MID_SCAN_COLUMN_LIST: i32 = 12;
 /// `Table::Name` is its catalog name (the physical table, not any query alias).
 const SVC_RESOLVED_TABLE_SCAN: i32 = 1295;
 const MID_TABLE_SCAN_TABLE: i32 = 32;
+const MID_TABLE_SCAN_ALIAS: i32 = 10;
 const SVC_TABLE: i32 = 1406;
 const MID_TABLE_NAME: i32 = 9;
 
@@ -409,6 +410,7 @@ pub struct ResolvedNode {
     parameter_name: Option<String>,
     argument_count: Option<usize>,
     scan_columns: Option<Vec<String>>,
+    alias: Option<String>,
     distinct: Option<bool>,
     join_type: Option<JoinType>,
     is_descending: Option<bool>,
@@ -474,6 +476,14 @@ impl ResolvedNode {
     /// referenced-only, query-wide view).
     pub fn scan_columns(&self) -> Option<&[String]> {
         self.scan_columns.as_deref()
+    }
+
+    /// The query alias of this node's table scan, or `None` if it is not a
+    /// `ResolvedTableScan`. This is the name given with `AS` (e.g. `u` in
+    /// `FROM users AS u`); it is empty when the scan has no explicit alias.
+    /// See [`table_name`](Self::table_name) for the underlying table's name.
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
     }
 
     /// The source and target types of this node's cast, or `None` if it is not a
@@ -728,6 +738,11 @@ impl Module {
         } else {
             None
         };
+        let alias = if kind == KIND_TABLE_SCAN {
+            Some(self.node_alias(node)?)
+        } else {
+            None
+        };
         let distinct = if kind == KIND_AGGREGATE_FUNCTION_CALL {
             Some(self.node_distinct(node)?)
         } else {
@@ -807,6 +822,7 @@ impl Module {
             parameter_name,
             argument_count,
             scan_columns,
+            alias,
             distinct,
             join_type,
             is_descending,
@@ -881,6 +897,21 @@ impl Module {
             .into_iter()
             .map(|column| self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column))
             .collect()
+    }
+
+    /// Reads the query alias of a `ResolvedTableScan`.
+    ///
+    /// `alias()` is a plain string on the scan; proto3 omits it when empty, so a
+    /// missing field means the scan has no explicit alias (an empty alias), not
+    /// an error.
+    fn node_alias(&mut self, node: u64) -> Result<String, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_TABLE_SCAN,
+            MID_TABLE_SCAN_ALIAS,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_string_at_field(&resp, 1).unwrap_or_default())
     }
 
     /// Reads whether an aggregate function call applies DISTINCT.

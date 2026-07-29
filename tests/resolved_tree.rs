@@ -1380,3 +1380,45 @@ fn non_with_entry_nodes_have_no_cte_name() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert!(root.with_query_name().is_none());
 }
+
+#[test]
+fn table_scan_reports_its_alias() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT u.id FROM users AS u", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedTableScan").expect("the query scans a table");
+    assert_eq!(scan.alias(), Some("u"));
+}
+
+#[test]
+fn table_scan_without_an_alias_reports_an_empty_alias() {
+    let mut module = Module::new().unwrap();
+
+    // No explicit alias: proto3 omits the empty string, which must decode as an
+    // empty alias rather than an error, and never as `None` (this is a scan).
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedTableScan").expect("the query scans a table");
+    assert_eq!(scan.alias(), Some(""));
+}
+
+#[test]
+fn non_table_scan_nodes_have_no_alias() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a table scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.alias(), None);
+}
