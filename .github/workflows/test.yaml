@@ -47,15 +47,27 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --component llvm-tools-preview
 
-      - name: Cache cargo registry and build artifacts
+      - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
         with:
-          # Coverage builds into target/llvm-cov-target with instrumentation, so
-          # keep it under its own cache key instead of colliding with the build
-          # matrix's cache. save-if keeps every run warming the cache so the
-          # instrumented wasmtime tree is only compiled from scratch once.
+          # rust-cache prunes target/ before saving and does not understand the
+          # custom target/llvm-cov-target directory, so it silently drops the
+          # instrumented tree. Let it cache the registry only (prefix-key keeps
+          # it off the build matrix's key) and cache the target explicitly below.
           prefix-key: "cov"
+          cache-targets: false
           save-if: true
+
+      - name: Cache llvm-cov instrumented target
+        uses: actions/cache@v4
+        with:
+          # The ~20 min coverage runtime is entirely the instrumented build of
+          # the wasmtime/cranelift tree. Persist it wholesale so only changed
+          # workspace crates recompile. The key rotates with Cargo.lock; the
+          # restore-key fallback reuses the previous tree when deps are unchanged.
+          path: target/llvm-cov-target
+          key: llvm-cov-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: llvm-cov-target-
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
