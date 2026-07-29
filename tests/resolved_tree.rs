@@ -1565,3 +1565,61 @@ fn non_query_stmt_nodes_have_no_value_table_flag() {
     let scan = find_kind(&root, "ResolvedTableScan").expect("the query scans a table");
     assert_eq!(scan.is_value_table(), None);
 }
+
+fn collect_column_ids(node: &ResolvedNode, out: &mut Vec<(String, i32)>) {
+    if let Some(reference) = node.column_ref() {
+        out.push((reference.name().to_string(), reference.id()));
+    }
+    for child in node.children() {
+        collect_column_ids(child, out);
+    }
+}
+
+#[test]
+fn column_ref_carries_a_positive_column_id() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id + 1 FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let column_ref = find_kind(&root, "ResolvedColumnRef")
+        .and_then(ResolvedNode::column_ref)
+        .expect("`id + 1` reads a column");
+
+    // ZetaSQL assigns every resolved column a unique positive id.
+    assert!(column_ref.id() > 0);
+}
+
+#[test]
+fn same_named_columns_from_distinct_scans_have_distinct_ids() {
+    let mut module = Module::new().unwrap();
+
+    // Two scans of `users` each produce their own `id` column; the shared name
+    // does not make them the same column, and their column ids prove it.
+    let root = module
+        .resolved_tree(
+            "SELECT a.id FROM users AS a JOIN users AS b ON a.id = b.id",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let mut ids = Vec::new();
+    collect_column_ids(&root, &mut ids);
+    let id_column_ids: Vec<i32> = ids
+        .into_iter()
+        .filter(|(name, _)| name == "id")
+        .map(|(_, id)| id)
+        .collect();
+
+    assert!(
+        id_column_ids.len() >= 2,
+        "both scans' `id` columns should be referenced"
+    );
+    assert!(
+        id_column_ids.iter().any(|id| *id != id_column_ids[0]),
+        "same-named columns from different scans should have distinct ids"
+    );
+}
