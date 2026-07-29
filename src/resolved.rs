@@ -65,6 +65,30 @@ impl OutputColumn {
     }
 }
 
+/// A node in the analyzer's resolved AST.
+///
+/// Produced by [`Module::resolved_tree`]; a self-contained tree that holds only
+/// each node's kind and its children, so it outlives the analysis that built it.
+/// Use [`Module::analyze_output_columns`] or [`Module::referenced_tables`] for
+/// the schema and lineage details this structural view omits.
+#[derive(Debug, Clone)]
+pub struct ResolvedNode {
+    kind: String,
+    children: Vec<Self>,
+}
+
+impl ResolvedNode {
+    /// The node's kind (e.g. `ResolvedQueryStmt`, `ResolvedTableScan`).
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// The child nodes, in the order the analyzer reports them.
+    pub fn children(&self) -> &[Self] {
+        &self.children
+    }
+}
+
 /// A table a query reads, with the columns it actually references.
 ///
 /// Produced by [`Module::referenced_tables`]; holds only owned data.
@@ -153,6 +177,37 @@ impl Module {
         let mut tables = Vec::new();
         self.collect_table_scans(statement, &mut tables)?;
         Ok(tables)
+    }
+
+    /// Builds a self-contained [`ResolvedNode`] tree from an `AnalyzerOutput`.
+    ///
+    /// Returns `None` for a statement that produces no resolved output, so the
+    /// caller can distinguish "analyzed, but nothing to walk" from an error.
+    pub(crate) fn resolved_tree_of(
+        &mut self,
+        analyzer_output: u64,
+    ) -> Result<Option<ResolvedNode>, Error> {
+        if analyzer_output == 0 {
+            return Ok(None);
+        }
+        let statement =
+            self.rpc_handle(SVC_ANALYZER_OUTPUT, MID_RESOLVED_STATEMENT, analyzer_output)?;
+        if statement == 0 {
+            return Ok(None);
+        }
+        self.build_resolved_node(statement).map(Some)
+    }
+
+    /// Recursively copies `node`'s kind and children into an owned tree.
+    fn build_resolved_node(&mut self, node: u64) -> Result<ResolvedNode, Error> {
+        let kind = self.node_kind(node)?;
+        let mut children = Vec::new();
+        for child in self.child_nodes(node)? {
+            if child != 0 {
+                children.push(self.build_resolved_node(child)?);
+            }
+        }
+        Ok(ResolvedNode { kind, children })
     }
 
     /// Records `node` if it is a table scan, then recurses into its children.
