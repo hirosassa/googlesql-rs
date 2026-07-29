@@ -48,28 +48,19 @@ impl Module {
     /// Returns [`Error::GoogleSql`] on a syntax error.
     ///
     /// Every wasm-side handle acquired during the parse is an RAII [`Handle`]
-    /// that enqueues its own free on drop; a single [`flush_frees`](Module::flush_frees)
-    /// here releases them all, whether the parse succeeded or failed.
+    /// that enqueues its own free on drop; the enclosing [`with_frees`](Module::with_frees)
+    /// releases them all, whether the parse succeeded or failed.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
-        let parsed = self.parse_statement_inner(sql);
-        let freed = self.flush_frees();
-        let parsed = parsed?;
-        freed?;
-        Ok(parsed)
-    }
-
-    /// Runs the parse pipeline, leaving handle cleanup to the caller's
-    /// [`flush_frees`](Module::flush_frees). Handles drop (and so enqueue their
-    /// frees) as this call's frames unwind, on both the success and error paths.
-    fn parse_statement_inner(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
-        let options = self.acquire_handle(
-            SVC_PARSER_OPTIONS,
-            MID_NEW_PARSER_OPTIONS,
-            &[],
-            SVC_PARSER_OPTIONS,
-            MID_FREE_PARSER_OPTIONS,
-        )?;
-        self.parse_with_options(sql, options.ptr())
+        self.with_frees(|module| {
+            let options = module.acquire_handle(
+                SVC_PARSER_OPTIONS,
+                MID_NEW_PARSER_OPTIONS,
+                &[],
+                SVC_PARSER_OPTIONS,
+                MID_FREE_PARSER_OPTIONS,
+            )?;
+            module.parse_with_options(sql, options.ptr())
+        })
     }
 
     /// Parses using a pre-built `ParserOptions` handle and produces the canonical SQL.

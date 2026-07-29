@@ -182,8 +182,8 @@ impl Module {
     /// (i.e. lineage), so the schema/success APIs leave it off.
     ///
     /// Every wasm-side handle acquired during the analysis is an RAII [`Handle`]
-    /// that enqueues its own free on drop; a single [`flush_frees`](Module::flush_frees)
-    /// here releases them all, whether the analysis succeeded or failed. All the
+    /// that enqueues its own free on drop; the enclosing [`with_frees`](Module::with_frees)
+    /// releases them all, whether the analysis succeeded or failed. All the
     /// handles stay alive until `extract` returns, so it reads the `AnalyzerOutput`
     /// (and the catalog/type factory that own its nodes and types) intact.
     fn run_analysis<T>(
@@ -193,33 +193,17 @@ impl Module {
         prune_columns: bool,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let result = self.run_analysis_inner(sql, tables, prune_columns, extract);
-        let freed = self.flush_frees();
-        let value = result?;
-        freed?;
-        Ok(value)
-    }
-
-    /// Builds the analyzer handles and runs the analysis, leaving handle cleanup
-    /// to the caller's [`flush_frees`](Module::flush_frees). Handles drop (and so
-    /// enqueue their frees) as this call's frames unwind, on success and error
-    /// alike; keeping `options` bound here holds it alive across the whole chain.
-    fn run_analysis_inner<T>(
-        &mut self,
-        sql: &str,
-        tables: &[TableDef],
-        prune_columns: bool,
-        extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        let options = self.acquire_handle(
-            SVC_ANALYZER_OPTIONS,
-            MID_NEW_ANALYZER_OPTIONS,
-            &[],
-            SVC_ANALYZER_OPTIONS,
-            MID_FREE_ANALYZER_OPTIONS,
-        )?;
-        self.configure_options(options.ptr(), prune_columns)?;
-        self.analyze_with_options(sql, options.ptr(), tables, extract)
+        self.with_frees(move |module| {
+            let options = module.acquire_handle(
+                SVC_ANALYZER_OPTIONS,
+                MID_NEW_ANALYZER_OPTIONS,
+                &[],
+                SVC_ANALYZER_OPTIONS,
+                MID_FREE_ANALYZER_OPTIONS,
+            )?;
+            module.configure_options(options.ptr(), prune_columns)?;
+            module.analyze_with_options(sql, options.ptr(), tables, extract)
+        })
     }
 
     /// Applies analysis options, enabling column pruning when requested so table
@@ -293,6 +277,9 @@ impl Module {
         tables: &[TableDef],
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
+        // Bound (not `_`) so the SimpleTable handles stay alive across `analyze`
+        // and enqueue their frees only after it returns: dropping them earlier
+        // would order their frees ahead of the AnalyzerOutput that references them.
         let _table_handles = self.add_tables(catalog, type_factory, tables)?;
         self.analyze(sql, options, catalog, type_factory, extract)
     }
@@ -463,19 +450,6 @@ impl Module {
         // pointers into that tree, so none are freed here.
         let output = self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
         extract(self, output.ptr())
-    }
-
-    /// Invokes a constructor and returns the non-null handle from response field 1.
-    fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
-        let resp = self.invoke(svc, mid, req)?;
-        check_error(&resp)?;
-        let handle = pb::read_handle_at_field(&resp, 1);
-        if handle == 0 {
-            return Err(Error::GoogleSql(format!(
-                "constructor w_{svc}_{mid} returned null"
-            )));
-        }
-        Ok(handle)
     }
 }
 

@@ -185,9 +185,49 @@ impl Module {
         })
     }
 
+    /// Runs `f`, then frees every handle it acquired via a single flush, whether
+    /// `f` succeeded or failed.
+    ///
+    /// Handles dropped inside `f` enqueue their frees as its frames unwind; the
+    /// flush here releases them all, preserving the drop (child-before-parent)
+    /// order. This is the one place handle cleanup happens, so any handle must be
+    /// acquired within a `with_frees` scope or it leaks. On error the work error
+    /// takes priority over a flush error.
+    pub(crate) fn with_frees<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let result = f(self);
+        let freed = self.flush_frees();
+        let value = result?;
+        freed?;
+        Ok(value)
+    }
+
+    /// Invokes a constructor RPC and returns its non-null handle from response
+    /// field 1, without registering a free.
+    ///
+    /// Use for handles whose ownership transfers into the wasm side (e.g. a
+    /// `SimpleColumn` adopted by a `SimpleTable`), which the host must not free.
+    /// Returns [`Error::GoogleSql`] if the response carries an error or the
+    /// constructor yields a null handle.
+    pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
+        let resp = self.invoke(svc, mid, req)?;
+        if let Some(message) = pb::extract_error(&resp) {
+            return Err(Error::GoogleSql(message));
+        }
+        let ptr = pb::read_handle_at_field(&resp, 1);
+        if ptr == 0 {
+            return Err(Error::GoogleSql(format!(
+                "constructor w_{svc}_{mid} returned null"
+            )));
+        }
+        Ok(ptr)
+    }
+
     /// Invokes a constructor RPC and returns an RAII [`Handle`] that, once
     /// dropped, defers freeing the resulting wasm-side handle via
-    /// `w_<free_svc>_<free_mid>` (run by [`Module::flush_frees`]).
+    /// `w_<free_svc>_<free_mid>` (run by the enclosing [`with_frees`](Module::with_frees)).
     ///
     /// Returns [`Error::GoogleSql`] if the response carries an error or the
     /// constructor yields a null handle.
@@ -199,22 +239,8 @@ impl Module {
         free_svc: i32,
         free_mid: i32,
     ) -> Result<Handle, Error> {
-        let resp = self.invoke(new_svc, new_mid, req)?;
-        if let Some(message) = pb::extract_error(&resp) {
-            return Err(Error::GoogleSql(message));
-        }
-        let ptr = pb::read_handle_at_field(&resp, 1);
-        if ptr == 0 {
-            return Err(Error::GoogleSql(format!(
-                "constructor w_{new_svc}_{new_mid} returned null"
-            )));
-        }
-        Ok(Handle {
-            ptr,
-            free_svc,
-            free_mid,
-            queue: Rc::clone(&self.pending_frees),
-        })
+        let ptr = self.new_handle(new_svc, new_mid, req)?;
+        Ok(self.register_free(free_svc, free_mid, ptr))
     }
 
     /// Wraps an already-obtained wasm-side handle `ptr` in an RAII [`Handle`]
@@ -235,7 +261,9 @@ impl Module {
     /// Runs every free enqueued by a dropped [`Handle`], returning the first
     /// error after attempting all of them so a single failure cannot strand the
     /// remaining handles.
-    pub(crate) fn flush_frees(&mut self) -> Result<(), Error> {
+    fn flush_frees(&mut self) -> Result<(), Error> {
+        // Drain into a local Vec first: `invoke` needs `&mut self`, so the
+        // `pending_frees` borrow cannot be held across the loop.
         let pending: Vec<PendingFree> = self.pending_frees.borrow_mut().drain(..).collect();
         let mut first_error = None;
         for free in pending {
