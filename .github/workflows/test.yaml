@@ -49,6 +49,13 @@ jobs:
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          # Coverage builds into target/llvm-cov-target with instrumentation, so
+          # keep it under its own cache key instead of colliding with the build
+          # matrix's cache. save-if keeps every run warming the cache so the
+          # instrumented wasmtime tree is only compiled from scratch once.
+          prefix-key: "cov"
+          save-if: true
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

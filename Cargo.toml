@@ -14,6 +14,12 @@ thiserror = "2"
 [build-dependencies]
 sha2 = "0.10"
 
+# Coverage instruments a debug build of every dependency, including the large
+# wasmtime/cranelift tree. Full debug info dominates that build's compile and
+# link time while coverage only needs line tables, so drop the rest.
+[profile.dev]
+debug = "line-tables-only"
+
 [lints.rust]
 unsafe_code = "forbid"
 
