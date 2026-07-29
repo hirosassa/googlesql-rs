@@ -41,6 +41,8 @@ const TYPE_INT64: &str = "INT64";
 const TYPE_BOOL: &str = "BOOL";
 const TYPE_STRING: &str = "STRING";
 const TYPE_DOUBLE: &str = "DOUBLE";
+const TYPE_BYTES: &str = "BYTES";
+const TYPE_DATE: &str = "DATE";
 
 /// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
 /// `IsExpression` reports whether a node carries a resolved type.
@@ -140,6 +142,8 @@ const MID_VALUE_BOOL: i32 = 110;
 const MID_VALUE_DOUBLE: i32 = 114;
 const MID_VALUE_INT64: i32 = 128;
 const MID_VALUE_STRING: i32 = 146;
+const MID_VALUE_BYTES: i32 = 111;
+const MID_VALUE_DATE: i32 = 112;
 
 /// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
@@ -245,6 +249,10 @@ pub enum LiteralValue {
     String(String),
     /// A `DOUBLE` constant.
     Double(f64),
+    /// A `BYTES` constant, as its raw (possibly non-UTF-8) bytes.
+    Bytes(Vec<u8>),
+    /// A `DATE` constant, as the number of days since the 1970-01-01 epoch.
+    Date(i32),
 }
 
 /// The source and target types of a `ResolvedCast` node.
@@ -1014,6 +1022,8 @@ impl Module {
                 LiteralValue::String(self.rpc_string(SVC_VALUE, MID_VALUE_STRING, value)?)
             }
             Some(TYPE_DOUBLE) => LiteralValue::Double(self.value_double(value, MID_VALUE_DOUBLE)?),
+            Some(TYPE_BYTES) => LiteralValue::Bytes(self.value_bytes(value, MID_VALUE_BYTES)?),
+            Some(TYPE_DATE) => LiteralValue::Date(self.value_int32(value, MID_VALUE_DATE)?),
             _ => return Ok(None),
         };
         Ok(Some(literal))
@@ -1040,6 +1050,22 @@ impl Module {
         check_error(&resp)?;
         pb::read_double_at_field(&resp, 1)
             .ok_or_else(|| Error::GoogleSql("double value not found".into()))
+    }
+
+    /// Reads the raw bytes of a `BYTES` `Value` handle via the given accessor.
+    fn value_bytes(&mut self, value: u64, mid: i32) -> Result<Vec<u8>, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        pb::read_bytes_at_field(&resp, 1)
+            .ok_or_else(|| Error::GoogleSql("bytes value not found".into()))
+    }
+
+    /// Reads an int32 from a `Value` handle via the given accessor.
+    fn value_int32(&mut self, value: u64, mid: i32) -> Result<i32, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        pb::read_int32_at_field(&resp, 1)
+            .ok_or_else(|| Error::GoogleSql("int32 value not found".into()))
     }
 
     /// Reads the `ResolvedColumn` a `ResolvedColumnRef` node points at.
