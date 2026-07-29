@@ -115,9 +115,12 @@ Syntax errors and unresolved names are returned as `Error::GoogleSql`.
 - ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
 - ✅ Typed access to AST nodes (type name, byte range, child traversal)
 - ✅ SQL formatting (`format_sql`)
-- 🟡 Analyzer (`analyze_statement`) — statement validation via type inference and name resolution, with builtin functions/operators registered
-- ⬜ Analyzer: user-defined tables in the catalog
-- ⬜ Analyzer: typed access to the resolved AST
+- ✅ Analyzer (`analyze_statement`) — statement validation via type inference and name resolution, with builtin functions/operators registered
+- ✅ Analyzer: user-defined tables in the catalog (`TableDef`, `analyze_statement_with_catalog`)
+- ✅ Analyzer: resolved query output schema (`analyze_output_columns` → `OutputColumn`)
+- ✅ Analyzer: table and column lineage (`referenced_tables` → `TableRef`)
+- ✅ Analyzer: typed access to the resolved AST (`resolved_tree` → `ResolvedNode`: kind, resolved type, column references, and literal values)
+- 🟡 Analyzer: further resolved-node details (function and table names, cast types, parameters, aggregates) — rolling out
 
 ## Building
 
