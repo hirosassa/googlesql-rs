@@ -235,6 +235,37 @@ fn literal_nodes_carry_bool_string_and_double_values() {
 }
 
 #[test]
+fn bytes_literal_carries_its_value() {
+    let mut module = Module::new().unwrap();
+
+    // A bytes constant resolves to a ResolvedLiteral holding raw BYTES.
+    let root = module.resolved_tree("SELECT b'abc'", &[]).unwrap().unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("a bytes constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Bytes(b"abc".to_vec()))
+    );
+}
+
+#[test]
+fn date_literal_carries_its_day_number() {
+    let mut module = Module::new().unwrap();
+
+    // A DATE constant resolves to a ResolvedLiteral holding the day count since
+    // the 1970-01-01 epoch, so the day after the epoch is day 1.
+    let root = module
+        .resolved_tree("SELECT DATE '1970-01-02'", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("a DATE constant produces a ResolvedLiteral");
+    assert_eq!(literal.literal_value(), Some(&LiteralValue::Date(1)));
+}
+
+#[test]
 fn non_literal_nodes_have_no_literal_value() {
     let mut module = Module::new().unwrap();
 

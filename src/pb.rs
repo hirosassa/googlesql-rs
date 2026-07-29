@@ -140,6 +140,25 @@ pub fn extract_error(resp: &[u8]) -> Option<String> {
     read_string_at_field(resp, 15)
 }
 
+/// Reads the raw bytes at the given field number from a response.
+///
+/// Unlike [`read_string_at_field`], this preserves the bytes verbatim rather
+/// than lossily decoding them as UTF-8, so it suits `BYTES` values that may not
+/// be valid UTF-8.
+pub fn read_bytes_at_field(resp: &[u8], field: u32) -> Option<Vec<u8>> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 2 {
+                return read_len_prefixed(&mut cur).map(<[u8]>::to_vec);
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
 /// Reads the string at the given field number from a response.
 pub fn read_string_at_field(resp: &[u8], field: u32) -> Option<String> {
     let mut cur = resp;
