@@ -41,6 +41,76 @@ fn contains_kind(node: &ResolvedNode, kind: &str) -> bool {
             .any(|child| contains_kind(child, kind))
 }
 
+/// Collects the `is_correlated()` flag of every column reference in the tree.
+fn collect_correlated_flags(node: &ResolvedNode, out: &mut Vec<bool>) {
+    if node.kind() == "ResolvedColumnRef" {
+        out.push(
+            node.is_correlated()
+                .expect("a ResolvedColumnRef reports its correlation"),
+        );
+    }
+    for child in node.children() {
+        collect_correlated_flags(child, out);
+    }
+}
+
+#[test]
+fn correlated_subquery_reference_is_flagged() {
+    let mut module = Module::new().unwrap();
+
+    // The inner subquery references `users.id` from the enclosing query, so that
+    // reference is correlated; the same column read by the outer query is not.
+    let root = module
+        .resolved_tree(
+            "SELECT (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let mut flags = Vec::new();
+    collect_correlated_flags(&root, &mut flags);
+
+    assert!(
+        flags.contains(&true),
+        "the correlated reference to the outer `users.id` should be flagged"
+    );
+    assert!(
+        flags.contains(&false),
+        "a reference within its own query should not be flagged"
+    );
+}
+
+#[test]
+fn plain_column_reference_is_not_correlated() {
+    let mut module = Module::new().unwrap();
+
+    // A reference within its own query is never correlated. proto3 omits that
+    // false value on the wire; it must still decode as false, not an error.
+    let root = module
+        .resolved_tree("SELECT id + 1 FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let column_ref =
+        find_kind(&root, "ResolvedColumnRef").expect("`id + 1` produces a ResolvedColumnRef");
+    assert_eq!(column_ref.is_correlated(), Some(false));
+}
+
+#[test]
+fn non_column_ref_nodes_have_no_correlation() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a column reference.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.is_correlated(), None);
+}
+
 #[test]
 fn root_of_a_query_is_a_resolved_query_stmt() {
     let mut module = Module::new().unwrap();
