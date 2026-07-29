@@ -19,6 +19,7 @@ const MID_RESOLVED_STATEMENT: i32 = 8;
 /// Node kinds (from `wasmify_get_type_name`) that the walks match on.
 const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
 const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
+const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
 
 /// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
 /// `IsExpression` reports whether a node carries a resolved type.
@@ -29,6 +30,10 @@ const MID_IS_EXPRESSION: i32 = 17;
 /// `ResolvedExpr` base class: `Type` is the expression's resolved type.
 const SVC_RESOLVED_EXPR: i32 = 979;
 const MID_EXPR_TYPE: i32 = 12;
+
+/// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads.
+const SVC_RESOLVED_COLUMN_REF: i32 = 849;
+const MID_COLUMN_REF_COLUMN: i32 = 8;
 
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
 const SVC_RESOLVED_SCAN: i32 = 1251;
@@ -71,17 +76,45 @@ impl OutputColumn {
     }
 }
 
+/// The column a `ResolvedColumnRef` node reads.
+///
+/// Carried by column-reference nodes in a [`ResolvedNode`] tree; holds only
+/// owned data, so it outlives the analysis that produced it.
+#[derive(Debug, Clone)]
+pub struct ColumnReference {
+    table: String,
+    name: String,
+}
+
+impl ColumnReference {
+    /// The name of the table (or scan) that produces the referenced column.
+    ///
+    /// For a column read from a user table this is that table's name; for a
+    /// column produced by an intermediate scan (a projection, aggregation, …)
+    /// the analyzer supplies a synthetic name such as `$query` or `$aggregate`.
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+
+    /// The referenced column's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
-/// node's kind, its resolved type (for expression nodes), and its children, so
-/// it outlives the analysis that built it. Use [`Module::analyze_output_columns`]
-/// or [`Module::referenced_tables`] for the schema and lineage details this
+/// node's kind, its resolved type (for expression nodes), the column it reads
+/// (for column-reference nodes), and its children, so it outlives the analysis
+/// that built it. Use [`Module::analyze_output_columns`] or
+/// [`Module::referenced_tables`] for the schema and lineage details this
 /// structural view omits.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     kind: String,
     type_name: Option<String>,
+    column_ref: Option<ColumnReference>,
     children: Vec<Self>,
 }
 
@@ -96,6 +129,11 @@ impl ResolvedNode {
     /// nodes carry no type).
     pub fn type_name(&self) -> Option<&str> {
         self.type_name.as_deref()
+    }
+
+    /// The column this node reads, or `None` if it is not a `ResolvedColumnRef`.
+    pub const fn column_ref(&self) -> Option<&ColumnReference> {
+        self.column_ref.as_ref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -218,6 +256,11 @@ impl Module {
     fn build_resolved_node(&mut self, node: u64) -> Result<ResolvedNode, Error> {
         let kind = self.node_kind(node)?;
         let type_name = self.node_type_name(node)?;
+        let column_ref = if kind == KIND_COLUMN_REF {
+            Some(self.node_column_ref(node)?)
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -227,8 +270,17 @@ impl Module {
         Ok(ResolvedNode {
             kind,
             type_name,
+            column_ref,
             children,
         })
+    }
+
+    /// Reads the `ResolvedColumn` a `ResolvedColumnRef` node points at.
+    fn node_column_ref(&mut self, node: u64) -> Result<ColumnReference, Error> {
+        let column = self.rpc_handle(SVC_RESOLVED_COLUMN_REF, MID_COLUMN_REF_COLUMN, node)?;
+        let table = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_TABLE_NAME, column)?;
+        let name = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column)?;
+        Ok(ColumnReference { table, name })
     }
 
     /// Returns a node's resolved type name, or `None` if it is not an expression.
