@@ -45,6 +45,37 @@ fn returns_error_for_unknown_table() {
 }
 
 #[test]
+fn analysis_error_carries_its_source_location() {
+    let mut module = Module::new().unwrap();
+
+    let users = TableDef {
+        name: "users".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // `missing_col` starts at column 8 of the single-line query; GoogleSQL
+    // reports the error there, and we expose that position structurally.
+    let Err(Error::GoogleSql(err)) =
+        module.analyze_output_columns("SELECT missing_col FROM users", &[users])
+    else {
+        panic!("expected an unresolved-name error");
+    };
+
+    assert_eq!(
+        err.location().map(|loc| (loc.line(), loc.column())),
+        Some((1, 8))
+    );
+    assert!(
+        err.message().starts_with("Unrecognized name: missing_col"),
+        "unexpected message: {}",
+        err.message()
+    );
+}
+
+#[test]
 fn returns_error_for_invalid_sql() {
     let mut module = Module::new().unwrap();
 

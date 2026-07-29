@@ -214,13 +214,13 @@ impl Module {
     pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
         let resp = self.invoke(svc, mid, req)?;
         if let Some(message) = pb::extract_error(&resp) {
-            return Err(Error::GoogleSql(message));
+            return Err(Error::GoogleSql(message.into()));
         }
         let ptr = pb::read_handle_at_field(&resp, 1);
         if ptr == 0 {
-            return Err(Error::GoogleSql(format!(
-                "constructor w_{svc}_{mid} returned null"
-            )));
+            return Err(Error::GoogleSql(
+                format!("constructor w_{svc}_{mid} returned null").into(),
+            ));
         }
         Ok(ptr)
     }
