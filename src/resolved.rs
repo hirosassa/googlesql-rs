@@ -182,8 +182,12 @@ const MID_TABLE_SCAN_ALIAS: i32 = 10;
 const SVC_TABLE: i32 = 1406;
 const MID_TABLE_NAME: i32 = 9;
 
+/// `ResolvedQueryStmt`: `OutputColumnList` is the query's output columns;
+/// `IsValueTable` is whether the query produces a value table (one unnamed
+/// value per row rather than a named-column row).
 const SVC_RESOLVED_QUERY_STMT: i32 = 1211;
 const MID_OUTPUT_COLUMN_LIST: i32 = 12;
+const MID_QUERY_STMT_IS_VALUE_TABLE: i32 = 9;
 
 const SVC_RESOLVED_OUTPUT_COLUMN: i32 = 1181;
 const MID_OUTPUT_COLUMN_GET_COLUMN: i32 = 8;
@@ -427,6 +431,7 @@ pub struct ResolvedNode {
     aggregate_columns: Option<Vec<String>>,
     limit_offset: Option<LimitOffset>,
     with_query_name: Option<String>,
+    is_value_table: Option<bool>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -597,6 +602,13 @@ impl ResolvedNode {
     /// `None` if it is not a `ResolvedWithEntry`.
     pub fn with_query_name(&self) -> Option<&str> {
         self.with_query_name.as_deref()
+    }
+
+    /// Whether this statement produces a value table (each row is a single
+    /// unnamed value rather than a named-column row, as with `SELECT AS VALUE`),
+    /// or `None` if it is not a `ResolvedQueryStmt`.
+    pub const fn is_value_table(&self) -> Option<bool> {
+        self.is_value_table
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -824,6 +836,11 @@ impl Module {
         } else {
             None
         };
+        let is_value_table = if kind == KIND_QUERY_STMT {
+            Some(self.node_is_value_table(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -866,6 +883,7 @@ impl Module {
             aggregate_columns,
             limit_offset,
             with_query_name,
+            is_value_table,
             parse_location,
             children,
         })
@@ -1178,6 +1196,20 @@ impl Module {
         check_error(&resp)?;
         let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
         usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string()))
+    }
+
+    /// Reads whether a `ResolvedQueryStmt` produces a value table.
+    ///
+    /// `is_value_table()` is a bool on the statement. proto3 omits a false value,
+    /// so a missing field means the query produces ordinary named-column rows.
+    fn node_is_value_table(&mut self, node: u64) -> Result<bool, Error> {
+        let resp = self.invoke(
+            SVC_RESOLVED_QUERY_STMT,
+            MID_QUERY_STMT_IS_VALUE_TABLE,
+            &pb::handle_arg(node),
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
     }
 
     /// Reads whether a `ResolvedLiteral`'s type was stated explicitly.

@@ -1522,3 +1522,46 @@ fn non_literal_nodes_have_no_explicit_type_flag() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.has_explicit_type(), None);
 }
+
+#[test]
+fn value_table_query_is_flagged() {
+    let mut module = Module::new().unwrap();
+
+    // `SELECT AS VALUE` makes each row a single unnamed value, a value table.
+    let root = module
+        .resolved_tree("SELECT AS VALUE id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.is_value_table(), Some(true));
+}
+
+#[test]
+fn ordinary_query_is_not_a_value_table() {
+    let mut module = Module::new().unwrap();
+
+    // A plain SELECT produces named-column rows; proto3 omits that false flag,
+    // which must decode as `Some(false)`, not `None` and not an error.
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.is_value_table(), Some(false));
+}
+
+#[test]
+fn non_query_stmt_nodes_have_no_value_table_flag() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // A node below the statement root is not a query statement.
+    let scan = find_kind(&root, "ResolvedTableScan").expect("the query scans a table");
+    assert_eq!(scan.is_value_table(), None);
+}
