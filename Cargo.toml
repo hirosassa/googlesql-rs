@@ -14,6 +14,20 @@ thiserror = "2"
 [build-dependencies]
 sha2 = "0.10"
 
+# Coverage instruments a debug build of every dependency, including the large
+# wasmtime/cranelift tree. Full debug info dominates that build's compile and
+# link time while coverage only needs line tables, so drop the rest.
+[profile.dev]
+debug = "line-tables-only"
+
+# Coverage runs the tests under this profile, and each test binary JIT-compiles
+# the ~13MB wasm module via wasmtime. An unoptimized (and coverage-instrumented)
+# cranelift makes that JIT take ~2 min per binary, which dominated the whole
+# coverage job. Optimize dependencies while leaving our own crate at opt-level 0
+# so line coverage stays accurate.
+[profile.dev.package."*"]
+opt-level = 3
+
 [lints.rust]
 unsafe_code = "forbid"
 
