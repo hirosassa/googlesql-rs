@@ -34,6 +34,7 @@ const KIND_AGGREGATE_SCAN: &str = "ResolvedAggregateScan";
 const KIND_LIMIT_OFFSET_SCAN: &str = "ResolvedLimitOffsetScan";
 const KIND_SUBQUERY_EXPR: &str = "ResolvedSubqueryExpr";
 const KIND_WITH_ENTRY: &str = "ResolvedWithEntry";
+const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -143,6 +144,11 @@ const MID_WITH_QUERY_NAME: i32 = 13;
 const SVC_RESOLVED_LITERAL: i32 = 1127;
 const MID_LITERAL_VALUE: i32 = 17;
 const MID_LITERAL_HAS_EXPLICIT_TYPE: i32 = 9;
+
+/// `ResolvedGetStructField`: `FieldIdx` is the zero-based position of the struct
+/// field this node reads.
+const SVC_RESOLVED_GET_STRUCT_FIELD: i32 = 1025;
+const MID_FIELD_IDX: i32 = 10;
 
 /// `Value` (zetasql::Value): scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
@@ -453,6 +459,7 @@ pub struct ResolvedNode {
     limit_offset: Option<LimitOffset>,
     with_query_name: Option<String>,
     is_value_table: Option<bool>,
+    struct_field_index: Option<i32>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -630,6 +637,13 @@ impl ResolvedNode {
     /// or `None` if it is not a `ResolvedQueryStmt`.
     pub const fn is_value_table(&self) -> Option<bool> {
         self.is_value_table
+    }
+
+    /// The zero-based position of the struct field this node reads (e.g. `1` for
+    /// `.b` in `STRUCT(1 AS a, 2 AS b).b`), or `None` if it is not a
+    /// `ResolvedGetStructField`.
+    pub const fn struct_field_index(&self) -> Option<i32> {
+        self.struct_field_index
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -868,6 +882,11 @@ impl Module {
         } else {
             None
         };
+        let struct_field_index = if kind == KIND_GET_STRUCT_FIELD {
+            Some(self.rpc_int32(SVC_RESOLVED_GET_STRUCT_FIELD, MID_FIELD_IDX, node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -911,6 +930,7 @@ impl Module {
             limit_offset,
             with_query_name,
             is_value_table,
+            struct_field_index,
             parse_location,
             children,
         })
