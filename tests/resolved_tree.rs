@@ -1,7 +1,9 @@
 //! End-to-end tests for the resolved AST tree (the analyzer's typed output tree).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-use googlesql::{ColumnDef, ColumnType, Error, LiteralValue, Module, ResolvedNode, TableDef};
+use googlesql::{
+    ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, TableDef,
+};
 
 fn users_table() -> TableDef {
     TableDef {
@@ -16,6 +18,16 @@ fn users_table() -> TableDef {
                 ty: ColumnType::String,
             },
         ],
+    }
+}
+
+fn orders_table() -> TableDef {
+    TableDef {
+        name: "orders".to_string(),
+        columns: vec![ColumnDef {
+            name: "user_id".to_string(),
+            ty: ColumnType::Int64,
+        }],
     }
 }
 
@@ -652,6 +664,87 @@ fn for_each_node(node: &ResolvedNode, f: &mut impl FnMut(&ResolvedNode)) {
     for child in node.children() {
         for_each_node(child, f);
     }
+}
+
+#[test]
+fn inner_join_scan_reports_inner() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "SELECT users.id FROM users JOIN orders ON users.id = orders.user_id",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join = find_kind(&root, "ResolvedJoinScan").expect("a JOIN produces a ResolvedJoinScan");
+    assert_eq!(join.join_type(), Some(JoinType::Inner));
+}
+
+#[test]
+fn left_join_scan_reports_left() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "SELECT users.id FROM users LEFT JOIN orders ON users.id = orders.user_id",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join =
+        find_kind(&root, "ResolvedJoinScan").expect("a LEFT JOIN produces a ResolvedJoinScan");
+    assert_eq!(join.join_type(), Some(JoinType::Left));
+}
+
+#[test]
+fn right_join_scan_reports_right() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "SELECT users.id FROM users RIGHT JOIN orders ON users.id = orders.user_id",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join =
+        find_kind(&root, "ResolvedJoinScan").expect("a RIGHT JOIN produces a ResolvedJoinScan");
+    assert_eq!(join.join_type(), Some(JoinType::Right));
+}
+
+#[test]
+fn full_join_scan_reports_full() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "SELECT users.id FROM users FULL JOIN orders ON users.id = orders.user_id",
+            &[users_table(), orders_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let join =
+        find_kind(&root, "ResolvedJoinScan").expect("a FULL JOIN produces a ResolvedJoinScan");
+    assert_eq!(join.join_type(), Some(JoinType::Full));
+}
+
+#[test]
+fn non_join_nodes_have_no_join_type() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a join.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.join_type().is_none());
 }
 
 #[test]
