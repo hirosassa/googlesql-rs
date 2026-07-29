@@ -20,6 +20,14 @@ const MID_RESOLVED_STATEMENT: i32 = 8;
 const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
 const KIND_TABLE_SCAN: &str = "ResolvedTableScan";
 const KIND_COLUMN_REF: &str = "ResolvedColumnRef";
+const KIND_LITERAL: &str = "ResolvedLiteral";
+
+/// Resolved type names (from `Type::DebugString`) of the scalar literals whose
+/// values [`LiteralValue`] models.
+const TYPE_INT64: &str = "INT64";
+const TYPE_BOOL: &str = "BOOL";
+const TYPE_STRING: &str = "STRING";
+const TYPE_DOUBLE: &str = "DOUBLE";
 
 /// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
 /// `IsExpression` reports whether a node carries a resolved type.
@@ -34,6 +42,18 @@ const MID_EXPR_TYPE: i32 = 12;
 /// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads.
 const SVC_RESOLVED_COLUMN_REF: i32 = 849;
 const MID_COLUMN_REF_COLUMN: i32 = 8;
+
+/// `ResolvedLiteral`: `Value` is the constant the literal carries.
+const SVC_RESOLVED_LITERAL: i32 = 1127;
+const MID_LITERAL_VALUE: i32 = 17;
+
+/// `Value` (zetasql::Value): scalar accessors, each returning the contents in
+/// response field 1 for the matching type.
+const SVC_VALUE: i32 = 1428;
+const MID_VALUE_BOOL: i32 = 110;
+const MID_VALUE_DOUBLE: i32 = 114;
+const MID_VALUE_INT64: i32 = 128;
+const MID_VALUE_STRING: i32 = 146;
 
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
 const SVC_RESOLVED_SCAN: i32 = 1251;
@@ -102,6 +122,24 @@ impl ColumnReference {
     }
 }
 
+/// The constant a `ResolvedLiteral` node carries.
+///
+/// Only the common scalar types are modelled. Marked `#[non_exhaustive]` because
+/// GoogleSQL has more literal types than are represented here; adding a variant
+/// later must not be a breaking change for callers that match on it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralValue {
+    /// An `INT64` constant.
+    Int64(i64),
+    /// A `BOOL` constant.
+    Bool(bool),
+    /// A `STRING` constant.
+    String(String),
+    /// A `DOUBLE` constant.
+    Double(f64),
+}
+
 /// A node in the analyzer's resolved AST.
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
@@ -115,6 +153,7 @@ pub struct ResolvedNode {
     kind: String,
     type_name: Option<String>,
     column_ref: Option<ColumnReference>,
+    literal_value: Option<LiteralValue>,
     children: Vec<Self>,
 }
 
@@ -134,6 +173,12 @@ impl ResolvedNode {
     /// The column this node reads, or `None` if it is not a `ResolvedColumnRef`.
     pub const fn column_ref(&self) -> Option<&ColumnReference> {
         self.column_ref.as_ref()
+    }
+
+    /// The constant this node carries, or `None` if it is not a `ResolvedLiteral`
+    /// (or its type is one this crate does not yet model).
+    pub const fn literal_value(&self) -> Option<&LiteralValue> {
+        self.literal_value.as_ref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -261,6 +306,11 @@ impl Module {
         } else {
             None
         };
+        let literal_value = if kind == KIND_LITERAL {
+            self.node_literal_value(node, type_name.as_deref())?
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -271,8 +321,55 @@ impl Module {
             kind,
             type_name,
             column_ref,
+            literal_value,
             children,
         })
+    }
+
+    /// Reads the constant a `ResolvedLiteral` node carries.
+    ///
+    /// The literal is an expression, so `type_name` (its resolved type) is
+    /// already known; it selects which typed `Value` accessor to call. Types
+    /// this crate does not model yield `None` rather than an error.
+    fn node_literal_value(
+        &mut self,
+        node: u64,
+        type_name: Option<&str>,
+    ) -> Result<Option<LiteralValue>, Error> {
+        let value = self.rpc_handle(SVC_RESOLVED_LITERAL, MID_LITERAL_VALUE, node)?;
+        let literal = match type_name {
+            Some(TYPE_INT64) => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
+            Some(TYPE_BOOL) => LiteralValue::Bool(self.value_bool(value, MID_VALUE_BOOL)?),
+            Some(TYPE_STRING) => {
+                LiteralValue::String(self.rpc_string(SVC_VALUE, MID_VALUE_STRING, value)?)
+            }
+            Some(TYPE_DOUBLE) => LiteralValue::Double(self.value_double(value, MID_VALUE_DOUBLE)?),
+            _ => return Ok(None),
+        };
+        Ok(Some(literal))
+    }
+
+    /// Reads an int64 from a `Value` handle via the given accessor.
+    fn value_int64(&mut self, value: u64, mid: i32) -> Result<i64, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        pb::read_int64_at_field(&resp, 1)
+            .ok_or_else(|| Error::GoogleSql("int64 value not found".into()))
+    }
+
+    /// Reads a bool from a `Value` handle via the given accessor.
+    fn value_bool(&mut self, value: u64, mid: i32) -> Result<bool, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Reads a double from a `Value` handle via the given accessor.
+    fn value_double(&mut self, value: u64, mid: i32) -> Result<f64, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        pb::read_double_at_field(&resp, 1)
+            .ok_or_else(|| Error::GoogleSql("double value not found".into()))
     }
 
     /// Reads the `ResolvedColumn` a `ResolvedColumnRef` node points at.

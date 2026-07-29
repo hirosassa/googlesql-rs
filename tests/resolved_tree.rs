@@ -1,7 +1,7 @@
 //! End-to-end tests for the resolved AST tree (the analyzer's typed output tree).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-use googlesql::{ColumnDef, ColumnType, Error, Module, ResolvedNode, TableDef};
+use googlesql::{ColumnDef, ColumnType, Error, LiteralValue, Module, ResolvedNode, TableDef};
 
 fn users_table() -> TableDef {
     TableDef {
@@ -187,6 +187,52 @@ fn column_ref_to_a_computed_column_names_its_synthetic_table() {
         !computed.0.is_empty(),
         "a computed column still reports a (synthetic) table name, got empty"
     );
+}
+
+#[test]
+fn literal_nodes_carry_their_integer_value() {
+    let mut module = Module::new().unwrap();
+
+    // A bare integer constant resolves to a ResolvedLiteral holding an INT64.
+    let root = module.resolved_tree("SELECT 42", &[]).unwrap().unwrap();
+
+    let literal = find_kind(&root, "ResolvedLiteral")
+        .expect("a constant in the SELECT list produces a ResolvedLiteral");
+    assert_eq!(literal.literal_value(), Some(&LiteralValue::Int64(42)));
+}
+
+#[test]
+fn literal_nodes_carry_bool_string_and_double_values() {
+    let mut module = Module::new().unwrap();
+
+    // Each constant resolves to a ResolvedLiteral of the matching scalar type,
+    // so its value comes back as the corresponding LiteralValue variant.
+    let cases: [(&str, LiteralValue); 3] = [
+        ("SELECT TRUE", LiteralValue::Bool(true)),
+        ("SELECT 'hi'", LiteralValue::String("hi".to_string())),
+        ("SELECT 2.5", LiteralValue::Double(2.5)),
+    ];
+
+    for (sql, expected) in cases {
+        let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+        let literal = find_kind(&root, "ResolvedLiteral")
+            .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
+        assert_eq!(literal.literal_value(), Some(&expected), "for {sql}");
+    }
+}
+
+#[test]
+fn non_literal_nodes_have_no_literal_value() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a literal.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.literal_value().is_none());
 }
 
 #[test]
