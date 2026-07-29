@@ -1696,6 +1696,52 @@ fn non_array_scan_nodes_have_no_element_column_name() {
 }
 
 #[test]
+fn array_scan_reports_outer_for_left_join_unnest() {
+    let mut module = Module::new().unwrap();
+
+    // A LEFT JOIN against UNNEST keeps input rows whose array is empty, so the
+    // array scan is marked outer.
+    let root = module
+        .resolved_tree(
+            "SELECT id, x FROM users LEFT JOIN UNNEST([1, 2, 3]) AS x",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedArrayScan").expect("UNNEST produces an array scan");
+    assert_eq!(scan.is_outer(), Some(true));
+}
+
+#[test]
+fn array_scan_reports_inner_for_plain_unnest() {
+    let mut module = Module::new().unwrap();
+
+    // A bare FROM UNNEST is an inner scan: it drops input rows with empty arrays.
+    let root = module
+        .resolved_tree("SELECT x FROM UNNEST([1, 2, 3]) AS x", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedArrayScan").expect("UNNEST produces an array scan");
+    assert_eq!(scan.is_outer(), Some(false));
+}
+
+#[test]
+fn non_array_scan_nodes_have_no_outer_flag() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // A query with no UNNEST carries no outer flag anywhere in its tree.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.is_outer(), None);
+}
+
+#[test]
 fn project_scan_reports_its_projected_columns() {
     let mut module = Module::new().unwrap();
 
