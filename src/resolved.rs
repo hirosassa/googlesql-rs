@@ -67,6 +67,13 @@ const MID_FUNCTION_NAME: i32 = 30;
 const SVC_RESOLVED_SCAN: i32 = 1251;
 const MID_SCAN_COLUMN_LIST: i32 = 12;
 
+/// `ResolvedTableScan`: `Table` is the catalog table the scan reads, and
+/// `Table::Name` is its catalog name (the physical table, not any query alias).
+const SVC_RESOLVED_TABLE_SCAN: i32 = 1295;
+const MID_TABLE_SCAN_TABLE: i32 = 32;
+const SVC_TABLE: i32 = 1406;
+const MID_TABLE_NAME: i32 = 9;
+
 const SVC_RESOLVED_QUERY_STMT: i32 = 1211;
 const MID_OUTPUT_COLUMN_LIST: i32 = 12;
 
@@ -152,10 +159,10 @@ pub enum LiteralValue {
 ///
 /// Produced by [`Module::resolved_tree`]; a self-contained tree that holds each
 /// node's kind, its resolved type (for expression nodes), the column it reads
-/// (for column-reference nodes), and its children, so it outlives the analysis
-/// that built it. Use [`Module::analyze_output_columns`] or
-/// [`Module::referenced_tables`] for the schema and lineage details this
-/// structural view omits.
+/// (for column-reference nodes), the table it scans (for table-scan nodes), and
+/// its children, so it outlives the analysis that built it. Use
+/// [`Module::analyze_output_columns`] or [`Module::referenced_tables`] for the
+/// schema and lineage details this structural view omits.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     kind: String,
@@ -163,6 +170,7 @@ pub struct ResolvedNode {
     column_ref: Option<ColumnReference>,
     literal_value: Option<LiteralValue>,
     function_name: Option<String>,
+    table_name: Option<String>,
     children: Vec<Self>,
 }
 
@@ -194,6 +202,12 @@ impl ResolvedNode {
     /// `None` if it is not a `ResolvedFunctionCall`.
     pub fn function_name(&self) -> Option<&str> {
         self.function_name.as_deref()
+    }
+
+    /// The catalog name of the table this node scans, or `None` if it is not a
+    /// `ResolvedTableScan`. This is the physical table's name, not any query alias.
+    pub fn table_name(&self) -> Option<&str> {
+        self.table_name.as_deref()
     }
 
     /// The child nodes, in the order the analyzer reports them.
@@ -331,6 +345,11 @@ impl Module {
         } else {
             None
         };
+        let table_name = if kind == KIND_TABLE_SCAN {
+            Some(self.node_table_name(node)?)
+        } else {
+            None
+        };
         let mut children = Vec::new();
         for child in self.child_nodes(node)? {
             if child != 0 {
@@ -343,8 +362,18 @@ impl Module {
             column_ref,
             literal_value,
             function_name,
+            table_name,
             children,
         })
+    }
+
+    /// Reads the catalog name of the table a `ResolvedTableScan` reads.
+    ///
+    /// `table()` yields the catalog `Table`, whose `Name` is the physical table
+    /// name (a query alias renames the scan's output columns, not the table).
+    fn node_table_name(&mut self, node: u64) -> Result<String, Error> {
+        let table = self.rpc_handle(SVC_RESOLVED_TABLE_SCAN, MID_TABLE_SCAN_TABLE, node)?;
+        self.rpc_string(SVC_TABLE, MID_TABLE_NAME, table)
     }
 
     /// Reads the catalog name of the function a `ResolvedFunctionCall` invokes.

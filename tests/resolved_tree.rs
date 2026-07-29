@@ -281,6 +281,51 @@ fn non_function_call_nodes_have_no_function_name() {
 }
 
 #[test]
+fn table_scan_nodes_carry_their_table_name() {
+    let mut module = Module::new().unwrap();
+
+    // The FROM clause becomes a ResolvedTableScan that reads the `users` table.
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan =
+        find_kind(&root, "ResolvedTableScan").expect("`FROM users` produces a ResolvedTableScan");
+    assert_eq!(scan.table_name(), Some("users"));
+}
+
+#[test]
+fn aliased_table_scans_report_the_physical_table_name() {
+    let mut module = Module::new().unwrap();
+
+    // An alias renames the table for the query, but the scan still reads the
+    // physical `users` table, so its node reports the catalog name, not `u`.
+    let root = module
+        .resolved_tree("SELECT u.id FROM users AS u", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let scan = find_kind(&root, "ResolvedTableScan")
+        .expect("`FROM users AS u` produces a ResolvedTableScan");
+    assert_eq!(scan.table_name(), Some("users"));
+}
+
+#[test]
+fn non_table_scan_nodes_have_no_table_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root is not a table scan.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert!(root.table_name().is_none());
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 
