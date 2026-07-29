@@ -2,12 +2,16 @@
 name = "googlesql"
 version = "0.1.0"
 edition = "2024"
+# Driven by the wasmtime 47 dependency tree, whose crates require Rust 1.94.
+rust-version = "1.94"
 description = "Rust bindings for GoogleSQL (ZetaSQL) via a prebuilt WebAssembly module"
 license = "Apache-2.0"
 repository = "https://github.com/hirosassa/googlesql-rs"
 readme = "README.md"
 keywords = ["googlesql", "zetasql", "sql", "parser", "wasm"]
 categories = ["database", "parser-implementations", "api-bindings"]
+# Keep development-only files out of the published crate.
+exclude = [".github/", ".workspace_cache/", "codecov.yml"]
 
 # docs.rs builds offline; build.rs detects the DOCS_RS env var and skips fetching
 # the wasm, so documentation builds without network access.
