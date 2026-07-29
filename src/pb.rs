@@ -181,6 +181,43 @@ pub fn read_bool_at_field(resp: &[u8], field: u32) -> bool {
     read_int32_at_field(resp, field).is_some_and(|v| v != 0)
 }
 
+/// Reads an int64 (varint) at the given field number from a response.
+///
+/// The wire value is a two's-complement varint (proto `int64`), so a negative
+/// literal comes back as the full 64-bit pattern.
+pub fn read_int64_at_field(resp: &[u8], field: u32) -> Option<i64> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 0 {
+                let v = read_varint(&mut cur)?;
+                return Some(i64::from_ne_bytes(v.to_ne_bytes()));
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
+/// Reads a double (fixed64) at the given field number from a response.
+///
+/// A proto `double` is a wire-type-1 field: eight little-endian IEEE-754 bytes.
+pub fn read_double_at_field(resp: &[u8], field: u32) -> Option<f64> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 1 {
+                let bytes: [u8; 8] = cur.get(..8)?.try_into().ok()?;
+                return Some(f64::from_le_bytes(bytes));
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
 /// Reads a handle (pointer) at the given field number from a response. Returns `0` if absent.
 pub fn read_handle_at_field(resp: &[u8], field: u32) -> u64 {
     if field == 1 {
@@ -367,6 +404,39 @@ mod tests {
         let mut neg = Vec::new();
         append_uint64(&mut neg, 1, u64::from(u32::MAX));
         assert_eq!(read_int32_at_field(&neg, 1), Some(-1));
+    }
+
+    #[test]
+    fn int64_field_reads_positive_and_negative() {
+        // A positive int64 round-trips through the varint encoding.
+        let mut pos = Vec::new();
+        append_uint64(&mut pos, 1, 42);
+        assert_eq!(read_int64_at_field(&pos, 1), Some(42));
+
+        // A negative int64 is a full 64-bit two's-complement varint.
+        let mut neg = Vec::new();
+        append_uint64(&mut neg, 1, u64::from_ne_bytes((-7i64).to_ne_bytes()));
+        assert_eq!(read_int64_at_field(&neg, 1), Some(-7));
+
+        // An absent field yields None.
+        assert_eq!(read_int64_at_field(&[], 1), None);
+    }
+
+    #[test]
+    fn double_field_reads_ieee754_le() {
+        // A double is written as a wire-type-1 field: eight little-endian bytes.
+        let mut buf = Vec::new();
+        append_tag(&mut buf, 1, 1);
+        buf.extend_from_slice(&(2.5f64).to_le_bytes());
+        assert_eq!(read_double_at_field(&buf, 1), Some(2.5));
+
+        // A field written with a different wire type is not read as a double.
+        let mut wrong = Vec::new();
+        append_uint64(&mut wrong, 1, 5);
+        assert_eq!(read_double_at_field(&wrong, 1), None);
+
+        // An absent field yields None.
+        assert_eq!(read_double_at_field(&[], 1), None);
     }
 
     #[test]
