@@ -1623,3 +1623,46 @@ fn same_named_columns_from_distinct_scans_have_distinct_ids() {
         "same-named columns from different scans should have distinct ids"
     );
 }
+
+#[test]
+fn get_struct_field_reports_its_field_index() {
+    let mut module = Module::new().unwrap();
+
+    // `.b` reads the second field of the struct, at zero-based index 1.
+    let root = module
+        .resolved_tree("SELECT STRUCT(1 AS a, 2 AS b).b", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let field = find_kind(&root, "ResolvedGetStructField").expect("`.b` reads a struct field");
+    assert_eq!(field.struct_field_index(), Some(1));
+}
+
+#[test]
+fn get_struct_field_reports_a_zero_first_field_index() {
+    let mut module = Module::new().unwrap();
+
+    // `.a` reads the first field, index 0; proto3 omits that zero, which must
+    // still decode as `Some(0)`, not `None` and not an error.
+    let root = module
+        .resolved_tree("SELECT STRUCT(1 AS a, 2 AS b).a", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    let field = find_kind(&root, "ResolvedGetStructField").expect("`.a` reads a struct field");
+    assert_eq!(field.struct_field_index(), Some(0));
+}
+
+#[test]
+fn non_struct_field_nodes_have_no_field_index() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root does not read a struct field.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.struct_field_index(), None);
+}
