@@ -20,3 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `location()` returns an `ErrorLocation` (line and column).
 - Coarse error classification: `SqlError::kind()` returns a `SqlErrorKind`
   (`Syntax`, `Unsupported`, or `Analysis`) derived from the message.
+
+### Changed
+
+- Internal wasm-ABI failures (a null handle, a missing response field, an
+  unrecognized enum value) now surface as a new `Error::Protocol` variant
+  instead of `Error::GoogleSql`, so a binding/module contract mismatch is no
+  longer misclassified as a GoogleSQL query error.

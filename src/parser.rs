@@ -76,7 +76,7 @@ impl Module {
         check_error(&resp)?;
         let output_ptr = pb::read_handle_at_field(&resp, 2);
         if output_ptr == 0 {
-            return Err(Error::GoogleSql("ParseStatement returned null".into()));
+            return Err(Error::Protocol("ParseStatement returned null".into()));
         }
         // The ParserOutput handle (which also owns the AST arena) is freed by the
         // top-level `flush_frees` after `build_from_output` has read the tree.
@@ -99,13 +99,13 @@ impl Module {
         check_error(&node_resp)?;
         let node_ptr = pb::read_handle_at_field(&node_resp, 1);
         if node_ptr == 0 {
-            return Err(Error::GoogleSql("ParserOutput.Node returned null".into()));
+            return Err(Error::Protocol("ParserOutput.Node returned null".into()));
         }
 
         let unparsed = self.invoke(SVC_PARSER, MID_UNPARSE, &pb::handle_arg(node_ptr))?;
         check_error(&unparsed)?;
         let canonical = pb::read_string_at_field(&unparsed, 1)
-            .ok_or_else(|| Error::GoogleSql("Unparse returned no string".into()))?;
+            .ok_or_else(|| Error::Protocol("Unparse returned no string".into()))?;
 
         let root = self.build_ast(node_ptr)?;
         Ok((canonical, root))

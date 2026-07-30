@@ -158,6 +158,16 @@ pub enum Error {
     /// An error returned by GoogleSQL itself (e.g. a syntax error).
     #[error("googlesql error: {0}")]
     GoogleSql(SqlError),
+
+    /// The wasm module returned a response the bindings could not interpret: a
+    /// null handle where one was required, a missing response field, or an enum
+    /// value the ABI does not recognize.
+    ///
+    /// Unlike [`GoogleSql`](Self::GoogleSql), this signals a contract mismatch
+    /// between these bindings and the wasm module — not a problem with the
+    /// user's SQL — so it is kept out of [`SqlError`] classification entirely.
+    #[error("unexpected googlesql wasm response: {0}")]
+    Protocol(String),
 }
 
 #[cfg(test)]
@@ -275,6 +285,20 @@ mod tests {
             SqlError::from("Feature FOO not supported here [at 1:1]").kind(),
             SqlErrorKind::Unsupported
         );
+    }
+
+    #[test]
+    fn protocol_error_displays_with_its_own_framing() {
+        // An internal ABI failure (null handle, missing field, unrecognized
+        // enum) is a `Protocol` error, framed distinctly from a GoogleSQL query
+        // error so callers can tell "the SQL was bad" from "the binding and the
+        // wasm module disagree".
+        let err = Error::Protocol("ParseStatement returned null".to_owned());
+        assert_eq!(
+            err.to_string(),
+            "unexpected googlesql wasm response: ParseStatement returned null"
+        );
+        assert!(!matches!(err, Error::GoogleSql(_)));
     }
 
     #[test]

@@ -88,7 +88,7 @@ impl Module {
         let resp = self.call_export(EXPORT_TYPE_NAME, &req)?;
         check_error(&resp)?;
         let name = pb::read_string_at_field(&resp, 1)
-            .ok_or_else(|| Error::GoogleSql("type name not found".into()))?;
+            .ok_or_else(|| Error::Protocol("type name not found".into()))?;
         Ok(name
             .strip_prefix(TYPE_NAME_PREFIX)
             .unwrap_or(&name)
@@ -142,8 +142,8 @@ impl Module {
         if start < 0 || end < start {
             return Ok(None);
         }
-        let start = usize::try_from(start).map_err(|e| Error::GoogleSql(e.to_string().into()))?;
-        let end = usize::try_from(end).map_err(|e| Error::GoogleSql(e.to_string().into()))?;
+        let start = usize::try_from(start).map_err(|e| Error::Protocol(e.to_string()))?;
+        let end = usize::try_from(end).map_err(|e| Error::Protocol(e.to_string()))?;
         Ok(Some(start..end))
     }
 

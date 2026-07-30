@@ -1178,9 +1178,7 @@ impl Module {
             Some(JOIN_TYPE_LEFT) => Ok(JoinType::Left),
             Some(JOIN_TYPE_RIGHT) => Ok(JoinType::Right),
             Some(JOIN_TYPE_FULL) => Ok(JoinType::Full),
-            other => Err(Error::GoogleSql(
-                format!("unknown join type: {other:?}").into(),
-            )),
+            other => Err(Error::Protocol(format!("unknown join type: {other:?}"))),
         }
     }
 
@@ -1227,9 +1225,7 @@ impl Module {
             Some(OP_TYPE_INTERSECT_DISTINCT) => Ok(SetOperation::IntersectDistinct),
             Some(OP_TYPE_EXCEPT_ALL) => Ok(SetOperation::ExceptAll),
             Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
-            other => Err(Error::GoogleSql(
-                format!("unknown set operation: {other:?}").into(),
-            )),
+            other => Err(Error::Protocol(format!("unknown set operation: {other:?}"))),
         }
     }
 
@@ -1251,9 +1247,7 @@ impl Module {
             Some(SUBQUERY_TYPE_ARRAY) => Ok(SubqueryKind::Array),
             Some(SUBQUERY_TYPE_EXISTS) => Ok(SubqueryKind::Exists),
             Some(SUBQUERY_TYPE_IN) => Ok(SubqueryKind::In),
-            other => Err(Error::GoogleSql(
-                format!("unknown subquery kind: {other:?}").into(),
-            )),
+            other => Err(Error::Protocol(format!("unknown subquery kind: {other:?}"))),
         }
     }
 
@@ -1354,7 +1348,7 @@ impl Module {
         )?;
         check_error(&resp)?;
         let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
-        usize::try_from(count).map_err(|e| Error::GoogleSql(e.to_string().into()))
+        usize::try_from(count).map_err(|e| Error::Protocol(e.to_string()))
     }
 
     /// Reads whether a `ResolvedQueryStmt` produces a value table.
@@ -1534,7 +1528,7 @@ impl Module {
         let resp = self.invoke(SVC_TYPE, MID_TYPE_DEBUG_STRING, &req)?;
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
-            .ok_or_else(|| Error::GoogleSql("type name not found".into()))
+            .ok_or_else(|| Error::Protocol("type name not found".into()))
     }
 
     /// Common helper: passes a single handle and returns the string from field 1.
@@ -1542,7 +1536,7 @@ impl Module {
         let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
-            .ok_or_else(|| Error::GoogleSql("string field not found".into()))
+            .ok_or_else(|| Error::Protocol("string field not found".into()))
     }
 
     /// Common helper: passes a single handle and returns the int32 from field 1.
