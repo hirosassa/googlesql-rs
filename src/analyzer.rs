@@ -27,6 +27,7 @@ const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
 const MID_SET_PRUNE_UNUSED_COLUMNS: i32 = 80;
 const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
 const MID_SET_PARSE_LOCATION_RECORD_TYPE: i32 = 77;
+const MID_SET_LANGUAGE: i32 = 74;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
 
 /// `ParseLocationRecordType::PARSE_LOCATION_RECORD_FULL_NODE_SCOPE`: record a
@@ -65,10 +66,6 @@ const MID_FREE_SIMPLE_TABLE: i32 = 27;
 const SVC_SIMPLE_COLUMN: i32 = 1350;
 const MID_NEW_SIMPLE_COLUMN: i32 = 0;
 const MID_FREE_SIMPLE_COLUMN: i32 = 10;
-
-const SVC_LANGUAGE_OPTIONS: i32 = 678;
-const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
-const MID_FREE_LANGUAGE_OPTIONS: i32 = 29;
 
 /// Field of `BuiltinFunctionOptions` that carries the `LanguageOptions` handle.
 const FIELD_BUILTIN_OPTIONS_LANGUAGE: u32 = 4;
@@ -279,6 +276,10 @@ impl Module {
                 MID_FREE_ANALYZER_OPTIONS,
             )?;
             module.configure_options(options.ptr(), opts)?;
+            // Enable the maximum language feature set so gated syntax such as the
+            // `QUALIFY` clause resolves.
+            let language = module.acquire_max_language_options()?;
+            module.set_options_language(options.ptr(), language.ptr())?;
             module.analyze_with_options(sql, options.ptr(), tables, extract)
         })
     }
@@ -302,6 +303,15 @@ impl Module {
             )?;
         }
         Ok(())
+    }
+
+    /// Wires a `LanguageOptions` handle into an `AnalyzerOptions` handle.
+    fn set_options_language(&mut self, options: u64, language: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, options);
+        pb::append_handle(&mut req, 2, language);
+        let resp = self.invoke(SVC_ANALYZER_OPTIONS, MID_SET_LANGUAGE, &req)?;
+        check_error(&resp)
     }
 
     /// Sets one boolean flag on an `AnalyzerOptions` handle.
@@ -498,13 +508,9 @@ impl Module {
     /// options) into `catalog`, so operators like `+` and standard functions
     /// resolve during analysis.
     fn add_builtin_functions(&mut self, catalog: u64) -> Result<(), Error> {
-        let language = self.acquire_handle(
-            SVC_LANGUAGE_OPTIONS,
-            MID_NEW_LANGUAGE_OPTIONS,
-            &[],
-            SVC_LANGUAGE_OPTIONS,
-            MID_FREE_LANGUAGE_OPTIONS,
-        )?;
+        // Enable the maximum language feature set so builtins match the features
+        // the parser and analyzer accept (e.g. the `QUALIFY` clause).
+        let language = self.acquire_max_language_options()?;
         // `language` is consumed here; the top-level flush frees it afterwards.
         self.add_builtins_with_language(catalog, language.ptr())
     }
