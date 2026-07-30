@@ -23,6 +23,52 @@ impl ErrorLocation {
         self.column
     }
 
+    /// Resolves this position to a 0-based byte offset into `sql`.
+    ///
+    /// GoogleSQL reports columns as 1-based Unicode code-point counts (a
+    /// multi-byte character advances the column by one), so this walks the target
+    /// line by code point to recover the byte offset. A column past the end of the
+    /// line clamps to the line's end (GoogleSQL points one past the last character
+    /// for end-of-input errors). Returns `None` when the position does not fall
+    /// within `sql` (line or column out of range).
+    #[must_use]
+    pub fn offset(&self, sql: &str) -> Option<usize> {
+        if self.line == 0 {
+            return None;
+        }
+        let col0 = self.column.checked_sub(1)?;
+
+        // Byte offset of the start of the target line (1-based).
+        let line_start = if self.line == 1 {
+            0
+        } else {
+            let target_newlines = self.line.checked_sub(1)?;
+            let mut newlines = 0usize;
+            let mut start = None;
+            for (i, byte) in sql.bytes().enumerate() {
+                if byte == b'\n' {
+                    newlines = newlines.checked_add(1)?;
+                    if newlines == target_newlines {
+                        start = Some(i.checked_add(1)?);
+                        break;
+                    }
+                }
+            }
+            start?
+        };
+
+        // Walk the target line by code point; a column past its end clamps to the
+        // line's end (GoogleSQL points one past the last character at end of input).
+        let rest = sql.get(line_start..)?;
+        let line_len = rest.find('\n').unwrap_or(rest.len());
+        let line = rest.get(..line_len)?;
+        let within = line
+            .char_indices()
+            .nth(col0)
+            .map_or(line.len(), |(byte, _)| byte);
+        line_start.checked_add(within)
+    }
+
     /// Parses GoogleSQL's trailing ` [at line:column]` suffix, if present.
     ///
     /// GoogleSQL appends the position as the last token of the message, e.g.
@@ -102,6 +148,15 @@ impl SqlError {
 
     /// The source position GoogleSQL attributed the error to, or `None` when the
     /// message carried no `[at line:column]` suffix.
+    ///
+    /// The analyzer entry points ([`Module::analyze_statement`](crate::Module::analyze_statement)
+    /// and friends) attach this suffix to every error, including syntax errors
+    /// they surface while parsing. Errors from
+    /// [`Module::parse_statement`](crate::Module::parse_statement), however, arrive
+    /// without a position: GoogleSQL emits parser errors with the location in a
+    /// structured payload that the wasm boundary drops, and the parser's error
+    /// message mode is not settable through the exposed ABI. For a located syntax
+    /// error, analyze the statement instead of parsing it.
     #[must_use]
     pub const fn location(&self) -> Option<ErrorLocation> {
         self.location
@@ -113,6 +168,32 @@ impl SqlError {
     #[must_use]
     pub const fn kind(&self) -> SqlErrorKind {
         self.kind
+    }
+
+    /// Renders the offending source line with a caret (`^`) under the error
+    /// position, mirroring GoogleSQL's multi-line-with-caret error format.
+    ///
+    /// For example, an error at `1:8` of `SELECT a FROM b` renders as:
+    ///
+    /// ```text
+    /// SELECT a FROM b
+    ///        ^
+    /// ```
+    ///
+    /// The caret is padded with `column - 1` spaces, matching GoogleSQL's own
+    /// convention (one space per column, so a run of wide characters shifts the
+    /// caret by their code-point count, not their display width). Returns `None`
+    /// when this error carries no location or the location's line is not in `sql`.
+    #[must_use]
+    pub fn caret_snippet(&self, sql: &str) -> Option<String> {
+        let location = self.location?;
+        if location.line == 0 {
+            return None;
+        }
+        let pad = location.column.checked_sub(1)?;
+        let line_index = location.line.checked_sub(1)?;
+        let line = sql.split('\n').nth(line_index)?;
+        Some(format!("{line}\n{}^", " ".repeat(pad)))
     }
 }
 
@@ -183,7 +264,90 @@ pub fn check_error(resp: &[u8]) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        reason = "test code"
+    )]
+
     use super::{Error, ErrorLocation, SqlError, SqlErrorKind};
+
+    #[test]
+    fn offset_resolves_ascii_single_line() {
+        let loc = ErrorLocation { line: 1, column: 8 };
+        // Column 8 is the `a` in `SELECT a`.
+        assert_eq!(loc.offset("SELECT a FROM b"), Some(7));
+    }
+
+    #[test]
+    fn offset_counts_columns_as_code_points_not_bytes() {
+        // GoogleSQL reports `missing_col` at column 20 even though the multi-byte
+        // string literal precedes it; the byte offset must land on `m`.
+        let sql = "SELECT '日本語' AS x, missing_col";
+        let loc = ErrorLocation {
+            line: 1,
+            column: 20,
+        };
+        let offset = loc.offset(sql).expect("in range");
+        assert!(sql[offset..].starts_with("missing_col"), "offset {offset}");
+    }
+
+    #[test]
+    fn offset_handles_a_later_line() {
+        let sql = "SELECT\n  missing_col\nFROM users";
+        let loc = ErrorLocation { line: 2, column: 3 };
+        let offset = loc.offset(sql).expect("in range");
+        assert!(sql[offset..].starts_with("missing_col"), "offset {offset}");
+    }
+
+    #[test]
+    fn offset_at_end_of_input_clamps_to_the_line_end() {
+        // `SELECT a FROM` is 13 characters; GoogleSQL points one past the end.
+        let sql = "SELECT a FROM";
+        let loc = ErrorLocation {
+            line: 1,
+            column: 14,
+        };
+        assert_eq!(loc.offset(sql), Some(sql.len()));
+    }
+
+    #[test]
+    fn offset_out_of_range_line_yields_none() {
+        let loc = ErrorLocation { line: 5, column: 1 };
+        assert_eq!(loc.offset("SELECT 1"), None);
+    }
+
+    #[test]
+    fn offset_rejects_zero_column() {
+        let loc = ErrorLocation { line: 1, column: 0 };
+        assert_eq!(loc.offset("SELECT 1"), None);
+    }
+
+    #[test]
+    fn caret_snippet_points_under_the_error_column() {
+        let err = SqlError::from("Syntax error: boom [at 1:8]");
+        assert_eq!(
+            err.caret_snippet("SELECT a FROM b").as_deref(),
+            Some("SELECT a FROM b\n       ^")
+        );
+    }
+
+    #[test]
+    fn caret_snippet_selects_the_offending_line() {
+        let err = SqlError::from("Unrecognized name: missing_col [at 2:3]");
+        assert_eq!(
+            err.caret_snippet("SELECT\n  missing_col\nFROM users")
+                .as_deref(),
+            Some("  missing_col\n  ^")
+        );
+    }
+
+    #[test]
+    fn caret_snippet_without_location_yields_none() {
+        let err = SqlError::from("ParseStatement returned null");
+        assert_eq!(err.caret_snippet("SELECT 1"), None);
+    }
 
     #[test]
     fn parses_line_and_column_from_suffix() {
