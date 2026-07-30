@@ -18,3 +18,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - expose the fully typed resolved AST (`resolved_tree` → `ResolvedNode`).
 - Structured error locations: `Error::GoogleSql` carries a `SqlError` whose
   `location()` returns an `ErrorLocation` (line and column).
+- Coarse error classification: `SqlError::kind()` returns a `SqlErrorKind`
+  (`Syntax`, `Unsupported`, or `Analysis`) derived from the message.
