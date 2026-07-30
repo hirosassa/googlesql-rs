@@ -5,7 +5,7 @@
 //! → Unparse(0,12). All acquired handles are released after use.
 
 use crate::ast::AstNode;
-use crate::error::Error;
+use crate::error::{Error, check_error};
 use crate::pb;
 use crate::runtime::Module;
 
@@ -110,9 +110,4 @@ impl Module {
         let root = self.build_ast(node_ptr)?;
         Ok((canonical, root))
     }
-}
-
-/// Converts an error in field 15 of the response into [`Error::GoogleSql`].
-fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }
