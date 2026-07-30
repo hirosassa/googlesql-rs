@@ -26,6 +26,15 @@ thiserror = "2"
 [build-dependencies]
 sha2 = "0.10"
 
+[dev-dependencies]
+criterion = "0.5"
+
+# Benchmarks live in benches/queries.rs and use criterion's own harness. They
+# are excluded from `cargo test`; run them explicitly with `cargo bench`.
+[[bench]]
+name = "queries"
+harness = false
+
 # Coverage instruments a debug build of every dependency, including the large
 # wasmtime/cranelift tree. Full debug info dominates that build's compile and
 # link time while coverage only needs line tables, so drop the rest.
