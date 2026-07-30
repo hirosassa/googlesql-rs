@@ -15,6 +15,7 @@ const MID_UNPARSE: i32 = 12;
 
 const SVC_PARSER_OPTIONS: i32 = 699;
 const MID_NEW_PARSER_OPTIONS: i32 = 0;
+const MID_SET_PARSER_LANGUAGE_OPTIONS: i32 = 11;
 const MID_FREE_PARSER_OPTIONS: i32 = 12;
 
 const SVC_PARSER_OUTPUT: i32 = 700;
@@ -59,8 +60,25 @@ impl Module {
                 SVC_PARSER_OPTIONS,
                 MID_FREE_PARSER_OPTIONS,
             )?;
+            // Enable the maximum language feature set so gated syntax such as the
+            // `QUALIFY` clause is accepted.
+            let language = module.acquire_max_language_options()?;
+            module.set_parser_language_options(options.ptr(), language.ptr())?;
             module.parse_with_options(sql, options.ptr())
         })
+    }
+
+    /// Wires a `LanguageOptions` handle into a `ParserOptions` handle.
+    fn set_parser_language_options(
+        &mut self,
+        options_ptr: u64,
+        language_ptr: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, options_ptr);
+        pb::append_handle(&mut req, 2, language_ptr);
+        let resp = self.invoke(SVC_PARSER_OPTIONS, MID_SET_PARSER_LANGUAGE_OPTIONS, &req)?;
+        check_error(&resp)
     }
 
     /// Parses using a pre-built `ParserOptions` handle and produces the canonical SQL.

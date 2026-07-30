@@ -122,6 +122,37 @@ fn analyzes_query_against_user_table() {
 }
 
 #[test]
+fn analyzes_qualify_clause() {
+    let mut module = Module::new().unwrap();
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "b".to_string(),
+                ty: ColumnType::Int64,
+            },
+        ],
+    };
+
+    // `QUALIFY` is gated behind a GoogleSQL language feature; the analyzer
+    // enables the maximum language feature set so the clause resolves.
+    let result = module.analyze_statement_with_catalog(
+        "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY b ORDER BY a) = 1",
+        &[t],
+    );
+
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
+}
+
+#[test]
 fn returns_error_for_unknown_column_in_user_table() {
     let mut module = Module::new().unwrap();
 

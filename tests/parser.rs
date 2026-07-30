@@ -27,6 +27,23 @@ fn parses_and_canonicalizes_select() {
     );
 }
 
+/// A `QUALIFY` clause parses and round-trips through the canonical SQL.
+///
+/// `QUALIFY` is gated behind a GoogleSQL language feature; the parser enables
+/// the maximum language feature set so the clause is accepted.
+#[test]
+fn parses_qualify_clause() {
+    let mut module = Module::new().unwrap();
+    let sql = "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY b ORDER BY a) = 1";
+    let parsed = module.parse_statement(sql).unwrap();
+
+    assert!(
+        parsed.canonical_sql().to_uppercase().contains("QUALIFY"),
+        "canonical SQL must contain QUALIFY: {:?}",
+        parsed.canonical_sql()
+    );
+}
+
 /// A SQL statement with a syntax error returns a GoogleSql error.
 #[test]
 fn returns_error_for_invalid_sql() {

@@ -61,22 +61,15 @@ fn unresolved_name_is_classified_as_analysis_with_a_location() {
 }
 
 #[test]
-fn recursive_cte_is_classified_as_unsupported() {
+fn unsupported_statement_is_classified_as_unsupported() {
     let mut module = Module::new().unwrap();
-    let err = expect_sql_error(module.analyze_statement_with_catalog(
-        "WITH RECURSIVE r AS (SELECT 1) SELECT * FROM r",
-        &users(),
-    ));
-    assert_eq!(err.kind(), SqlErrorKind::Unsupported);
-}
-
-#[test]
-fn like_any_is_classified_as_unsupported() {
-    let mut module = Module::new().unwrap();
-    let err = expect_sql_error(module.analyze_statement_with_catalog(
-        "SELECT id FROM users WHERE id LIKE ANY ('a', 'b')",
-        &users(),
-    ));
+    // The analyzer enables the maximum language feature set, so feature-gated
+    // syntax (recursive CTEs, `LIKE ANY`, `QUALIFY`, ...) now resolves. Statement
+    // kinds the analyzer does not implement still report `not supported`, which
+    // exercises the `Unsupported` classification.
+    let err = expect_sql_error(
+        module.analyze_statement_with_catalog("ALTER MODEL m SET OPTIONS()", &users()),
+    );
     assert_eq!(err.kind(), SqlErrorKind::Unsupported);
 }
 

@@ -24,6 +24,12 @@ use crate::pb;
 /// Absolute path to googlesql.wasm prepared by build.rs.
 const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 
+/// `LanguageOptions` service and method ids (see `spike/wazero.go`).
+const SVC_LANGUAGE_OPTIONS: i32 = 678;
+const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
+const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
+const MID_FREE_LANGUAGE_OPTIONS: i32 = 29;
+
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
 /// JIT-compiling the ~13MB module dominates the cost of [`Module::new`]. wasmtime's
@@ -294,6 +300,31 @@ impl Module {
             free_mid,
             queue: Rc::clone(&self.pending_frees),
         }
+    }
+
+    /// Acquires a `LanguageOptions` handle with the maximum released language
+    /// feature set enabled.
+    ///
+    /// GoogleSQL gates optional syntax (e.g. the `QUALIFY` clause) behind
+    /// language features that default `LanguageOptions` leaves off. The parser
+    /// and analyzer both wire the returned handle into their options so those
+    /// features are accepted. The handle is an RAII [`Handle`] freed by the
+    /// enclosing [`with_frees`](Module::with_frees).
+    pub(crate) fn acquire_max_language_options(&mut self) -> Result<Handle, Error> {
+        let language = self.acquire_handle(
+            SVC_LANGUAGE_OPTIONS,
+            MID_NEW_LANGUAGE_OPTIONS,
+            &[],
+            SVC_LANGUAGE_OPTIONS,
+            MID_FREE_LANGUAGE_OPTIONS,
+        )?;
+        let resp = self.invoke(
+            SVC_LANGUAGE_OPTIONS,
+            MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES,
+            &pb::handle_arg(language.ptr()),
+        )?;
+        crate::error::check_error(&resp)?;
+        Ok(language)
     }
 
     /// Runs every free enqueued by a dropped [`Handle`], returning the first
