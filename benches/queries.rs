@@ -15,7 +15,7 @@
     reason = "bench code"
 )]
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use googlesql::{ColumnDef, ColumnType, Module, TableDef};
 
 /// A two-table catalog the analyzer benchmarks resolve against.
@@ -113,5 +113,56 @@ fn bench_analyzer(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_module_new, bench_syntax, bench_analyzer);
+/// Parallel scaling: does throughput grow with thread count when each thread
+/// drives its own `Module`?
+///
+/// This is the question a `ModulePool` hinges on. Each thread reuses one
+/// pre-created instance (creation is outside the timed loop, mirroring a pool
+/// that pays `Module::new` up front) and parses a fixed batch. `thread::scope`
+/// hands each thread a disjoint `&mut Module` from the vec, which is sound only
+/// because `Module: Send`. Throughput is set to the total parses per iteration,
+/// so criterion reports elements/sec — compare `threads_1` against `threads_N`
+/// to read the speedup. Near-linear scaling means a pool pays off; a flat line
+/// means calls serialize somewhere and a pool would not help.
+fn bench_parallel_scaling(c: &mut Criterion) {
+    /// Parses each thread runs per iteration; large enough to dwarf the
+    /// per-iteration thread spawn/join overhead.
+    const BATCH_PER_THREAD: usize = 200;
+
+    // A light and a heavy statement: if only the light one fails to scale, the
+    // bottleneck is per-call fixed overhead (e.g. host allocator contention); if
+    // both flatten, calls serialize regardless of workload.
+    for (label, sql) in [("simple", "SELECT 1"), ("join", JOIN_SQL)] {
+        let mut group = c.benchmark_group(format!("parallel_{label}"));
+        for threads in [1usize, 2, 4, 8] {
+            // One instance per thread, created once so the timed loop measures
+            // only steady-state parsing (as a warm pool would).
+            let mut modules: Vec<Module> = (0..threads).map(|_| Module::new().unwrap()).collect();
+            let elements = u64::try_from(threads.checked_mul(BATCH_PER_THREAD).unwrap()).unwrap();
+            group.throughput(Throughput::Elements(elements));
+            group.bench_function(format!("threads_{threads}"), |b| {
+                b.iter(|| {
+                    std::thread::scope(|scope| {
+                        for module in &mut modules {
+                            scope.spawn(move || {
+                                for _ in 0..BATCH_PER_THREAD {
+                                    module.parse_statement(black_box(sql)).unwrap();
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
+criterion_group!(
+    benches,
+    bench_module_new,
+    bench_syntax,
+    bench_analyzer,
+    bench_parallel_scaling
+);
 criterion_main!(benches);
