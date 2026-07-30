@@ -7,6 +7,7 @@
 //! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -68,6 +69,35 @@ pub struct Module {
     /// Deferred frees enqueued by dropped [`Handle`]s, drained by
     /// [`Module::flush_frees`].
     pending_frees: Rc<RefCell<Vec<PendingFree>>>,
+    /// Cache of `w_<svc>_<mid>` RPC exports, keyed by `(svc, mid)`.
+    ///
+    /// Resolving an export is a by-name lookup plus a type check; the tree-walking
+    /// APIs make thousands of RPC calls, so caching the resolved [`TypedFunc`]
+    /// removes that per-call cost (and the per-call name formatting) after the
+    /// first use. `TypedFunc` is a cheap `Copy` handle independent of the store.
+    invoke_cache: HashMap<(i32, i32), TypedFunc<(u32, u32), u64>>,
+    /// Cache of named exports (e.g. `wasmify_get_type_name`), keyed by name, for
+    /// the same reason as [`Module::invoke_cache`].
+    export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
+}
+
+/// Identifies the export a [`Module::call_typed`] call targets, used only to
+/// build the call-failure message. Formatting is deferred to the error path so
+/// the cached-lookup hot path never allocates the export name.
+enum ExportId<'a> {
+    /// A `w_<svc>_<mid>` RPC export.
+    Rpc { svc: i32, mid: i32 },
+    /// A named export such as `wasmify_get_type_name`.
+    Named(&'a str),
+}
+
+impl std::fmt::Display for ExportId<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Rpc { svc, mid } => write!(f, "w_{svc}_{mid}"),
+            Self::Named(name) => f.write_str(name),
+        }
+    }
 }
 
 /// A wasm-side handle free deferred until [`Module::flush_frees`]: the
@@ -188,6 +218,8 @@ impl Module {
             free_fn,
             instance,
             pending_frees: Rc::new(RefCell::new(Vec::new())),
+            invoke_cache: HashMap::new(),
+            export_cache: HashMap::new(),
         })
     }
 
@@ -320,18 +352,49 @@ impl Module {
     /// writes `req` into wasm memory, calls the export, and returns the response bytes.
     /// Both the request and response buffers are freed after the call.
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
-        let name = format!("w_{svc}_{mid}");
-        self.call_export(&name, req)
+        let func = match self.invoke_cache.get(&(svc, mid)) {
+            Some(func) => func.clone(),
+            None => {
+                let name = format!("w_{svc}_{mid}");
+                let func = self.typed_export(&name)?;
+                self.invoke_cache.insert((svc, mid), func.clone());
+                func
+            }
+        };
+        self.call_typed(func, ExportId::Rpc { svc, mid }, req)
     }
 
     /// Calls a named export (`w_<svc>_<mid>` or `wasmify_get_type_name`, etc.)
     /// using the `(ptr,len) -> (ptr<<32 | len)` convention.
     pub fn call_export(&mut self, name: &str, req: &[u8]) -> Result<Vec<u8>, Error> {
-        let func = self
-            .instance
-            .get_typed_func::<(u32, u32), u64>(&mut self.store, name)
-            .map_err(|e| Error::Wasm(format!("export `{name}`: {e}")))?;
+        let func = match self.export_cache.get(name) {
+            Some(func) => func.clone(),
+            None => {
+                let func = self.typed_export(name)?;
+                self.export_cache.insert(name.to_string(), func.clone());
+                func
+            }
+        };
+        self.call_typed(func, ExportId::Named(name), req)
+    }
 
+    /// Resolves an export by name into a typed `(ptr,len) -> packed` function.
+    fn typed_export(&mut self, name: &str) -> Result<TypedFunc<(u32, u32), u64>, Error> {
+        self.instance
+            .get_typed_func::<(u32, u32), u64>(&mut self.store, name)
+            .map_err(|e| Error::Wasm(format!("export `{name}`: {e}")))
+    }
+
+    /// Runs one RPC over an already-resolved export: writes `req` into wasm
+    /// memory, calls the export, and returns the response bytes. Both the request
+    /// and response buffers are freed after the call. `id` names the export only
+    /// for the call-failure message, so it is formatted lazily off the hot path.
+    fn call_typed(
+        &mut self,
+        func: TypedFunc<(u32, u32), u64>,
+        id: ExportId<'_>,
+        req: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         let (req_ptr, req_len) = if req.is_empty() {
             (0, 0)
         } else {
@@ -346,7 +409,7 @@ impl Module {
 
         let packed = func
             .call(&mut self.store, (req_ptr, req_len))
-            .map_err(|e| Error::Wasm(format!("`{name}` call: {e}")))?;
+            .map_err(|e| Error::Wasm(format!("`{id}` call: {e}")))?;
 
         if req_ptr != 0 {
             self.free(req_ptr)?;
@@ -515,6 +578,49 @@ mod tests {
             module.pending_frees.borrow().len(),
             0,
             "flush must drain the queue and run every free"
+        );
+    }
+
+    /// Repeated RPCs to the same `(svc, mid)` resolve the export exactly once:
+    /// the first `invoke` populates the cache and later calls reuse the cached
+    /// `TypedFunc` instead of re-running `get_typed_func`.
+    #[test]
+    fn invoke_caches_typed_export_per_svc_mid() {
+        let mut module = super::Module::new().expect("instantiate module");
+
+        assert_eq!(
+            module.invoke_cache.len(),
+            0,
+            "cache must start empty before any RPC"
+        );
+
+        let mut handle = 0;
+        for _ in 0..3 {
+            let resp = module
+                .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
+                .expect("NewParserOptions RPC");
+            handle = super::pb::read_handle_at_field(&resp, 1);
+        }
+
+        assert_eq!(
+            module.invoke_cache.len(),
+            1,
+            "three calls to one RPC must leave a single cached export"
+        );
+
+        // A distinct RPC adds exactly one more entry rather than replacing it;
+        // free the last handle acquired above so the instance is left clean.
+        module
+            .invoke(
+                SVC_PARSER_OPTIONS,
+                MID_FREE_PARSER_OPTIONS,
+                &super::pb::handle_arg(handle),
+            )
+            .expect("FreeParserOptions RPC");
+        assert_eq!(
+            module.invoke_cache.len(),
+            2,
+            "a different (svc, mid) must add its own cache entry"
         );
     }
 }
