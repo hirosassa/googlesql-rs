@@ -209,8 +209,8 @@ impl Module {
     ///
     /// Use for handles whose ownership transfers into the wasm side (e.g. a
     /// `SimpleColumn` adopted by a `SimpleTable`), which the host must not free.
-    /// Returns [`Error::GoogleSql`] if the response carries an error or the
-    /// constructor yields a null handle.
+    /// Returns [`Error::GoogleSql`] if the response carries a GoogleSQL error, or
+    /// [`Error::Protocol`] if the constructor yields a null handle.
     pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
         let resp = self.invoke(svc, mid, req)?;
         if let Some(message) = pb::extract_error(&resp) {
@@ -218,9 +218,9 @@ impl Module {
         }
         let ptr = pb::read_handle_at_field(&resp, 1);
         if ptr == 0 {
-            return Err(Error::GoogleSql(
-                format!("constructor w_{svc}_{mid} returned null").into(),
-            ));
+            return Err(Error::Protocol(format!(
+                "constructor w_{svc}_{mid} returned null"
+            )));
         }
         Ok(ptr)
     }
@@ -229,8 +229,8 @@ impl Module {
     /// dropped, defers freeing the resulting wasm-side handle via
     /// `w_<free_svc>_<free_mid>` (run by the enclosing [`with_frees`](Module::with_frees)).
     ///
-    /// Returns [`Error::GoogleSql`] if the response carries an error or the
-    /// constructor yields a null handle.
+    /// Returns [`Error::GoogleSql`] if the response carries a GoogleSQL error, or
+    /// [`Error::Protocol`] if the constructor yields a null handle.
     pub(crate) fn acquire_handle(
         &mut self,
         new_svc: i32,

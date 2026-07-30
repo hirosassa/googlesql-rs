@@ -24,6 +24,6 @@ impl Module {
             return Err(Error::GoogleSql(message.into()));
         }
         pb::read_string_at_field(&resp, 2)
-            .ok_or_else(|| Error::GoogleSql("FormatSql returned no string".into()))
+            .ok_or_else(|| Error::Protocol("FormatSql returned no string".into()))
     }
 }
