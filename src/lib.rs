@@ -57,7 +57,7 @@ mod runtime;
 pub use analyzer::{ColumnDef, ColumnType, TableDef};
 pub use ast::AstNode;
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
-pub use parser::ParsedStatement;
+pub use parser::{ParsedStatement, ParsedStatements};
 pub use resolved::{
     CastInfo, ColumnReference, JoinType, LimitOffset, LiteralValue, OutputColumn, ResolvedNode,
     SetOperation, SubqueryKind, TableRef,
