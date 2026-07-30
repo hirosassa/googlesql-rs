@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::error::Error;
+use crate::error::{Error, check_error};
 use crate::pb;
 use crate::runtime::Module;
 
@@ -164,9 +164,4 @@ impl Module {
         check_error(&resp)?;
         Ok(pb::read_handle_at_field(&resp, 1))
     }
-}
-
-/// Converts an error in field 15 of the response into [`Error::GoogleSql`].
-fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }

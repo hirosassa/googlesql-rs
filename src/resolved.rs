@@ -11,7 +11,7 @@
 
 use std::ops::Range;
 
-use crate::error::Error;
+use crate::error::{Error, check_error};
 use crate::pb;
 use crate::runtime::Module;
 
@@ -1402,20 +1402,27 @@ impl Module {
 
     /// Reads an int64 from a `Value` handle via the given accessor.
     ///
+    /// Invokes a `Value` accessor (method `mid` on `SVC_VALUE`) and returns the
+    /// error-checked response bytes. Every `value_*` reader shares this
+    /// call/`check_error` prologue and differs only in how it decodes field 1.
+    fn value_resp(&mut self, value: u64, mid: i32) -> Result<Vec<u8>, Error> {
+        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        check_error(&resp)?;
+        Ok(resp)
+    }
+
     /// A proto3 scalar equal to its zero default is omitted from the response,
     /// so an absent field decodes as `0` rather than an error — a `Value` is
     /// only read after its non-null type is confirmed, so absence here always
     /// means the value is zero (e.g. `SELECT 0`, or the epoch timestamp).
     fn value_int64(&mut self, value: u64, mid: i32) -> Result<i64, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
-        check_error(&resp)?;
+        let resp = self.value_resp(value, mid)?;
         Ok(pb::read_int64_at_field(&resp, 1).unwrap_or(0))
     }
 
     /// Reads a bool from a `Value` handle via the given accessor.
     fn value_bool(&mut self, value: u64, mid: i32) -> Result<bool, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
-        check_error(&resp)?;
+        let resp = self.value_resp(value, mid)?;
         Ok(pb::read_bool_at_field(&resp, 1))
     }
 
@@ -1430,8 +1437,7 @@ impl Module {
     /// Reads a double from a `Value` handle via the given accessor. An absent
     /// field decodes as `0.0` for the same proto3 reason as [`value_int64`].
     fn value_double(&mut self, value: u64, mid: i32) -> Result<f64, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
-        check_error(&resp)?;
+        let resp = self.value_resp(value, mid)?;
         Ok(pb::read_double_at_field(&resp, 1).unwrap_or(0.0))
     }
 
@@ -1439,16 +1445,14 @@ impl Module {
     /// An absent field decodes as empty for the same proto3 reason as
     /// [`value_int64`] — an empty `BYTES` literal (`b''`) is omitted on the wire.
     fn value_bytes(&mut self, value: u64, mid: i32) -> Result<Vec<u8>, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
-        check_error(&resp)?;
+        let resp = self.value_resp(value, mid)?;
         Ok(pb::read_bytes_at_field(&resp, 1).unwrap_or_default())
     }
 
     /// Reads an int32 from a `Value` handle via the given accessor. An absent
     /// field decodes as `0` for the same proto3 reason as [`value_int64`].
     fn value_int32(&mut self, value: u64, mid: i32) -> Result<i32, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
-        check_error(&resp)?;
+        let resp = self.value_resp(value, mid)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
     }
 
@@ -1569,9 +1573,4 @@ fn add_referenced_column(tables: &mut Vec<TableRef>, table_name: &str, column: S
             columns: vec![column],
         });
     }
-}
-
-/// Converts an error in field 15 of the response into [`Error::GoogleSql`].
-fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }

@@ -14,7 +14,7 @@
 //! analysis, and let a caller-supplied closure read the `AnalyzerOutput` before
 //! the handles are torn down (see [`Module::run_analysis`]).
 
-use crate::error::Error;
+use crate::error::{Error, check_error};
 use crate::pb;
 use crate::resolved::{OutputColumn, ResolvedNode, TableRef};
 use crate::runtime::{Handle, Module};
@@ -561,9 +561,4 @@ impl Module {
         let output = self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
         extract(self, output.ptr())
     }
-}
-
-/// Converts an error in field 15 of the response into [`Error::GoogleSql`].
-fn check_error(resp: &[u8]) -> Result<(), Error> {
-    pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }

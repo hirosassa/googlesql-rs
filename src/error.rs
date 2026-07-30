@@ -170,6 +170,17 @@ pub enum Error {
     Protocol(String),
 }
 
+/// Converts a GoogleSQL error carried in field 15 of a wasm response into
+/// [`Error::GoogleSql`].
+///
+/// The wasm ABI reports every GoogleSQL-level problem as a single free-text
+/// string in field 15 of the response; its absence means the call succeeded.
+/// This is the single place that mapping lives, shared by every module that
+/// invokes the wasm surface.
+pub fn check_error(resp: &[u8]) -> Result<(), Error> {
+    crate::pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Error, ErrorLocation, SqlError, SqlErrorKind};
