@@ -465,6 +465,13 @@ impl Module {
             {
                 Ok(()) => {}
                 Err(e) => {
+                    // Best-effort cleanup of the orphaned column while already
+                    // unwinding `e`; a second failure here cannot be surfaced
+                    // without masking the original error, so it is discarded.
+                    #[allow(
+                        clippy::let_underscore_must_use,
+                        reason = "best-effort free on an error path; original error takes precedence"
+                    )]
                     let _ = self.invoke(
                         SVC_SIMPLE_COLUMN,
                         MID_FREE_SIMPLE_COLUMN,

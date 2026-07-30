@@ -130,6 +130,12 @@ impl Module {
         // absl's FindTimeZoneByName works without in-sandbox symlink traversal.
         if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
             builder.env("TZDIR", "/usr/share/zoneinfo");
+            // Best-effort: the required "/" preopen below also covers zoneinfo,
+            // so failing to preopen it directly is tolerable and discarded.
+            #[allow(
+                clippy::let_underscore_must_use,
+                reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
+            )]
             let _ = builder.preopened_dir(
                 &real,
                 "/usr/share/zoneinfo",
@@ -466,7 +472,7 @@ const fn zero_val(ty: &ValType) -> Val {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, reason = "test code")]
 mod tests {
     // A `ParserOptions` handle (NewParserOptions = svc699/mid0, freed by mid12)
     // is a convenient real handle to exercise the deferred-free machinery.

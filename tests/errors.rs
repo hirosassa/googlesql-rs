@@ -1,5 +1,12 @@
 //! End-to-end error-handling tests: classification and edge-case inputs.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::{ColumnDef, ColumnType, Error, Module, SqlErrorKind, TableDef};
 

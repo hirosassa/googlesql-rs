@@ -3,7 +3,14 @@
 //! The runtime shares a single compiled wasm module across all instances for
 //! speed; this test proves that sharing the immutable compiled code does not
 //! leak any mutable state between live instances.
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::{Error, Module};
 

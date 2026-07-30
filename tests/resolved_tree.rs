@@ -1,5 +1,12 @@
 //! End-to-end tests for the resolved AST tree (the analyzer's typed output tree).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::{
     ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, SetOperation,
@@ -1417,10 +1424,10 @@ fn multiple_ctes_report_each_name() {
     // CTE name (the one it reads), so restrict to the defining nodes here.
     let mut names = Vec::new();
     for_each_node(&root, &mut |node| {
-        if node.kind() == "ResolvedWithEntry" {
-            if let Some(name) = node.with_query_name() {
-                names.push(name.to_owned());
-            }
+        if node.kind() == "ResolvedWithEntry"
+            && let Some(name) = node.with_query_name()
+        {
+            names.push(name.to_owned());
         }
     });
 

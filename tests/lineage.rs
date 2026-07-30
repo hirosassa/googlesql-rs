@@ -1,5 +1,12 @@
 //! End-to-end tests for query lineage (the tables and columns a query reads).
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::{ColumnDef, ColumnType, Error, Module, TableDef};
 
