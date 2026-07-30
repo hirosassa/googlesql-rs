@@ -6,10 +6,8 @@
 //! - `wasmify::callback_invoke` is provided (returns 0 in the MVP — no callbacks registered)
 //! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use wasmtime::{
     Caller, Engine, Extern, ExternType, Instance, Linker, Memory, Module as WasmModule, Store,
@@ -65,7 +63,12 @@ struct HostState {
 /// A single instance of the GoogleSQL wasm module.
 ///
 /// wasmtime's `Store` requires exclusive access (`&mut`), so every method takes
-/// `&mut self`, serializing all calls through a single instance.
+/// `&mut self`, serializing all calls through one instance. A `Module` is
+/// [`Send`], so it can be moved between threads and, since each instance owns an
+/// isolated wasm linear memory, many instances (one per thread) run truly in
+/// parallel. wasmtime forbids concurrent calls into a single instance, so a
+/// `Module` is deliberately not `Sync`: parallelism comes from separate
+/// instances, not from sharing one.
 pub struct Module {
     store: Store<HostState>,
     memory: Memory,
@@ -73,8 +76,10 @@ pub struct Module {
     free_fn: TypedFunc<u32, ()>,
     instance: Instance,
     /// Deferred frees enqueued by dropped [`Handle`]s, drained by
-    /// [`Module::flush_frees`].
-    pending_frees: Rc<RefCell<Vec<PendingFree>>>,
+    /// [`Module::flush_frees`]. Shared with each live [`Handle`] via `Arc` (not
+    /// `Rc`) so the whole `Module` stays [`Send`]; the `Mutex` is only ever
+    /// taken by the single owning thread, so it is uncontended.
+    pending_frees: Arc<Mutex<Vec<PendingFree>>>,
     /// Cache of `w_<svc>_<mid>` RPC exports, keyed by `(svc, mid)`.
     ///
     /// Resolving an export is a by-name lookup plus a type check; the tree-walking
@@ -126,7 +131,7 @@ pub struct Handle {
     ptr: u64,
     free_svc: i32,
     free_mid: i32,
-    queue: Rc<RefCell<Vec<PendingFree>>>,
+    queue: Arc<Mutex<Vec<PendingFree>>>,
 }
 
 impl Handle {
@@ -138,13 +143,17 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // The queue is borrowed only here and in `flush_frees`, never
-        // concurrently (single-threaded, no reentrancy), so this cannot panic.
-        self.queue.borrow_mut().push(PendingFree {
-            svc: self.free_svc,
-            mid: self.free_mid,
-            ptr: self.ptr,
-        });
+        // The lock is only ever taken by the single owning thread (here and in
+        // `flush_frees`), so it is uncontended; recover from poisoning rather
+        // than panic in `drop`, so a free is never silently dropped.
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(PendingFree {
+                svc: self.free_svc,
+                mid: self.free_mid,
+                ptr: self.ptr,
+            });
     }
 }
 
@@ -223,7 +232,7 @@ impl Module {
             alloc_fn,
             free_fn,
             instance,
-            pending_frees: Rc::new(RefCell::new(Vec::new())),
+            pending_frees: Arc::new(Mutex::new(Vec::new())),
             invoke_cache: HashMap::new(),
             export_cache: HashMap::new(),
         })
@@ -298,7 +307,7 @@ impl Module {
             ptr,
             free_svc,
             free_mid,
-            queue: Rc::clone(&self.pending_frees),
+            queue: Arc::clone(&self.pending_frees),
         }
     }
 
@@ -332,8 +341,13 @@ impl Module {
     /// remaining handles.
     fn flush_frees(&mut self) -> Result<(), Error> {
         // Drain into a local Vec first: `invoke` needs `&mut self`, so the
-        // `pending_frees` borrow cannot be held across the loop.
-        let pending: Vec<PendingFree> = self.pending_frees.borrow_mut().drain(..).collect();
+        // `pending_frees` lock cannot be held across the loop.
+        let pending: Vec<PendingFree> = self
+            .pending_frees
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain(..)
+            .collect();
         let mut first_error = None;
         for free in pending {
             let freed = self.invoke(free.svc, free.mid, &pb::handle_arg(free.ptr));
@@ -592,21 +606,33 @@ mod tests {
                 .expect("acquire ParserOptions handle");
             assert_ne!(handle.ptr(), 0, "handle pointer must be non-null");
             assert_eq!(
-                module.pending_frees.borrow().len(),
+                module
+                    .pending_frees
+                    .lock()
+                    .unwrap_or_else(super::PoisonError::into_inner)
+                    .len(),
                 0,
                 "nothing may be queued while the handle is still alive"
             );
         }
 
         assert_eq!(
-            module.pending_frees.borrow().len(),
+            module
+                .pending_frees
+                .lock()
+                .unwrap_or_else(super::PoisonError::into_inner)
+                .len(),
             1,
             "dropping the handle must enqueue exactly one deferred free"
         );
 
         module.flush_frees().expect("flush frees");
         assert_eq!(
-            module.pending_frees.borrow().len(),
+            module
+                .pending_frees
+                .lock()
+                .unwrap_or_else(super::PoisonError::into_inner)
+                .len(),
             0,
             "flush must drain the queue and run every free"
         );
