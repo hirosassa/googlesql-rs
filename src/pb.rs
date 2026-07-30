@@ -535,4 +535,78 @@ mod tests {
         append_handle(&mut ok, 2, 1);
         assert_eq!(extract_error(&ok), None);
     }
+
+    #[test]
+    fn read_varint_rejects_truncated_continuation() {
+        // A byte with the continuation bit set but no following byte is
+        // malformed: the reader must stop rather than read past the end.
+        assert_eq!(read_varint(&mut &[0x80][..]), None);
+        assert_eq!(read_varint(&mut &[0xFF, 0xFF][..]), None);
+    }
+
+    #[test]
+    fn read_varint_rejects_overflowing_shift() {
+        // Ten continuation bytes push the shift past 64 bits; a well-formed
+        // 64-bit varint never needs that, so this must be rejected.
+        assert_eq!(read_varint(&mut &[0xFF; 10][..]), None);
+
+        // The genuine 10-byte encoding of u64::MAX (nine 0xFF then 0x01) is the
+        // boundary that *must* still decode — the guard rejects one bit more.
+        let mut max = Vec::new();
+        append_varint(&mut max, u64::MAX);
+        assert_eq!(max.len(), 10);
+        assert_eq!(read_varint(&mut max.as_slice()), Some(u64::MAX));
+    }
+
+    #[test]
+    fn skip_rejects_unknown_and_group_wire_types() {
+        // Wire types 3 and 4 (deprecated groups) and any value >= 6 are not
+        // supported; skipping one must fail so the reader bails out.
+        for wire in [3u32, 4, 6, 7] {
+            assert_eq!(skip(&mut &[1, 2, 3, 4, 5, 6, 7, 8][..], wire), None);
+        }
+    }
+
+    #[test]
+    fn skip_rejects_truncated_fixed_width_fields() {
+        // A fixed64 (wire 1) needs 8 bytes and a fixed32 (wire 5) needs 4; fewer
+        // than that is truncated input and must not be skipped.
+        assert_eq!(skip(&mut &[0, 0, 0][..], 1), None);
+        assert_eq!(skip(&mut &[0, 0, 0][..], 5), None);
+    }
+
+    #[test]
+    fn read_string_rejects_length_prefix_past_end() {
+        // A length prefix claiming more bytes than remain is truncated input;
+        // the reader must return None rather than read out of bounds.
+        let mut buf = Vec::new();
+        append_tag(&mut buf, 1, 2);
+        append_varint(&mut buf, 10); // claims 10 bytes...
+        buf.extend_from_slice(b"abc"); // ...but only 3 follow
+        assert_eq!(read_string_at_field(&buf, 1), None);
+    }
+
+    #[test]
+    fn read_string_ignores_field_with_wrong_wire_type() {
+        // The requested field exists but is not length-delimited, so it is not a
+        // string: reading it yields None rather than a garbled value.
+        let mut buf = Vec::new();
+        append_uint64(&mut buf, 1, 42);
+        assert_eq!(read_string_at_field(&buf, 1), None);
+    }
+
+    #[test]
+    fn int32_decodes_two_complement_boundaries() {
+        // proto int32 negatives arrive as the low 32 bits of a 64-bit varint.
+        // The extremes must reinterpret as the correct signed values.
+        for (low, expected) in [
+            (0x8000_0000u64, i32::MIN),
+            (0x7FFF_FFFF, i32::MAX),
+            (u64::from(u32::MAX), -1),
+        ] {
+            let mut buf = Vec::new();
+            append_uint64(&mut buf, 1, low);
+            assert_eq!(read_int32_at_field(&buf, 1), Some(expected));
+        }
+    }
 }

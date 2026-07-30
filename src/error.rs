@@ -216,6 +216,68 @@ mod tests {
     }
 
     #[test]
+    fn rejects_negative_coordinates() {
+        // Positions are 1-based unsigned; a negative component cannot parse as
+        // usize, so the whole suffix is treated as absent.
+        assert_eq!(SqlError::from("boom [at -1:5]").location(), None);
+        assert_eq!(SqlError::from("boom [at 1:-5]").location(), None);
+    }
+
+    #[test]
+    fn rejects_overflowing_coordinates() {
+        // A number too large for usize must not wrap or panic; it yields None.
+        let huge = format!("boom [at {}0:1]", usize::MAX);
+        assert_eq!(SqlError::from(huge).location(), None);
+    }
+
+    #[test]
+    fn rejects_suffix_with_internal_whitespace() {
+        // GoogleSQL writes `[at L:C]` with no spaces around the colon; a spaced
+        // variant fails to parse rather than being silently coerced.
+        assert_eq!(SqlError::from("boom [at 1 : 5]").location(), None);
+    }
+
+    #[test]
+    fn rejects_suffix_missing_closing_bracket() {
+        assert_eq!(SqlError::from("boom [at 1:5").location(), None);
+    }
+
+    #[test]
+    fn keeps_last_two_of_three_or_more_colon_components() {
+        // Beyond `file:line:column`, only the final line:column pair is used.
+        let err = SqlError::from("boom [at a:b:7:8]");
+        assert_eq!(err.location(), Some(ErrorLocation { line: 7, column: 8 }));
+    }
+
+    #[test]
+    fn classification_is_case_sensitive_and_prefix_anchored() {
+        // The `Syntax error:` signal must be an exact, leading match: a
+        // differently-cased or non-leading occurrence is not a syntax error.
+        assert_eq!(
+            SqlError::from("syntax error: x").kind(),
+            SqlErrorKind::Analysis
+        );
+        assert_eq!(
+            SqlError::from("SYNTAX ERROR: x").kind(),
+            SqlErrorKind::Analysis
+        );
+        assert_eq!(
+            SqlError::from(" Syntax error: leading space").kind(),
+            SqlErrorKind::Analysis
+        );
+    }
+
+    #[test]
+    fn unsupported_phrase_matches_anywhere_in_the_message() {
+        // Unlike the syntax prefix, `not supported` is detected wherever it
+        // appears, since GoogleSQL phrases the feature name first.
+        assert_eq!(
+            SqlError::from("Feature FOO not supported here [at 1:1]").kind(),
+            SqlErrorKind::Unsupported
+        );
+    }
+
+    #[test]
     fn display_reproduces_the_message_verbatim() {
         let err = SqlError::from("Table not found: t [at 1:15]");
         assert_eq!(err.to_string(), "Table not found: t [at 1:15]");
