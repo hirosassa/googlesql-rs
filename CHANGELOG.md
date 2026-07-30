@@ -27,3 +27,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrecognized enum value) now surface as a new `Error::Protocol` variant
   instead of `Error::GoogleSql`, so a binding/module contract mismatch is no
   longer misclassified as a GoogleSQL query error.
+- Enable integer overflow checks in release builds (`overflow-checks = true`),
+  backing the compile-time ban on unchecked arithmetic with a runtime guard.

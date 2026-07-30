@@ -1,5 +1,12 @@
 //! End-to-end tests for the SQL formatter (`FormatSql`).
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::{Error, Module};
 

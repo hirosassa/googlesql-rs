@@ -1,5 +1,12 @@
 //! Tests for the runtime foundation (wasm instantiation and memory operations).
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code"
+)]
 
 use googlesql::Module;
 

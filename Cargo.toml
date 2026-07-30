@@ -40,17 +40,40 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
+# The release profile disables overflow checks by default; re-enable them as a
+# runtime backstop behind the compile-time `arithmetic_side_effects` ban.
+[profile.release]
+overflow-checks = true
+
 [lints.rust]
+# Turn every compiler warning into a hard error (matches CI's `-D warnings`).
+warnings = "deny"
+# This crate drives wasmtime through its safe API and has no FFI, so unsafe is
+# forbidden outright rather than merely denied.
 unsafe_code = "forbid"
 
 [lints.clippy]
-# rust-hardening: forbid panicking constructs in non-test code
+# rust-hardening: forbid panicking constructs in non-test code.
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
 indexing_slicing = "deny"
-# arithmetic and cast safety
+string_slice = "deny"
+unwrap_in_result = "deny"
+# Arithmetic and cast safety: no silent overflow, wrap, or truncation.
 arithmetic_side_effects = "deny"
+as_conversions = "deny"
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
+cast_lossless = "warn"
+# Float foot-guns.
+float_cmp = "deny"
+lossy_float_literal = "deny"
+# Don't silently drop a fallible result.
+let_underscore_must_use = "deny"
+# Suppression hygiene: every #[allow]/#[expect] must carry a `reason = "…"`.
+allow_attributes_without_reason = "deny"
