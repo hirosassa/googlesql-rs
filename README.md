@@ -1,5 +1,10 @@
 # googlesql-rs
 
+[![Crates.io](https://img.shields.io/crates/v/googlesql.svg)](https://crates.io/crates/googlesql)
+[![Documentation](https://docs.rs/googlesql/badge.svg)](https://docs.rs/googlesql)
+[![build](https://github.com/hirosassa/googlesql-rs/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/hirosassa/googlesql-rs/actions/workflows/test.yaml)
+[![codecov](https://codecov.io/gh/hirosassa/googlesql-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/hirosassa/googlesql-rs)
+
 Rust bindings for GoogleSQL (ZetaSQL).
 
 Drives the prebuilt WebAssembly module published by
