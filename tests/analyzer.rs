@@ -2121,3 +2121,59 @@ fn analyze_statements_resolves_each_statement_against_the_catalog() {
 
     assert_eq!(count, 2);
 }
+
+#[test]
+fn undeclared_parameter_types_infers_a_positional_parameter() {
+    let mut module = Module::new().unwrap();
+
+    // `?` added to an INT64 literal must itself resolve to INT64.
+    let types = module
+        .undeclared_parameter_types("SELECT ? + 1", &[])
+        .unwrap();
+
+    assert_eq!(types, vec!["INT64"]);
+}
+
+#[test]
+fn undeclared_parameter_types_reports_each_parameter_in_order() {
+    let mut module = Module::new().unwrap();
+
+    // Two positional parameters, both used where a STRING is expected.
+    let types = module
+        .undeclared_parameter_types("SELECT CONCAT(?, ?)", &[])
+        .unwrap();
+
+    assert_eq!(types, vec!["STRING", "STRING"]);
+}
+
+#[test]
+fn undeclared_parameter_types_is_empty_without_parameters() {
+    let mut module = Module::new().unwrap();
+
+    assert!(
+        module
+            .undeclared_parameter_types("SELECT 1", &[])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn undeclared_parameter_types_resolves_against_the_catalog() {
+    let mut module = Module::new().unwrap();
+
+    let users = TableDef {
+        name: "users".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // The parameter is compared against an INT64 column, so it infers INT64.
+    let types = module
+        .undeclared_parameter_types("SELECT id FROM users WHERE id = ?", &[users])
+        .unwrap();
+
+    assert_eq!(types, vec!["INT64"]);
+}
