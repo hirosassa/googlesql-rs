@@ -99,6 +99,21 @@ const MID_FREE_VALUE: i32 = 153;
 const FUNCTION_MODE_SCALAR: i32 = 2;
 /// `FunctionEnums::Mode::AGGREGATE` — an aggregate function (e.g. `SUM`).
 const FUNCTION_MODE_AGGREGATE: i32 = 3;
+
+/// `ResolvedNodeKind` wire values passed to `AddSupportedStatementKind` to
+/// restrict which statement kinds the analyzer resolves (see [`StatementKind`]).
+const NODE_KIND_QUERY_STMT: i32 = 39;
+const NODE_KIND_CREATE_TABLE_AS_SELECT_STMT: i32 = 41;
+const NODE_KIND_CREATE_VIEW_STMT: i32 = 42;
+const NODE_KIND_CREATE_EXTERNAL_TABLE_STMT: i32 = 43;
+const NODE_KIND_INSERT_STMT: i32 = 64;
+const NODE_KIND_DELETE_STMT: i32 = 65;
+const NODE_KIND_UPDATE_STMT: i32 = 67;
+const NODE_KIND_CREATE_ROW_ACCESS_POLICY_STMT: i32 = 74;
+const NODE_KIND_CREATE_FUNCTION_STMT: i32 = 77;
+const NODE_KIND_CREATE_TABLE_STMT: i32 = 91;
+const NODE_KIND_MERGE_STMT: i32 = 102;
+const NODE_KIND_CREATE_MATERIALIZED_VIEW_STMT: i32 = 120;
 /// `num_occurrences` for a required argument in a signature (exactly one).
 const ARGUMENT_REQUIRED_OCCURRENCES: i32 = 1;
 /// Group name assigned to functions registered through [`Catalog::functions`].
@@ -250,6 +265,65 @@ impl FunctionKind {
     }
 }
 
+/// A category of statement the analyzer may be restricted to accept, selected
+/// with [`Module::set_supported_statement_kinds`].
+///
+/// By default the analyzer resolves every kind. Restricting to a set is useful
+/// for validation, e.g. allowing only [`Query`](Self::Query) to reject any DML
+/// or DDL a caller must not run.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL has more statement kinds than
+/// are modelled here; adding a variant later must not break callers that match
+/// on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StatementKind {
+    /// A query statement (`SELECT`).
+    Query,
+    /// An `INSERT` statement.
+    Insert,
+    /// An `UPDATE` statement.
+    Update,
+    /// A `DELETE` statement.
+    Delete,
+    /// A `MERGE` statement.
+    Merge,
+    /// A `CREATE TABLE` statement.
+    CreateTable,
+    /// A `CREATE TABLE ... AS SELECT` statement.
+    CreateTableAsSelect,
+    /// A `CREATE VIEW` statement.
+    CreateView,
+    /// A `CREATE MATERIALIZED VIEW` statement.
+    CreateMaterializedView,
+    /// A `CREATE EXTERNAL TABLE` statement.
+    CreateExternalTable,
+    /// A `CREATE FUNCTION` statement.
+    CreateFunction,
+    /// A `CREATE ROW ACCESS POLICY` statement.
+    CreateRowAccessPolicy,
+}
+
+impl StatementKind {
+    /// The `ResolvedNodeKind` wire value passed to `AddSupportedStatementKind`.
+    const fn node_kind(self) -> i32 {
+        match self {
+            Self::Query => NODE_KIND_QUERY_STMT,
+            Self::Insert => NODE_KIND_INSERT_STMT,
+            Self::Update => NODE_KIND_UPDATE_STMT,
+            Self::Delete => NODE_KIND_DELETE_STMT,
+            Self::Merge => NODE_KIND_MERGE_STMT,
+            Self::CreateTable => NODE_KIND_CREATE_TABLE_STMT,
+            Self::CreateTableAsSelect => NODE_KIND_CREATE_TABLE_AS_SELECT_STMT,
+            Self::CreateView => NODE_KIND_CREATE_VIEW_STMT,
+            Self::CreateMaterializedView => NODE_KIND_CREATE_MATERIALIZED_VIEW_STMT,
+            Self::CreateExternalTable => NODE_KIND_CREATE_EXTERNAL_TABLE_STMT,
+            Self::CreateFunction => NODE_KIND_CREATE_FUNCTION_STMT,
+            Self::CreateRowAccessPolicy => NODE_KIND_CREATE_ROW_ACCESS_POLICY_STMT,
+        }
+    }
+}
+
 /// A named constant registered into the catalog before analysis.
 ///
 /// Registering it lets the bare name resolve as an expression yielding the
@@ -362,6 +436,18 @@ impl<'a> CatalogContents<'a> {
 }
 
 impl Module {
+    /// Restricts analysis to the given statement kinds; other kinds then fail
+    /// with a "Statement not supported" error.
+    ///
+    /// The default (and the effect of passing an empty slice, mirroring ZetaSQL's
+    /// `SetSupportedStatementKinds({})`) is to accept every kind. Restricting to
+    /// `&[StatementKind::Query]`, for example, lets `SELECT` resolve while
+    /// rejecting any DML or DDL. The restriction applies to every subsequent
+    /// analysis on this [`Module`].
+    pub fn set_supported_statement_kinds(&mut self, kinds: &[StatementKind]) {
+        self.set_supported_statement_kinds_raw(kinds.iter().map(|k| k.node_kind()).collect());
+    }
+
     /// Analyzes a SQL statement against an empty catalog.
     ///
     /// Performs type inference and name resolution. Returns [`Error::GoogleSql`]

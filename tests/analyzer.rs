@@ -10,7 +10,7 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    Module, QueryParameter, StructField, TableDef,
+    Module, QueryParameter, StatementKind, StructField, TableDef,
 };
 
 #[test]
@@ -672,4 +672,78 @@ fn analyze_statement_with_empty_catalog_matches_phase_one() {
         module.analyze_statement_with_catalog("SELECT x FROM missing_table", &[]),
         Err(Error::GoogleSql(_))
     ));
+}
+
+#[test]
+fn restricts_analysis_to_the_supported_statement_kinds() {
+    let mut module = Module::new().unwrap();
+
+    // Only query statements are allowed; DML/DDL kinds fall outside the set.
+    module.set_supported_statement_kinds(&[StatementKind::Query]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // A query is in the allowed set, so it resolves.
+    let query = module.analyze_statement_with_catalog("SELECT a FROM t", std::slice::from_ref(&t));
+    assert!(
+        query.is_ok(),
+        "expected the query to be accepted, got: {query:?}"
+    );
+
+    // INSERT is a DML kind outside the allowed set, so the analyzer rejects it.
+    let insert = module.analyze_statement_with_catalog("INSERT INTO t (a) VALUES (1)", &[t]);
+    assert!(
+        matches!(insert, Err(Error::GoogleSql(_))),
+        "expected INSERT to be rejected, got: {insert:?}"
+    );
+}
+
+#[test]
+fn empty_supported_statement_kinds_allows_every_kind() {
+    let mut module = Module::new().unwrap();
+
+    // An empty set mirrors ZetaSQL's `SetSupportedStatementKinds({})`, which
+    // accepts every kind, so DDL keeps resolving.
+    module.set_supported_statement_kinds(&[]);
+
+    let result = module.analyze_statement_with_catalog("CREATE TABLE t (a INT64)", &[]);
+    assert!(
+        result.is_ok(),
+        "expected CREATE TABLE to be accepted, got: {result:?}"
+    );
+}
+
+#[test]
+fn supported_statement_kinds_can_allow_multiple_kinds() {
+    let mut module = Module::new().unwrap();
+
+    // Restrict to query and INSERT; UPDATE stays outside the set.
+    module.set_supported_statement_kinds(&[StatementKind::Query, StatementKind::Insert]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let insert = module
+        .analyze_statement_with_catalog("INSERT INTO t (a) VALUES (1)", std::slice::from_ref(&t));
+    assert!(
+        insert.is_ok(),
+        "expected INSERT to be accepted, got: {insert:?}"
+    );
+
+    let update = module.analyze_statement_with_catalog("UPDATE t SET a = 1 WHERE a = 2", &[t]);
+    assert!(
+        matches!(update, Err(Error::GoogleSql(_))),
+        "expected UPDATE to be rejected, got: {update:?}"
+    );
 }
