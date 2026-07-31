@@ -26,6 +26,16 @@ fn contains_kind(node: &AstNode, want: &str) -> bool {
     node.children().iter().any(|c| contains_kind(c, want))
 }
 
+/// Collects every node of an exact `kind` into `out` in preorder.
+fn collect_kind<'a>(node: &'a AstNode, kind: &str, out: &mut Vec<&'a AstNode>) {
+    if node.kind() == kind {
+        out.push(node);
+    }
+    for child in node.children() {
+        collect_kind(child, kind, out);
+    }
+}
+
 #[test]
 fn builds_typed_ast_tree() {
     let mut module = Module::new().unwrap();
@@ -62,4 +72,23 @@ fn node_source_text_via_byte_range() {
         contains_text(root, sql, "t"),
         "must find a node for table name t"
     );
+}
+
+#[test]
+fn identifier_node_exposes_its_unquoted_name() {
+    let mut module = Module::new().unwrap();
+    // The backtick-quoted identifier's source text includes the backticks,
+    // but identifier() returns the canonical unquoted name.
+    let sql = "SELECT `my col` FROM t";
+    let parsed = module.parse_statement(sql).unwrap();
+    let root = parsed.root();
+
+    let mut idents = Vec::new();
+    collect_kind(root, "ASTIdentifier", &mut idents);
+    let names: Vec<_> = idents.iter().filter_map(|n| n.identifier()).collect();
+    assert!(names.contains(&"my col"), "identifiers: {names:?}");
+    assert!(names.contains(&"t"), "identifiers: {names:?}");
+
+    // A non-identifier node (the root statement) carries no identifier value.
+    assert_eq!(root.identifier(), None, "non-identifier node has no name");
 }
