@@ -1908,3 +1908,70 @@ fn analyze_expression_in_resolves_a_catalog_constant() {
 
     assert_eq!(type_name, "INT64");
 }
+
+#[test]
+fn analyze_type_resolves_a_builtin_scalar_type() {
+    let mut module = Module::new().unwrap();
+
+    let type_name = module.analyze_type("INT64", &[]).unwrap();
+
+    assert_eq!(type_name, "INT64");
+}
+
+#[test]
+fn analyze_type_resolves_a_structural_type() {
+    let mut module = Module::new().unwrap();
+
+    // ARRAY and STRUCT type names round-trip through the resolved type's name.
+    assert_eq!(
+        module.analyze_type("ARRAY<STRING>", &[]).unwrap(),
+        "ARRAY<STRING>"
+    );
+    assert_eq!(
+        module
+            .analyze_type("STRUCT<a INT64, b STRING>", &[])
+            .unwrap(),
+        "STRUCT<a INT64, b STRING>"
+    );
+}
+
+#[test]
+fn analyze_type_errors_on_unknown_type() {
+    let mut module = Module::new().unwrap();
+
+    // `nosuchtype` is not a builtin nor catalog-defined type name.
+    let result = module.analyze_type("nosuchtype", &[]);
+
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a GoogleSql error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyze_type_in_resolves_a_catalog_named_type() {
+    let mut module = Module::new().unwrap();
+
+    // "point" is a catalog alias for a struct; resolving the name yields the
+    // underlying type (FLOAT64 renders as DOUBLE in internal product mode).
+    let catalog = Catalog {
+        types: vec![NamedType {
+            name: "point".to_string(),
+            ty: ColumnType::Struct(vec![
+                StructField {
+                    name: "x".to_string(),
+                    ty: ColumnType::Float64,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: ColumnType::Float64,
+                },
+            ]),
+        }],
+        ..Catalog::default()
+    };
+
+    let type_name = module.analyze_type_in("point", &catalog).unwrap();
+
+    assert_eq!(type_name, "STRUCT<x DOUBLE, y DOUBLE>");
+}

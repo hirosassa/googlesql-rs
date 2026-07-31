@@ -1087,6 +1087,20 @@ impl Module {
         self.type_debug_string(type_handle)
     }
 
+    /// Extracts the resolved type name from the `Type` handle produced by
+    /// `AnalyzeType`.
+    ///
+    /// Unlike statement/expression analysis, the field-2 handle is the resolved
+    /// `Type` itself (not an `AnalyzerOutput`), so this reads its debug string
+    /// directly. A successful analysis always yields a type, so a null handle is
+    /// a protocol error.
+    pub(crate) fn resolved_type_name(&mut self, type_handle: u64) -> Result<String, Error> {
+        if type_handle == 0 {
+            return Err(Error::Protocol("analyzer produced no resolved type".into()));
+        }
+        self.type_debug_string(type_handle)
+    }
+
     /// Collects the tables a resolved statement reads, with referenced columns.
     ///
     /// Returns an empty vec for statements that read no tables.
