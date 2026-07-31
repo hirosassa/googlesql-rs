@@ -1975,3 +1975,97 @@ fn analyze_type_in_resolves_a_catalog_named_type() {
 
     assert_eq!(type_name, "STRUCT<x DOUBLE, y DOUBLE>");
 }
+
+#[test]
+fn analyze_statements_counts_every_statement_in_a_script() {
+    let mut module = Module::new().unwrap();
+
+    // Three semicolon-separated statements are each analyzed in turn.
+    let count = module
+        .analyze_statements("SELECT 1; SELECT 2; SELECT 3", &[])
+        .unwrap();
+
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn analyze_statements_accepts_a_single_statement_without_a_trailing_semicolon() {
+    let mut module = Module::new().unwrap();
+
+    let count = module.analyze_statements("SELECT 1", &[]).unwrap();
+
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn analyze_statements_ignores_a_trailing_semicolon_and_whitespace() {
+    let mut module = Module::new().unwrap();
+
+    // A final semicolon and trailing whitespace do not count as another
+    // statement.
+    let count = module.analyze_statements("SELECT 1;\n  ", &[]).unwrap();
+
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn analyze_statements_ignores_a_trailing_comment() {
+    let mut module = Module::new().unwrap();
+
+    // A comment after the last statement is not a further statement: the
+    // analyzer skips it and reports end of input.
+    assert_eq!(
+        module
+            .analyze_statements("SELECT 1; -- trailing", &[])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        module
+            .analyze_statements("SELECT 1; /* block */", &[])
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn analyze_statements_reports_zero_for_an_empty_script() {
+    let mut module = Module::new().unwrap();
+
+    assert_eq!(module.analyze_statements("", &[]).unwrap(), 0);
+    assert_eq!(module.analyze_statements("   \n ", &[]).unwrap(), 0);
+}
+
+#[test]
+fn analyze_statements_fails_on_the_first_invalid_statement() {
+    let mut module = Module::new().unwrap();
+
+    // The second statement references an unknown name, so analysis of the
+    // script fails.
+    let result = module.analyze_statements("SELECT 1; SELECT missing_name", &[]);
+
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a GoogleSql error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyze_statements_resolves_each_statement_against_the_catalog() {
+    let mut module = Module::new().unwrap();
+
+    let users = TableDef {
+        name: "users".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // Both statements reference the registered table.
+    let count = module
+        .analyze_statements("SELECT id FROM users; SELECT COUNT(*) FROM users", &[users])
+        .unwrap();
+
+    assert_eq!(count, 2);
+}
