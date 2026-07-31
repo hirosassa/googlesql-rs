@@ -57,6 +57,7 @@ const MID_MAKE_STRUCT_TYPE: i32 = 33;
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
 const MID_ADD_BUILTIN_FUNCTIONS_AND_TYPES: i32 = 3;
+const MID_ADD_FUNCTION: i32 = 10;
 const MID_ADD_TABLE_NAMED: i32 = 72;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
 
@@ -68,6 +69,25 @@ const MID_FREE_SIMPLE_TABLE: i32 = 27;
 const SVC_SIMPLE_COLUMN: i32 = 1350;
 const MID_NEW_SIMPLE_COLUMN: i32 = 0;
 const MID_FREE_SIMPLE_COLUMN: i32 = 10;
+
+const SVC_FUNCTION_ARGUMENT_TYPE: i32 = 637;
+const MID_NEW_FUNCTION_ARGUMENT_TYPE: i32 = 2;
+const MID_FREE_FUNCTION_ARGUMENT_TYPE: i32 = 52;
+
+const SVC_FUNCTION_SIGNATURE: i32 = 644;
+const MID_NEW_FUNCTION_SIGNATURE: i32 = 2;
+const MID_FREE_FUNCTION_SIGNATURE: i32 = 46;
+
+const SVC_FUNCTION: i32 = 636;
+const MID_NEW_FUNCTION: i32 = 3;
+const MID_FREE_FUNCTION: i32 = 55;
+
+/// `FunctionEnums::Mode::SCALAR` — a plain scalar function.
+const FUNCTION_MODE_SCALAR: i32 = 2;
+/// `num_occurrences` for a required argument in a signature (exactly one).
+const ARGUMENT_REQUIRED_OCCURRENCES: i32 = 1;
+/// Group name assigned to functions registered through [`Catalog::functions`].
+const USER_FUNCTION_GROUP: &str = "UDF";
 
 /// Field of `BuiltinFunctionOptions` that carries the `LanguageOptions` handle.
 const FIELD_BUILTIN_OPTIONS_LANGUAGE: u32 = 4;
@@ -173,6 +193,34 @@ pub struct TableDef {
     pub columns: Vec<ColumnDef>,
 }
 
+/// A user-defined scalar function registered into the catalog before analysis.
+///
+/// Registering it lets a call such as `my_add(1, 2)` resolve, type-checked
+/// against the declared argument types and yielding the declared return type.
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    /// The function name as called in SQL.
+    pub name: String,
+    /// The argument types, in order; each call argument is checked against these.
+    pub arguments: Vec<ColumnType>,
+    /// The type the function returns.
+    pub return_type: ColumnType,
+}
+
+/// The user-defined catalog entries made visible to the analyzer.
+///
+/// Bundles the [`tables`](Self::tables) and [`functions`](Self::functions) a
+/// query may reference, passed to the `*_in` analysis entry points. The
+/// table-only entry points (e.g. [`Module::analyze_output_columns`]) are
+/// equivalent to a `Catalog` with no functions.
+#[derive(Debug, Clone, Default)]
+pub struct Catalog {
+    /// User-defined tables.
+    pub tables: Vec<TableDef>,
+    /// User-defined scalar functions.
+    pub functions: Vec<FunctionDef>,
+}
+
 /// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
 ///
 /// Each entry point requests only what it needs so the others stay unaffected:
@@ -184,6 +232,32 @@ struct AnalysisOptions {
     prune_columns: bool,
     /// Record a source byte range on each resolved node.
     record_parse_locations: bool,
+}
+
+/// The catalog entries to register before an analysis, threaded together through
+/// the pipeline so the table-only and [`Catalog`] entry points share one path.
+#[derive(Clone, Copy)]
+struct CatalogContents<'a> {
+    tables: &'a [TableDef],
+    functions: &'a [FunctionDef],
+}
+
+impl<'a> CatalogContents<'a> {
+    /// Only tables, no user-defined functions (the table-only entry points).
+    const fn tables_only(tables: &'a [TableDef]) -> Self {
+        Self {
+            tables,
+            functions: &[],
+        }
+    }
+
+    /// Both the tables and functions declared by a [`Catalog`].
+    const fn of(catalog: &'a Catalog) -> Self {
+        Self {
+            tables: catalog.tables.as_slice(),
+            functions: catalog.functions.as_slice(),
+        }
+    }
 }
 
 impl Module {
@@ -207,7 +281,12 @@ impl Module {
         sql: &str,
         tables: &[TableDef],
     ) -> Result<(), Error> {
-        self.run_analysis(sql, tables, AnalysisOptions::default(), |_, _| Ok(()))
+        self.run_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            AnalysisOptions::default(),
+            |_, _| Ok(()),
+        )
     }
 
     /// Analyzes a query and returns its resolved output schema.
@@ -224,7 +303,7 @@ impl Module {
     ) -> Result<Vec<OutputColumn>, Error> {
         self.run_analysis(
             sql,
-            tables,
+            CatalogContents::tables_only(tables),
             AnalysisOptions::default(),
             Self::output_columns,
         )
@@ -246,7 +325,12 @@ impl Module {
             prune_columns: true,
             ..AnalysisOptions::default()
         };
-        self.run_analysis(sql, tables, opts, Self::referenced_tables_of)
+        self.run_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            opts,
+            Self::referenced_tables_of,
+        )
     }
 
     /// Analyzes a statement and returns its resolved AST as a self-contained tree.
@@ -264,7 +348,87 @@ impl Module {
             record_parse_locations: true,
             ..AnalysisOptions::default()
         };
-        self.run_analysis(sql, tables, opts, Self::resolved_tree_of)
+        self.run_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            opts,
+            Self::resolved_tree_of,
+        )
+    }
+
+    /// Analyzes a SQL statement against `catalog`, which may declare both tables
+    /// and user-defined functions.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::analyze_statement_with_catalog`]:
+    /// besides tables, any [`FunctionDef`] it carries is registered so calls to
+    /// that function resolve. Returns [`Error::GoogleSql`] on a syntax error or
+    /// unresolved name.
+    pub fn analyze_statement_in(&mut self, sql: &str, catalog: &Catalog) -> Result<(), Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            AnalysisOptions::default(),
+            |_, _| Ok(()),
+        )
+    }
+
+    /// Analyzes a query against `catalog` and returns its resolved output schema.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::analyze_output_columns`], also
+    /// resolving calls to the catalog's user-defined functions.
+    pub fn analyze_output_columns_in(
+        &mut self,
+        sql: &str,
+        catalog: &Catalog,
+    ) -> Result<Vec<OutputColumn>, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            AnalysisOptions::default(),
+            Self::output_columns,
+        )
+    }
+
+    /// Analyzes a query against `catalog` and returns the tables it reads, each
+    /// with the columns actually referenced.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::referenced_tables`].
+    pub fn referenced_tables_in(
+        &mut self,
+        sql: &str,
+        catalog: &Catalog,
+    ) -> Result<Vec<TableRef>, Error> {
+        let opts = AnalysisOptions {
+            prune_columns: true,
+            ..AnalysisOptions::default()
+        };
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            opts,
+            Self::referenced_tables_of,
+        )
+    }
+
+    /// Analyzes a statement against `catalog` and returns its resolved AST as a
+    /// self-contained tree.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::resolved_tree`].
+    pub fn resolved_tree_in(
+        &mut self,
+        sql: &str,
+        catalog: &Catalog,
+    ) -> Result<Option<ResolvedNode>, Error> {
+        let opts = AnalysisOptions {
+            record_parse_locations: true,
+            ..AnalysisOptions::default()
+        };
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            opts,
+            Self::resolved_tree_of,
+        )
     }
 
     /// Runs the full analysis pipeline, invoking `extract` on the resulting
@@ -282,7 +446,7 @@ impl Module {
     fn run_analysis<T>(
         &mut self,
         sql: &str,
-        tables: &[TableDef],
+        catalog: CatalogContents,
         opts: AnalysisOptions,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -299,7 +463,7 @@ impl Module {
             // `QUALIFY` clause resolves.
             let language = module.max_language_options()?;
             module.set_options_language(options.ptr(), language)?;
-            module.analyze_with_options(sql, options.ptr(), tables, extract)
+            module.analyze_with_options(sql, options.ptr(), catalog, extract)
         })
     }
 
@@ -358,7 +522,7 @@ impl Module {
         &mut self,
         sql: &str,
         options: u64,
-        tables: &[TableDef],
+        catalog: CatalogContents,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let type_factory = self.acquire_handle(
@@ -368,19 +532,19 @@ impl Module {
             SVC_TYPE_FACTORY,
             MID_FREE_TYPE_FACTORY,
         )?;
-        self.analyze_with_catalog(sql, options, type_factory.ptr(), tables, extract)
+        self.analyze_with_catalog(sql, options, type_factory.ptr(), catalog, extract)
     }
 
-    /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with
-    /// `tables`, and runs the analysis. The catalog outlives the analysis (it
-    /// owns the resolved output's nodes) and is freed by the top-level
+    /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with the
+    /// catalog contents, and runs the analysis. The catalog outlives the analysis
+    /// (it owns the resolved output's nodes) and is freed by the top-level
     /// [`flush_frees`](Module::flush_frees).
     fn analyze_with_catalog<T>(
         &mut self,
         sql: &str,
         options: u64,
         type_factory: u64,
-        tables: &[TableDef],
+        contents: CatalogContents,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let mut catalog_req = Vec::new();
@@ -394,11 +558,11 @@ impl Module {
             MID_FREE_SIMPLE_CATALOG,
         )?;
         self.add_builtin_functions(catalog.ptr())?;
-        self.populate_and_analyze(sql, options, catalog.ptr(), type_factory, tables, extract)
+        self.populate_and_analyze(sql, options, catalog.ptr(), type_factory, contents, extract)
     }
 
-    /// Registers `tables` into `catalog` and runs the analysis. The created
-    /// `SimpleTable` handles (which own their columns) stay alive until `extract`
+    /// Registers a catalog's tables and functions and runs the analysis. The
+    /// created `SimpleTable` and function handles stay alive until `extract`
     /// returns and are freed by the top-level [`flush_frees`](Module::flush_frees).
     fn populate_and_analyze<T>(
         &mut self,
@@ -406,13 +570,14 @@ impl Module {
         options: u64,
         catalog: u64,
         type_factory: u64,
-        tables: &[TableDef],
+        contents: CatalogContents,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        // Bound (not `_`) so the SimpleTable handles stay alive across `analyze`
-        // and enqueue their frees only after it returns: dropping them earlier
-        // would order their frees ahead of the AnalyzerOutput that references them.
-        let _table_handles = self.add_tables(catalog, type_factory, tables)?;
+        // Bound (not `_`) so these handles stay alive across `analyze` and enqueue
+        // their frees only after it returns: dropping them earlier would order
+        // their frees ahead of the AnalyzerOutput that references them.
+        let _table_handles = self.add_tables(catalog, type_factory, contents.tables)?;
+        let _function_handles = self.add_functions(catalog, type_factory, contents.functions)?;
         self.analyze(sql, options, catalog, type_factory, extract)
     }
 
@@ -578,6 +743,118 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         pb::append_handle(&mut req, 3, table);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_TABLE_NAMED, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each function into `catalog`, returning every wasm-side handle
+    /// created along the way so the caller keeps them alive across the analysis.
+    ///
+    /// A `Function` references its `FunctionSignature`, which references its
+    /// `FunctionArgumentType`s, all by raw pointer; the catalog references the
+    /// `Function` without owning it. So none may be freed until the analysis (and
+    /// the `AnalyzerOutput` that may reference the function) is done — the caller
+    /// holds the returned handles until then.
+    fn add_functions(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        functions: &[FunctionDef],
+    ) -> Result<Vec<Handle>, Error> {
+        let mut handles = Vec::with_capacity(functions.len());
+        for function in functions {
+            self.add_function(catalog, type_factory, function, &mut handles)?;
+        }
+        Ok(handles)
+    }
+
+    /// Builds a scalar `Function` from `function` and registers it into `catalog`.
+    /// Every acquired handle is pushed onto `handles` so it outlives the analysis.
+    fn add_function(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        function: &FunctionDef,
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let result_type = self.build_column_type(type_factory, &function.return_type)?;
+        let result_arg = self.new_function_argument_type(result_type)?;
+
+        let mut argument_ptrs = Vec::with_capacity(function.arguments.len());
+        for argument in &function.arguments {
+            let argument_type = self.build_column_type(type_factory, argument)?;
+            let argument_arg = self.new_function_argument_type(argument_type)?;
+            argument_ptrs.push(argument_arg.ptr());
+            handles.push(argument_arg);
+        }
+
+        let signature = self.new_function_signature(result_arg.ptr(), &argument_ptrs)?;
+        let handle = self.new_function(&function.name, signature.ptr())?;
+        self.register_function(catalog, handle.ptr())?;
+
+        handles.push(result_arg);
+        handles.push(signature);
+        handles.push(handle);
+        Ok(())
+    }
+
+    /// Wraps a type handle in a required-once `FunctionArgumentType`.
+    fn new_function_argument_type(&mut self, type_handle: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_handle);
+        pb::append_int32(&mut req, 2, ARGUMENT_REQUIRED_OCCURRENCES);
+        self.acquire_handle(
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_NEW_FUNCTION_ARGUMENT_TYPE,
+            &req,
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_FREE_FUNCTION_ARGUMENT_TYPE,
+        )
+    }
+
+    /// Builds a `FunctionSignature` from a result and argument `FunctionArgumentType`s.
+    fn new_function_signature(
+        &mut self,
+        result_type: u64,
+        argument_types: &[u64],
+    ) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, result_type);
+        for &argument in argument_types {
+            pb::append_handle(&mut req, 2, argument);
+        }
+        // Field 3 (context id) is left at its proto default of 0.
+        self.acquire_handle(
+            SVC_FUNCTION_SIGNATURE,
+            MID_NEW_FUNCTION_SIGNATURE,
+            &req,
+            SVC_FUNCTION_SIGNATURE,
+            MID_FREE_FUNCTION_SIGNATURE,
+        )
+    }
+
+    /// Builds a scalar `Function` named `name` carrying a single `signature`.
+    fn new_function(&mut self, name: &str, signature: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_string(&mut req, 2, USER_FUNCTION_GROUP);
+        pb::append_int32(&mut req, 3, FUNCTION_MODE_SCALAR);
+        pb::append_handle(&mut req, 4, signature);
+        self.acquire_handle(
+            SVC_FUNCTION,
+            MID_NEW_FUNCTION,
+            &req,
+            SVC_FUNCTION,
+            MID_FREE_FUNCTION,
+        )
+    }
+
+    /// Registers `function` into `catalog` (non-owning; its name comes from the
+    /// `Function` itself).
+    fn register_function(&mut self, catalog: u64, function: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_handle(&mut req, 2, function);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_FUNCTION, &req)?;
         check_error(&resp)
     }
 
