@@ -22,6 +22,11 @@ const MID_END_LOCATION: i32 = 27;
 const SVC_LOCATION_POINT: i32 = 692;
 const MID_GET_BYTE_OFFSET: i32 = 4;
 
+const SVC_AST_IDENTIFIER: i32 = 280;
+const MID_IDENTIFIER_GET_AS_STRING: i32 = 1;
+
+const KIND_IDENTIFIER: &str = "ASTIdentifier";
+
 const EXPORT_TYPE_NAME: &str = "wasmify_get_type_name";
 const TYPE_NAME_PREFIX: &str = "googlesql::";
 
@@ -30,6 +35,7 @@ const TYPE_NAME_PREFIX: &str = "googlesql::";
 pub struct AstNode {
     kind: String,
     byte_range: Option<Range<usize>>,
+    identifier: Option<String>,
     children: Vec<Self>,
 }
 
@@ -49,6 +55,14 @@ impl AstNode {
         &self.children
     }
 
+    /// The canonical, unquoted name of an `ASTIdentifier` node (e.g. `` `my col` `` yields `my col`).
+    ///
+    /// `None` for every other node kind. Unlike [`text`](Self::text), this needs no
+    /// original SQL and strips any backtick quoting.
+    pub fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
+    }
+
     /// Extracts the source text for this node from the original SQL string.
     pub fn text<'a>(&self, sql: &'a str) -> Option<&'a str> {
         let range = self.byte_range.clone()?;
@@ -61,6 +75,11 @@ impl Module {
     pub(crate) fn build_ast(&mut self, node_ptr: u64) -> Result<AstNode, Error> {
         let kind = self.node_kind(node_ptr)?;
         let byte_range = self.node_byte_range(node_ptr)?;
+        let identifier = if kind == KIND_IDENTIFIER {
+            Some(self.node_identifier(node_ptr)?)
+        } else {
+            None
+        };
 
         let num_children = self.node_num_children(node_ptr)?;
         let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
@@ -74,8 +93,18 @@ impl Module {
         Ok(AstNode {
             kind,
             byte_range,
+            identifier,
             children,
         })
+    }
+
+    /// Returns the canonical, unquoted name string of an `ASTIdentifier` node.
+    fn node_identifier(&mut self, node_ptr: u64) -> Result<String, Error> {
+        let resp =
+            self.invoke_handle(SVC_AST_IDENTIFIER, MID_IDENTIFIER_GET_AS_STRING, node_ptr)?;
+        check_error(&resp)?;
+        pb::read_string_at_field(&resp, 1)
+            .ok_or_else(|| Error::Protocol("identifier string not found".into()))
     }
 
     /// Returns the type name of the node (with the `googlesql::` prefix stripped).
