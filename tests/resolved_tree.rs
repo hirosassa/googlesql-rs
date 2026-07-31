@@ -2022,3 +2022,42 @@ fn non_insert_nodes_have_no_insert_mode() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.insert_mode(), None);
 }
+
+#[test]
+fn create_table_reports_its_column_types() {
+    let mut module = Module::new().unwrap();
+
+    // Each column definition names both the column and its declared type.
+    let root = module
+        .resolved_tree("CREATE TABLE t (a INT64, b STRING)", &[])
+        .unwrap()
+        .unwrap();
+
+    let defs: Vec<(&str, &str)> = root
+        .children()
+        .iter()
+        .filter(|c| c.kind() == "ResolvedColumnDefinition")
+        .map(|c| {
+            (
+                c.column_definition_name()
+                    .expect("a column definition names its column"),
+                c.column_definition_type()
+                    .expect("a column definition carries its declared type"),
+            )
+        })
+        .collect();
+    assert_eq!(defs, vec![("a", "INT64"), ("b", "STRING")]);
+}
+
+#[test]
+fn non_column_definition_nodes_have_no_column_definition_type() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.column_definition_type(), None);
+}
