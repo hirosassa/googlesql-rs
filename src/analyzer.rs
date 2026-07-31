@@ -52,6 +52,7 @@ const MID_GET_STRING: i32 = 54;
 const MID_GET_TIME: i32 = 55;
 const MID_GET_TIMESTAMP: i32 = 56;
 const MID_MAKE_ARRAY_TYPE: i32 = 13;
+const MID_MAKE_STRUCT_TYPE: i32 = 33;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -117,6 +118,17 @@ pub enum ColumnType {
     /// An array of a given element type (`ARRAY<T>`). GoogleSQL forbids arrays of
     /// arrays, so a nested `Array` element is rejected during analysis.
     Array(Box<Self>),
+    /// A struct with named, typed fields (`STRUCT<name T, ...>`), in order.
+    Struct(Vec<StructField>),
+}
+
+/// A named field of a [`ColumnType::Struct`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructField {
+    /// The field name as referenced in SQL (e.g. `s.x`).
+    pub name: String,
+    /// The field's type.
+    pub ty: ColumnType,
 }
 
 impl ColumnType {
@@ -138,7 +150,7 @@ impl ColumnType {
             Self::Json => MID_GET_JSON,
             Self::Interval => MID_GET_INTERVAL,
             Self::Geography => MID_GET_GEOGRAPHY,
-            Self::Array(_) => return None,
+            Self::Array(_) | Self::Struct(_) => return None,
         })
     }
 }
@@ -502,14 +514,19 @@ impl Module {
     /// the factory is freed), so it is not registered for an individual free —
     /// matching how the scalar getters' types are handled.
     fn build_column_type(&mut self, type_factory: u64, ty: &ColumnType) -> Result<u64, Error> {
-        if let ColumnType::Array(element) = ty {
-            let element_type = self.build_column_type(type_factory, element)?;
-            return self.make_array_type(type_factory, element_type);
+        match ty {
+            ColumnType::Array(element) => {
+                let element_type = self.build_column_type(type_factory, element)?;
+                self.make_array_type(type_factory, element_type)
+            }
+            ColumnType::Struct(fields) => self.make_struct_type(type_factory, fields),
+            scalar => {
+                let mid = scalar.scalar_type_factory_mid().ok_or_else(|| {
+                    Error::Protocol("column type has no type factory getter".into())
+                })?;
+                self.new_handle(SVC_TYPE_FACTORY, mid, &pb::handle_arg(type_factory))
+            }
         }
-        let mid = ty
-            .scalar_type_factory_mid()
-            .ok_or_else(|| Error::Protocol("column type has no type factory getter".into()))?;
-        self.new_handle(SVC_TYPE_FACTORY, mid, &pb::handle_arg(type_factory))
     }
 
     /// Wraps `element` in an `ARRAY<...>` type via `TypeFactory::MakeArrayType`.
@@ -523,6 +540,33 @@ impl Module {
         let ptr = pb::read_handle_at_field(&resp, 2);
         if ptr == 0 {
             return Err(Error::Protocol("MakeArrayType returned null".into()));
+        }
+        Ok(ptr)
+    }
+
+    /// Assembles a `STRUCT<...>` type from `fields` via `TypeFactory::MakeStructType`.
+    ///
+    /// Each field's type is built first (recursing through the same builder), then
+    /// carried as a `{name, type}` submessage repeated at field 2 of the request.
+    fn make_struct_type(
+        &mut self,
+        type_factory: u64,
+        fields: &[StructField],
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        for field in fields {
+            let field_type = self.build_column_type(type_factory, &field.ty)?;
+            let mut field_msg = Vec::new();
+            pb::append_string(&mut field_msg, 1, &field.name);
+            pb::append_handle(&mut field_msg, 2, field_type);
+            pb::append_submessage(&mut req, 2, &field_msg);
+        }
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_STRUCT_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 2);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeStructType returned null".into()));
         }
         Ok(ptr)
     }

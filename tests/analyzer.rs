@@ -8,7 +8,7 @@
     reason = "test code"
 )]
 
-use googlesql::{ColumnDef, ColumnType, Error, Module, TableDef};
+use googlesql::{ColumnDef, ColumnType, Error, Module, StructField, TableDef};
 
 #[test]
 fn analyzes_literal_select() {
@@ -262,6 +262,86 @@ fn unnests_an_array_column() {
 
     assert_eq!(columns.len(), 1);
     assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn resolves_a_struct_column() {
+    let mut module = Module::new().unwrap();
+
+    // A STRUCT<x INT64, y INT64> column: each field type is built and named,
+    // then assembled into a struct type. The resolved output column's type name
+    // proves fields keep their names, types, and order.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "point".to_string(),
+            ty: ColumnType::Struct(vec![
+                StructField {
+                    name: "x".to_string(),
+                    ty: ColumnType::Int64,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: ColumnType::Int64,
+                },
+            ]),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT point FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "STRUCT<x INT64, y INT64>");
+}
+
+#[test]
+fn resolves_a_field_of_a_struct_column() {
+    let mut module = Module::new().unwrap();
+
+    // A struct field is reachable by name and resolves to its declared type.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "p".to_string(),
+            ty: ColumnType::Struct(vec![StructField {
+                name: "label".to_string(),
+                ty: ColumnType::String,
+            }]),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT p.label FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "STRING");
+}
+
+#[test]
+fn resolves_an_array_of_structs_column() {
+    let mut module = Module::new().unwrap();
+
+    // Composition: the recursive builder handles ARRAY<STRUCT<...>>.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "items".to_string(),
+            ty: ColumnType::Array(Box::new(ColumnType::Struct(vec![StructField {
+                name: "n".to_string(),
+                ty: ColumnType::Int64,
+            }]))),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT items FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "ARRAY<STRUCT<n INT64>>");
 }
 
 #[test]
