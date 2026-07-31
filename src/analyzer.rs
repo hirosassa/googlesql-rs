@@ -22,6 +22,7 @@ use crate::runtime::{Handle, Module};
 const SVC_ANALYZER: i32 = 0;
 const MID_ANALYZE_EXPRESSION: i32 = 0;
 const MID_ANALYZE_STATEMENT: i32 = 2;
+const MID_ANALYZE_TYPE: i32 = 4;
 
 const SVC_ANALYZER_OPTIONS: i32 = 554;
 const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
@@ -828,9 +829,10 @@ struct AnalysisOptions {
     target: AnalysisTarget,
 }
 
-/// Selects the analyzer entry point for a run: a full statement or a standalone
-/// scalar expression. The default is [`AnalysisTarget::Statement`], so the raw
-/// zero-valued default never accidentally selects `AnalyzeExpression` (`mid` 0).
+/// Selects the analyzer entry point for a run: a full statement, a standalone
+/// scalar expression, or a type name. The default is [`AnalysisTarget::Statement`],
+/// so the raw zero-valued default never accidentally selects `AnalyzeExpression`
+/// (`mid` 0).
 #[derive(Clone, Copy, Default)]
 enum AnalysisTarget {
     /// `AnalyzeStatement`: the input is a complete SQL statement.
@@ -839,6 +841,8 @@ enum AnalysisTarget {
     /// `AnalyzeExpression`: the input is a scalar expression, resolved to a
     /// single typed `ResolvedExpr`.
     Expression,
+    /// `AnalyzeType`: the input is a type name, resolved to a `Type`.
+    Type,
 }
 
 impl AnalysisTarget {
@@ -847,20 +851,34 @@ impl AnalysisTarget {
         match self {
             Self::Statement => MID_ANALYZE_STATEMENT,
             Self::Expression => MID_ANALYZE_EXPRESSION,
+            Self::Type => MID_ANALYZE_TYPE,
+        }
+    }
+
+    /// Whether the field-2 handle in the response is an owned `AnalyzerOutput`
+    /// that must be freed. `AnalyzeStatement`/`AnalyzeExpression` return one;
+    /// `AnalyzeType` returns a `Type` borrowed from the type factory (freed with
+    /// it), so its handle must not be freed here.
+    const fn frees_output(self) -> bool {
+        match self {
+            Self::Statement | Self::Expression => true,
+            Self::Type => false,
         }
     }
 }
 
 /// One analyzer invocation threaded through the analysis pipeline: the configured
-/// `AnalyzerOptions` handle and the `SVC_ANALYZER` method id selecting the entry
-/// point (statement vs expression). Bundled so the shared helpers carry a single
-/// value rather than the pair.
+/// `AnalyzerOptions` handle, the `SVC_ANALYZER` method id selecting the entry
+/// point, and whether its output handle is owned. Bundled so the shared helpers
+/// carry a single value rather than the trio.
 #[derive(Clone, Copy)]
 struct AnalyzerCall {
     /// Handle to the configured `AnalyzerOptions`.
     options: u64,
-    /// `SVC_ANALYZER` method id: `MID_ANALYZE_STATEMENT` or `MID_ANALYZE_EXPRESSION`.
+    /// `SVC_ANALYZER` method id: e.g. `MID_ANALYZE_STATEMENT` or `MID_ANALYZE_TYPE`.
     mid: i32,
+    /// Whether the response's field-2 handle is an owned `AnalyzerOutput` to free.
+    frees_output: bool,
 }
 
 /// The catalog entries to register before an analysis, threaded together through
@@ -1049,6 +1067,26 @@ impl Module {
         )
     }
 
+    /// Resolves a type name to its canonical resolved type name.
+    ///
+    /// Parses and analyzes `type_name` (e.g. `"INT64"`, `"ARRAY<STRING>"`,
+    /// `"STRUCT<a INT64, b STRING>"`) against a catalog populated with `tables`,
+    /// returning the resolved type's name. Structural types round-trip; catalog
+    /// entries here only matter for named types, so [`Module::analyze_type_in`] is
+    /// the useful counterpart when resolving catalog-defined type names. Returns
+    /// [`Error::GoogleSql`] for a malformed or unknown type name.
+    pub fn analyze_type(&mut self, type_name: &str, tables: &[TableDef]) -> Result<String, Error> {
+        self.run_analysis(
+            type_name,
+            CatalogContents::tables_only(tables),
+            AnalysisOptions {
+                target: AnalysisTarget::Type,
+                ..AnalysisOptions::default()
+            },
+            Self::resolved_type_name,
+        )
+    }
+
     /// Analyzes a query and returns its resolved output schema.
     ///
     /// Like [`Module::analyze_statement_with_catalog`], but instead of only
@@ -1150,6 +1188,23 @@ impl Module {
         )
     }
 
+    /// Resolves a type name against `catalog` to its canonical resolved type name.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::analyze_type`]: `type_name` may
+    /// reference the catalog's named types (and other catalog-defined type names),
+    /// which resolve to their underlying type.
+    pub fn analyze_type_in(&mut self, type_name: &str, catalog: &Catalog) -> Result<String, Error> {
+        self.run_analysis(
+            type_name,
+            CatalogContents::of(catalog),
+            AnalysisOptions {
+                target: AnalysisTarget::Type,
+                ..AnalysisOptions::default()
+            },
+            Self::resolved_type_name,
+        )
+    }
+
     /// Analyzes a query against `catalog` and returns its resolved output schema.
     ///
     /// The [`Catalog`] counterpart of [`Module::analyze_output_columns`], also
@@ -1248,6 +1303,7 @@ impl Module {
             let call = AnalyzerCall {
                 options: options.ptr(),
                 mid: opts.target.mid(),
+                frees_output: opts.target.frees_output(),
             };
             module.analyze_with_options(sql, call, catalog, extract)
         })
@@ -2851,10 +2907,19 @@ impl Module {
         }
 
         // Run the extractor while the output (and the catalog/type factory that
-        // own its nodes and types) is still alive; the output is freed by the
-        // top-level flush afterwards. Any nodes the extractor visits are borrowed
-        // pointers into that tree, so none are freed here.
-        let output = self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
-        extract(self, output.ptr())
+        // own its nodes and types) is still alive; any nodes it visits are
+        // borrowed pointers into that tree, so none are freed here.
+        //
+        // An owned `AnalyzerOutput` (statement/expression analysis) is registered
+        // for a free by the top-level flush. `AnalyzeType` instead returns a
+        // `Type` borrowed from the still-live type factory, so its handle is
+        // passed through without a free.
+        if call.frees_output {
+            let output =
+                self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
+            extract(self, output.ptr())
+        } else {
+            extract(self, output_ptr)
+        }
     }
 }
