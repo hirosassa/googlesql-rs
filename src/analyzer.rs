@@ -445,16 +445,21 @@ pub struct QueryParameter {
     pub ty: ColumnType,
 }
 
-/// A user-defined table-valued function (TVF) with a fixed output schema and no
-/// arguments, registered into the catalog before analysis.
+/// A user-defined table-valued function (TVF) with a fixed output schema,
+/// registered into the catalog before analysis.
 ///
-/// Registering it lets a call such as `SELECT * FROM my_tvf()` resolve, yielding
-/// the declared output columns. The output schema is fixed: it does not depend
-/// on any call arguments (argument support is not modelled yet).
+/// Registering it lets a call such as `SELECT * FROM my_tvf(5)` resolve,
+/// type-checking each argument against [`arguments`](Self::arguments) and
+/// yielding the declared output columns. The output schema is fixed: it does
+/// not depend on the argument values. Only scalar arguments are modelled;
+/// relation (table) arguments are not supported yet.
 #[derive(Debug, Clone)]
 pub struct TvfDef {
     /// The function name as called in SQL.
     pub name: String,
+    /// The scalar argument types, in order; each call argument is checked against
+    /// these. Empty for a function called as `my_tvf()`.
+    pub arguments: Vec<ColumnType>,
     /// The columns the function outputs, in order; each becomes a column of the
     /// relation the call produces.
     pub columns: Vec<ColumnDef>,
@@ -1179,8 +1184,9 @@ impl Module {
         type_factory: u64,
         table_functions: &[TvfDef],
     ) -> Result<Vec<Handle>, Error> {
-        // Each TVF contributes its relation, result argument, signature, and the
-        // TVF object itself.
+        // Each TVF contributes at least its relation, result argument, signature,
+        // and the TVF object itself, plus one handle per scalar argument (the Vec
+        // grows past this hint when arguments are present).
         let mut handles = Vec::with_capacity(table_functions.len().saturating_mul(4));
         for tvf in table_functions {
             self.add_table_function(catalog, type_factory, tvf, &mut handles)?;
@@ -1203,7 +1209,16 @@ impl Module {
         // A fixed-output-schema TVF carries its result columns in the relation,
         // so the signature's result is an unconstrained relation type.
         let result_arg = self.new_any_relation_argument_type()?;
-        let signature = self.new_function_signature(result_arg.ptr(), &[])?;
+
+        let mut argument_ptrs = Vec::with_capacity(tvf.arguments.len());
+        for argument in &tvf.arguments {
+            let argument_type = self.build_column_type(type_factory, argument)?;
+            let argument_arg = self.new_function_argument_type(argument_type)?;
+            argument_ptrs.push(argument_arg.ptr());
+            handles.push(argument_arg);
+        }
+
+        let signature = self.new_function_signature(result_arg.ptr(), &argument_ptrs)?;
         let handle =
             self.new_fixed_output_schema_tvf(&tvf.name, signature.ptr(), relation.ptr())?;
         self.register_table_function(catalog, &tvf.name, handle.ptr())?;
