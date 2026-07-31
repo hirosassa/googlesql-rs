@@ -59,7 +59,7 @@ mod resolved;
 mod runtime;
 
 pub use analyzer::{ColumnDef, ColumnType, TableDef};
-pub use ast::AstNode;
+pub use ast::{AstNode, BinaryOp, BinaryOperator};
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
 pub use parser::{ParsedExpression, ParsedScript, ParsedStatement, ParsedStatements, ParsedType};
 pub use resolved::{

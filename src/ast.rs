@@ -25,10 +25,121 @@ const MID_GET_BYTE_OFFSET: i32 = 4;
 const SVC_AST_IDENTIFIER: i32 = 280;
 const MID_IDENTIFIER_GET_AS_STRING: i32 = 1;
 
+const SVC_AST_BINARY_EXPRESSION: i32 = 72;
+const MID_BINARY_IS_NOT: i32 = 3;
+const MID_BINARY_OP: i32 = 5;
+
 const KIND_IDENTIFIER: &str = "ASTIdentifier";
+const KIND_BINARY_EXPRESSION: &str = "ASTBinaryExpression";
 
 const EXPORT_TYPE_NAME: &str = "wasmify_get_type_name";
 const TYPE_NAME_PREFIX: &str = "googlesql::";
+
+/// The operator of an `ASTBinaryExpression`, together with whether it is negated.
+///
+/// Groups the operator token with the optional leading `NOT` (as in `NOT LIKE`,
+/// `IS NOT`, `IS NOT DISTINCT FROM`), the way [`text`](AstNode::text) cannot: a
+/// plain `a LIKE b` and `a NOT LIKE b` share the same [`operator`](Self::operator)
+/// and are told apart only by [`is_negated`](Self::is_negated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinaryOperator {
+    operator: BinaryOp,
+    negated: bool,
+}
+
+impl BinaryOperator {
+    /// The operator token (ignoring any leading `NOT`).
+    pub const fn operator(&self) -> BinaryOp {
+        self.operator
+    }
+
+    /// Whether the operator is negated by a leading `NOT` (e.g. `NOT LIKE`, `IS NOT`).
+    pub const fn is_negated(&self) -> bool {
+        self.negated
+    }
+}
+
+/// The operator token of a [`BinaryOperator`].
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL may add operators (its grammar
+/// grows over time); adding a variant later must not break callers that match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BinaryOp {
+    /// `LIKE`.
+    Like,
+    /// `IS` (e.g. `IS NULL`, `IS TRUE`).
+    Is,
+    /// `=`.
+    Eq,
+    /// `!=`.
+    Ne,
+    /// `<>`.
+    Ne2,
+    /// `>`.
+    Gt,
+    /// `<`.
+    Lt,
+    /// `>=`.
+    Ge,
+    /// `<=`.
+    Le,
+    /// `|`.
+    BitwiseOr,
+    /// `^`.
+    BitwiseXor,
+    /// `&`.
+    BitwiseAnd,
+    /// `+`.
+    Plus,
+    /// `-`.
+    Minus,
+    /// `*`.
+    Multiply,
+    /// `/`.
+    Divide,
+    /// `||` (string/array concatenation).
+    Concat,
+    /// `IS DISTINCT FROM`.
+    Distinct,
+    /// `IS SOURCE OF` (graph edge direction).
+    IsSourceNode,
+    /// `IS DEST OF` (graph edge direction).
+    IsDestNode,
+}
+
+impl BinaryOp {
+    /// Maps a GoogleSQL `ASTBinaryExpression::Op` wire value to a variant.
+    ///
+    /// Errors on an unknown value (including the `NotSet` sentinel `1`) rather
+    /// than defaulting, so a genuine binary expression never reports a wrong
+    /// operator silently.
+    fn from_wire(raw: i32) -> Result<Self, Error> {
+        Ok(match raw {
+            2 => Self::Like,
+            3 => Self::Is,
+            4 => Self::Eq,
+            5 => Self::Ne,
+            6 => Self::Ne2,
+            7 => Self::Gt,
+            8 => Self::Lt,
+            9 => Self::Ge,
+            10 => Self::Le,
+            11 => Self::BitwiseOr,
+            12 => Self::BitwiseXor,
+            13 => Self::BitwiseAnd,
+            14 => Self::Plus,
+            15 => Self::Minus,
+            16 => Self::Multiply,
+            17 => Self::Divide,
+            18 => Self::Concat,
+            19 => Self::Distinct,
+            20 => Self::IsSourceNode,
+            21 => Self::IsDestNode,
+            other => return Err(Error::Protocol(format!("unknown binary operator {other}"))),
+        })
+    }
+}
 
 /// A single node in the AST.
 #[derive(Debug, Clone)]
@@ -36,6 +147,7 @@ pub struct AstNode {
     kind: String,
     byte_range: Option<Range<usize>>,
     identifier: Option<String>,
+    binary_operator: Option<BinaryOperator>,
     children: Vec<Self>,
 }
 
@@ -63,6 +175,14 @@ impl AstNode {
         self.identifier.as_deref()
     }
 
+    /// The operator of an `ASTBinaryExpression` node (e.g. `a NOT LIKE b`).
+    ///
+    /// `None` for every other node kind. Carries the negation flag, which the
+    /// operator token alone cannot express — see [`BinaryOperator`].
+    pub const fn binary_operator(&self) -> Option<BinaryOperator> {
+        self.binary_operator
+    }
+
     /// Extracts the source text for this node from the original SQL string.
     pub fn text<'a>(&self, sql: &'a str) -> Option<&'a str> {
         let range = self.byte_range.clone()?;
@@ -80,6 +200,11 @@ impl Module {
         } else {
             None
         };
+        let binary_operator = if kind == KIND_BINARY_EXPRESSION {
+            Some(self.node_binary_operator(node_ptr)?)
+        } else {
+            None
+        };
 
         let num_children = self.node_num_children(node_ptr)?;
         let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
@@ -94,6 +219,7 @@ impl Module {
             kind,
             byte_range,
             identifier,
+            binary_operator,
             children,
         })
     }
@@ -105,6 +231,22 @@ impl Module {
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::Protocol("identifier string not found".into()))
+    }
+
+    /// Returns the operator (with its negation flag) of an `ASTBinaryExpression` node.
+    fn node_binary_operator(&mut self, node_ptr: u64) -> Result<BinaryOperator, Error> {
+        let op_resp = self.invoke_handle(SVC_AST_BINARY_EXPRESSION, MID_BINARY_OP, node_ptr)?;
+        check_error(&op_resp)?;
+        let raw = pb::read_int32_at_field(&op_resp, 1)
+            .ok_or_else(|| Error::Protocol("binary operator not found".into()))?;
+        let operator = BinaryOp::from_wire(raw)?;
+
+        let not_resp =
+            self.invoke_handle(SVC_AST_BINARY_EXPRESSION, MID_BINARY_IS_NOT, node_ptr)?;
+        check_error(&not_resp)?;
+        let negated = pb::read_bool_at_field(&not_resp, 1);
+
+        Ok(BinaryOperator { operator, negated })
     }
 
     /// Returns the type name of the node (with the `googlesql::` prefix stripped).
