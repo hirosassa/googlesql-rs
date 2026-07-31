@@ -105,6 +105,16 @@ pub struct Module {
     /// `Vec` removes a per-call allocation; the buffer keeps its capacity across
     /// calls. Only ever touched by the single owning thread between calls.
     scratch: Vec<u8>,
+    /// Persistent wasm-side (linear-memory) region every RPC encodes its request
+    /// into, and its capacity in bytes. Complements [`Module::scratch`]: that
+    /// removes the host `Vec` allocation, this removes the wasm-side
+    /// `wasm_alloc`/`wasm_free` request pair from every call. Grown by
+    /// [`Module::wasm_request_scratch`] only when a request exceeds the current
+    /// capacity (monotonically, so it settles at the largest request seen and
+    /// then reallocates no more), and reclaimed with the `Store`. `0`/`0` means
+    /// not yet allocated.
+    req_scratch_ptr: u32,
+    req_scratch_cap: u32,
 }
 
 /// Identifies the export a [`Module::call_typed`] call targets, used only to
@@ -252,6 +262,8 @@ impl Module {
             export_cache: HashMap::new(),
             cached_language_options: None,
             scratch: Vec::new(),
+            req_scratch_ptr: 0,
+            req_scratch_cap: 0,
         })
     }
 
@@ -413,8 +425,9 @@ impl Module {
     /// Invokes a wasmify RPC.
     ///
     /// Follows the `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` convention:
-    /// writes `req` into wasm memory, calls the export, and returns the response bytes.
-    /// Both the request and response buffers are freed after the call.
+    /// writes `req` into the persistent wasm request region, calls the export, and
+    /// returns the response bytes. The request region is reused across calls; only
+    /// the wasm-allocated response buffer is freed.
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
         let func = match self.invoke_cache.get(&(svc, mid)) {
             Some(func) => func.clone(),
@@ -485,6 +498,36 @@ impl Module {
         resp
     }
 
+    /// Returns the persistent wasm-side request region ([`Module::req_scratch_ptr`]),
+    /// ensuring it holds at least `len` bytes.
+    ///
+    /// When the current region already covers `len` it is returned unchanged, so
+    /// the common case pays no wasm call at all. Otherwise the old region (if any)
+    /// is freed and a new one of exactly `len` bytes is allocated; since the
+    /// region only ever grows, it converges on the largest request the instance
+    /// encounters and then reallocates no further. `len` must be non-zero (the
+    /// empty-request path never calls this).
+    fn wasm_request_scratch(&mut self, len: u32) -> Result<u32, Error> {
+        if self.req_scratch_ptr != 0 && self.req_scratch_cap >= len {
+            return Ok(self.req_scratch_ptr);
+        }
+        // Grow: release the undersized region before allocating a larger one so
+        // the wasm allocator can coalesce it, then commit the new region only
+        // once both steps succeed.
+        if self.req_scratch_ptr != 0 {
+            self.free(self.req_scratch_ptr)?;
+            self.req_scratch_ptr = 0;
+            self.req_scratch_cap = 0;
+        }
+        let ptr = self.alloc(len)?;
+        if ptr == 0 {
+            return Err(Error::Wasm("wasm_alloc returned NULL".into()));
+        }
+        self.req_scratch_ptr = ptr;
+        self.req_scratch_cap = len;
+        Ok(ptr)
+    }
+
     /// Resolves an export by name into a typed `(ptr,len) -> packed` function.
     fn typed_export(&mut self, name: &str) -> Result<TypedFunc<(u32, u32), u64>, Error> {
         self.instance
@@ -492,10 +535,12 @@ impl Module {
             .map_err(|e| Error::Wasm(format!("export `{name}`: {e}")))
     }
 
-    /// Runs one RPC over an already-resolved export: writes `req` into wasm
-    /// memory, calls the export, and returns the response bytes. Both the request
-    /// and response buffers are freed after the call. `id` names the export only
-    /// for the call-failure message, so it is formatted lazily off the hot path.
+    /// Runs one RPC over an already-resolved export: writes `req` into the
+    /// persistent wasm request region, calls the export, and returns the response
+    /// bytes. The request region is retained for the next call (see
+    /// [`Module::wasm_request_scratch`]); only the response buffer, which the wasm
+    /// side allocates, is freed. `id` names the export only for the call-failure
+    /// message, so it is formatted lazily off the hot path.
     fn call_typed(
         &mut self,
         func: TypedFunc<(u32, u32), u64>,
@@ -506,10 +551,7 @@ impl Module {
             (0, 0)
         } else {
             let len = u32::try_from(req.len()).map_err(|e| Error::Memory(e.to_string()))?;
-            let ptr = self.alloc(len)?;
-            if ptr == 0 {
-                return Err(Error::Wasm("wasm_alloc returned NULL".into()));
-            }
+            let ptr = self.wasm_request_scratch(len)?;
             self.write(ptr, req)?;
             (ptr, len)
         };
@@ -517,10 +559,6 @@ impl Module {
         let packed = func
             .call(&mut self.store, (req_ptr, req_len))
             .map_err(|e| Error::Wasm(format!("`{id}` call: {e}")))?;
-
-        if req_ptr != 0 {
-            self.free(req_ptr)?;
-        }
 
         let resp_ptr = u32::try_from(packed >> 32).map_err(|e| Error::Memory(e.to_string()))?;
         let resp_len =
@@ -757,6 +795,92 @@ mod tests {
         assert!(
             module.scratch.capacity() > 0,
             "the scratch buffer must be returned to the Module with capacity to reuse"
+        );
+    }
+
+    /// The persistent wasm-side request region grows to fit the largest request
+    /// and never shrinks: a first size allocates it, a larger size reallocates
+    /// (new pointer, larger capacity), and a smaller size afterwards reuses the
+    /// same region rather than allocating again.
+    #[test]
+    fn wasm_request_scratch_grows_monotonically() {
+        let mut module = super::Module::new().expect("instantiate module");
+        assert_eq!(
+            module.req_scratch_ptr, 0,
+            "the wasm request region must start unallocated"
+        );
+
+        let small = module
+            .wasm_request_scratch(16)
+            .expect("allocate small request region");
+        assert_ne!(small, 0, "a non-empty request must yield a non-null region");
+        assert!(
+            module.req_scratch_cap >= 16,
+            "capacity must cover the request"
+        );
+
+        let large = module
+            .wasm_request_scratch(4096)
+            .expect("grow request region");
+        assert_ne!(
+            large, small,
+            "a larger request than capacity must reallocate to a new region"
+        );
+        assert!(
+            module.req_scratch_cap >= 4096,
+            "capacity must grow to cover the larger request"
+        );
+
+        let reused = module
+            .wasm_request_scratch(8)
+            .expect("reuse request region");
+        assert_eq!(
+            reused, large,
+            "a request within capacity must reuse the region without reallocating"
+        );
+    }
+
+    /// Request-bearing RPCs reuse the persistent wasm-side request region: the
+    /// first such call allocates it, and a later same-size request keeps the very
+    /// same pointer, proving the per-call `wasm_alloc`/`wasm_free` request pair is
+    /// gone.
+    #[test]
+    fn request_bearing_rpc_reuses_wasm_region() {
+        let mut module = super::Module::new().expect("instantiate module");
+        assert_eq!(
+            module.req_scratch_ptr, 0,
+            "the wasm request region must start unallocated"
+        );
+
+        // An empty-request constructor does not touch the request region.
+        let resp = module
+            .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
+            .expect("NewParserOptions RPC");
+        let first = super::pb::read_handle_at_field(&resp, 1);
+        assert_ne!(first, 0, "NewParserOptions must return a non-null handle");
+        assert_eq!(
+            module.req_scratch_ptr, 0,
+            "an empty request must not allocate the request region"
+        );
+
+        // Freeing it carries a handle argument: the first request-bearing RPC.
+        module
+            .invoke_handle(SVC_PARSER_OPTIONS, MID_FREE_PARSER_OPTIONS, first)
+            .expect("FreeParserOptions via invoke_handle");
+        let region = module.req_scratch_ptr;
+        assert_ne!(region, 0, "a request-bearing RPC must allocate the region");
+
+        // A second same-size request-bearing RPC must reuse the identical region.
+        let resp = module
+            .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
+            .expect("NewParserOptions RPC");
+        let second = super::pb::read_handle_at_field(&resp, 1);
+        module
+            .invoke_handle(SVC_PARSER_OPTIONS, MID_FREE_PARSER_OPTIONS, second)
+            .expect("FreeParserOptions via invoke_handle");
+        assert_eq!(
+            module.req_scratch_ptr, region,
+            "a same-size request must reuse the region, not reallocate it"
         );
     }
 
