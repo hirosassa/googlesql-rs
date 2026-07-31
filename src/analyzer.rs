@@ -37,7 +37,12 @@ const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
 const MID_ADD_QUERY_PARAMETER: i32 = 4;
 const MID_SET_PARSE_LOCATION_RECORD_TYPE: i32 = 77;
 const MID_SET_LANGUAGE: i32 = 74;
+const MID_SET_PARAMETER_MODE: i32 = 76;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
+
+/// `ParameterMode::PARAMETER_POSITIONAL`: query parameters are written `?` and
+/// matched by position. GoogleSQL numbers the enum from 1 (named = 1), so this is 2.
+const PARAMETER_MODE_POSITIONAL: i32 = 2;
 
 /// `ParseLocationRecordType::PARSE_LOCATION_RECORD_FULL_NODE_SCOPE`: record a
 /// source byte range for every resolved node that maps to one.
@@ -831,6 +836,9 @@ struct AnalysisOptions {
     prune_columns: bool,
     /// Record a source byte range on each resolved node.
     record_parse_locations: bool,
+    /// Analyze in positional (`?`) parameter mode instead of the default named
+    /// mode, so undeclared positional parameters get inferred types.
+    positional_parameters: bool,
     /// Which analyzer entry point to invoke on the input string.
     target: AnalysisTarget,
 }
@@ -1130,6 +1138,32 @@ impl Module {
         Ok(analyzed.len())
     }
 
+    /// Infers the type of each undeclared positional (`?`) parameter in `sql`,
+    /// against a catalog populated with `tables`.
+    ///
+    /// The statement is analyzed in positional parameter mode with undeclared
+    /// parameters allowed, so each `?` gets a type inferred from how it is used.
+    /// The returned type names are in positional order (e.g. `["INT64", "STRING"]`
+    /// for the first and second `?`); a statement with no parameters yields an
+    /// empty vec. This discovers a query's parameter signature without declaring
+    /// it up front. Returns [`Error::GoogleSql`] on a syntax error or unresolved
+    /// name.
+    pub fn undeclared_parameter_types(
+        &mut self,
+        sql: &str,
+        tables: &[TableDef],
+    ) -> Result<Vec<String>, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            AnalysisOptions {
+                positional_parameters: true,
+                ..AnalysisOptions::default()
+            },
+            Self::undeclared_positional_parameters,
+        )
+    }
+
     /// Resolves a type name to its canonical resolved type name.
     ///
     /// Parses and analyzes `type_name` (e.g. `"INT64"`, `"ARRAY<STRING>"`,
@@ -1264,6 +1298,28 @@ impl Module {
             |_, _| Ok(()),
         )?;
         Ok(analyzed.len())
+    }
+
+    /// Infers the type of each undeclared positional (`?`) parameter in `sql`,
+    /// against `catalog`.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::undeclared_parameter_types`]: a
+    /// parameter compared against a catalog table's column infers that column's
+    /// type.
+    pub fn undeclared_parameter_types_in(
+        &mut self,
+        sql: &str,
+        catalog: &Catalog,
+    ) -> Result<Vec<String>, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            AnalysisOptions {
+                positional_parameters: true,
+                ..AnalysisOptions::default()
+            },
+            Self::undeclared_positional_parameters,
+        )
     }
 
     /// Resolves a type name against `catalog` to its canonical resolved type name.
@@ -1461,6 +1517,9 @@ impl Module {
                 MID_SET_PARSE_LOCATION_RECORD_TYPE,
                 PARSE_LOCATION_RECORD_FULL_NODE_SCOPE,
             )?;
+        }
+        if opts.positional_parameters {
+            self.set_options_int32(options, MID_SET_PARAMETER_MODE, PARAMETER_MODE_POSITIONAL)?;
         }
         Ok(())
     }

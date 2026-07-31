@@ -18,6 +18,7 @@ use crate::runtime::Module;
 const SVC_ANALYZER_OUTPUT: i32 = 558;
 const MID_RESOLVED_EXPR: i32 = 6;
 const MID_RESOLVED_STATEMENT: i32 = 8;
+const MID_UNDECLARED_POSITIONAL_PARAMETERS: i32 = 10;
 
 /// Node kinds (from `wasmify_get_type_name`) that the walks match on.
 const KIND_QUERY_STMT: &str = "ResolvedQueryStmt";
@@ -1088,6 +1089,32 @@ impl Module {
             return Err(Error::Protocol("resolved expression has no type".into()));
         }
         self.type_debug_string(type_handle)
+    }
+
+    /// Extracts the inferred type name of each undeclared positional parameter
+    /// from an `AnalyzerOutput`, in positional order.
+    ///
+    /// `AnalyzerOutput::UndeclaredPositionalParameters` returns the parameters'
+    /// types as a repeated field of type handles (element `i` is the type of the
+    /// `?` at position `i + 1`); each is rendered to its name. A statement with no
+    /// parameters yields an empty vec.
+    pub(crate) fn undeclared_positional_parameters(
+        &mut self,
+        analyzer_output: u64,
+    ) -> Result<Vec<String>, Error> {
+        if analyzer_output == 0 {
+            return Ok(Vec::new());
+        }
+        let resp = self.invoke_handle(
+            SVC_ANALYZER_OUTPUT,
+            MID_UNDECLARED_POSITIONAL_PARAMETERS,
+            analyzer_output,
+        )?;
+        check_error(&resp)?;
+        pb::read_handles_at_field(&resp, 1)
+            .into_iter()
+            .map(|type_handle| self.type_debug_string(type_handle))
+            .collect()
     }
 
     /// Extracts the resolved type name from the `Type` handle produced by
