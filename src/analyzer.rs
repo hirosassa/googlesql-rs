@@ -20,6 +20,7 @@ use crate::resolved::{OutputColumn, ResolvedNode, TableRef};
 use crate::runtime::{Handle, Module};
 
 const SVC_ANALYZER: i32 = 0;
+const MID_ANALYZE_EXPRESSION: i32 = 0;
 const MID_ANALYZE_STATEMENT: i32 = 2;
 
 const SVC_ANALYZER_OPTIONS: i32 = 554;
@@ -823,6 +824,43 @@ struct AnalysisOptions {
     prune_columns: bool,
     /// Record a source byte range on each resolved node.
     record_parse_locations: bool,
+    /// Which analyzer entry point to invoke on the input string.
+    target: AnalysisTarget,
+}
+
+/// Selects the analyzer entry point for a run: a full statement or a standalone
+/// scalar expression. The default is [`AnalysisTarget::Statement`], so the raw
+/// zero-valued default never accidentally selects `AnalyzeExpression` (`mid` 0).
+#[derive(Clone, Copy, Default)]
+enum AnalysisTarget {
+    /// `AnalyzeStatement`: the input is a complete SQL statement.
+    #[default]
+    Statement,
+    /// `AnalyzeExpression`: the input is a scalar expression, resolved to a
+    /// single typed `ResolvedExpr`.
+    Expression,
+}
+
+impl AnalysisTarget {
+    /// The analyzer service method id (`SVC_ANALYZER`) this target invokes.
+    const fn mid(self) -> i32 {
+        match self {
+            Self::Statement => MID_ANALYZE_STATEMENT,
+            Self::Expression => MID_ANALYZE_EXPRESSION,
+        }
+    }
+}
+
+/// One analyzer invocation threaded through the analysis pipeline: the configured
+/// `AnalyzerOptions` handle and the `SVC_ANALYZER` method id selecting the entry
+/// point (statement vs expression). Bundled so the shared helpers carry a single
+/// value rather than the pair.
+#[derive(Clone, Copy)]
+struct AnalyzerCall {
+    /// Handle to the configured `AnalyzerOptions`.
+    options: u64,
+    /// `SVC_ANALYZER` method id: `MID_ANALYZE_STATEMENT` or `MID_ANALYZE_EXPRESSION`.
+    mid: i32,
 }
 
 /// The catalog entries to register before an analysis, threaded together through
@@ -990,6 +1028,27 @@ impl Module {
         )
     }
 
+    /// Analyzes a standalone scalar expression and returns its inferred type.
+    ///
+    /// Unlike [`Module::analyze_statement`], the input is an expression (not a
+    /// full statement); it resolves against a catalog populated with `tables`
+    /// and the builtin functions/operators, and the returned string is the
+    /// resolved type's name (e.g. `"INT64"`, `"STRING"`, `"STRUCT<a INT64>"`).
+    /// The expression may reference catalog constants and functions but not table
+    /// columns, which are not in scope. Returns [`Error::GoogleSql`] on a syntax
+    /// error or unresolved name.
+    pub fn analyze_expression(&mut self, sql: &str, tables: &[TableDef]) -> Result<String, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            AnalysisOptions {
+                target: AnalysisTarget::Expression,
+                ..AnalysisOptions::default()
+            },
+            Self::expression_type,
+        )
+    }
+
     /// Analyzes a query and returns its resolved output schema.
     ///
     /// Like [`Module::analyze_statement_with_catalog`], but instead of only
@@ -1070,6 +1129,24 @@ impl Module {
             CatalogContents::of(catalog),
             AnalysisOptions::default(),
             |_, _| Ok(()),
+        )
+    }
+
+    /// Analyzes a standalone scalar expression against `catalog` and returns its
+    /// inferred type.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::analyze_expression`]: besides
+    /// tables, the expression may reference the catalog's constants and
+    /// user-defined functions.
+    pub fn analyze_expression_in(&mut self, sql: &str, catalog: &Catalog) -> Result<String, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            AnalysisOptions {
+                target: AnalysisTarget::Expression,
+                ..AnalysisOptions::default()
+            },
+            Self::expression_type,
         )
     }
 
@@ -1168,7 +1245,11 @@ impl Module {
             // `QUALIFY` clause resolves.
             let language = module.language_options()?;
             module.set_options_language(options.ptr(), language)?;
-            module.analyze_with_options(sql, options.ptr(), catalog, extract)
+            let call = AnalyzerCall {
+                options: options.ptr(),
+                mid: opts.target.mid(),
+            };
+            module.analyze_with_options(sql, call, catalog, extract)
         })
     }
 
@@ -1236,7 +1317,7 @@ impl Module {
     fn analyze_with_options<T>(
         &mut self,
         sql: &str,
-        options: u64,
+        call: AnalyzerCall,
         catalog: CatalogContents,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -1247,7 +1328,7 @@ impl Module {
             SVC_TYPE_FACTORY,
             MID_FREE_TYPE_FACTORY,
         )?;
-        self.analyze_with_catalog(sql, options, type_factory.ptr(), catalog, extract)
+        self.analyze_with_catalog(sql, call, type_factory.ptr(), catalog, extract)
     }
 
     /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with the
@@ -1257,7 +1338,7 @@ impl Module {
     fn analyze_with_catalog<T>(
         &mut self,
         sql: &str,
-        options: u64,
+        call: AnalyzerCall,
         type_factory: u64,
         contents: CatalogContents,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
@@ -1273,7 +1354,7 @@ impl Module {
             MID_FREE_SIMPLE_CATALOG,
         )?;
         self.add_builtin_functions(catalog.ptr())?;
-        self.populate_and_analyze(sql, options, catalog.ptr(), type_factory, contents, extract)
+        self.populate_and_analyze(sql, call, catalog.ptr(), type_factory, contents, extract)
     }
 
     /// Registers a catalog's declarations and runs the analysis. Every handle
@@ -1282,7 +1363,7 @@ impl Module {
     fn populate_and_analyze<T>(
         &mut self,
         sql: &str,
-        options: u64,
+        call: AnalyzerCall,
         catalog: u64,
         type_factory: u64,
         contents: CatalogContents,
@@ -1300,8 +1381,8 @@ impl Module {
         handles.extend(self.populate_catalog(catalog, type_factory, contents)?);
         // Query parameters are an analysis-wide `AnalyzerOptions` setting rather
         // than a catalog declaration, so only the top-level contents supply them.
-        self.add_query_parameters(options, type_factory, contents.parameters)?;
-        let result = self.analyze(sql, options, catalog, type_factory, extract);
+        self.add_query_parameters(call.options, type_factory, contents.parameters)?;
+        let result = self.analyze(sql, call, catalog, type_factory, extract);
         drop(handles);
         result
     }
@@ -2743,22 +2824,25 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Invokes `AnalyzeStatement`, runs `extract` on the resolved output, then
-    /// releases the resulting `AnalyzerOutput` handle.
+    /// Invokes the analyzer entry point named by `call.mid` (`AnalyzeStatement`
+    /// or `AnalyzeExpression`), runs `extract` on the resolved output, then
+    /// releases the resulting `AnalyzerOutput` handle. Both entry points share the
+    /// same request shape (sql, options, catalog, type factory) and return an
+    /// `AnalyzerOutput` in field 2.
     fn analyze<T>(
         &mut self,
         sql: &str,
-        options: u64,
+        call: AnalyzerCall,
         catalog: u64,
         type_factory: u64,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, sql);
-        pb::append_handle(&mut req, 2, options);
+        pb::append_handle(&mut req, 2, call.options);
         pb::append_handle(&mut req, 3, catalog);
         pb::append_handle(&mut req, 4, type_factory);
-        let resp = self.invoke(SVC_ANALYZER, MID_ANALYZE_STATEMENT, &req)?;
+        let resp = self.invoke(SVC_ANALYZER, call.mid, &req)?;
         check_error(&resp)?;
 
         let output_ptr = pb::read_handle_at_field(&resp, 2);

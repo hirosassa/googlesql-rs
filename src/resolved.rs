@@ -16,6 +16,7 @@ use crate::pb;
 use crate::runtime::Module;
 
 const SVC_ANALYZER_OUTPUT: i32 = 558;
+const MID_RESOLVED_EXPR: i32 = 6;
 const MID_RESOLVED_STATEMENT: i32 = 8;
 
 /// Node kinds (from `wasmify_get_type_name`) that the walks match on.
@@ -1058,6 +1059,32 @@ impl Module {
             type_name,
             id,
         })
+    }
+
+    /// Extracts the inferred type name of an expression from an `AnalyzerOutput`
+    /// handle produced by `AnalyzeExpression`.
+    ///
+    /// The output of expression analysis is a single `ResolvedExpr` (rather than
+    /// a `ResolvedStatement`), whose `Type()` gives the expression's resolved
+    /// type. A successful analysis always yields both, so a missing expression or
+    /// type is a protocol error rather than an empty result.
+    pub(crate) fn expression_type(&mut self, analyzer_output: u64) -> Result<String, Error> {
+        if analyzer_output == 0 {
+            return Err(Error::Protocol(
+                "analyzer produced no expression output".into(),
+            ));
+        }
+        let expr = self.rpc_handle(SVC_ANALYZER_OUTPUT, MID_RESOLVED_EXPR, analyzer_output)?;
+        if expr == 0 {
+            return Err(Error::Protocol(
+                "analyzer output has no resolved expression".into(),
+            ));
+        }
+        let type_handle = self.rpc_handle(SVC_RESOLVED_EXPR, MID_EXPR_TYPE, expr)?;
+        if type_handle == 0 {
+            return Err(Error::Protocol("resolved expression has no type".into()));
+        }
+        self.type_debug_string(type_handle)
     }
 
     /// Collects the tables a resolved statement reads, with referenced columns.
