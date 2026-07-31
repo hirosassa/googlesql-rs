@@ -61,6 +61,7 @@ const MID_ADD_BUILTIN_FUNCTIONS_AND_TYPES: i32 = 3;
 const MID_ADD_FUNCTION: i32 = 10;
 const MID_ADD_TABLE_NAMED: i32 = 72;
 const MID_ADD_CONSTANT_NAMED: i32 = 8;
+const MID_ADD_TABLE_VALUED_FUNCTION_NAMED: i32 = 73;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
 
 const SVC_SIMPLE_TABLE: i32 = 1380;
@@ -74,6 +75,7 @@ const MID_FREE_SIMPLE_COLUMN: i32 = 10;
 
 const SVC_FUNCTION_ARGUMENT_TYPE: i32 = 637;
 const MID_NEW_FUNCTION_ARGUMENT_TYPE: i32 = 2;
+const MID_NEW_FUNCTION_ARGUMENT_TYPE_ANY_RELATION: i32 = 9;
 const MID_FREE_FUNCTION_ARGUMENT_TYPE: i32 = 52;
 
 const SVC_FUNCTION_SIGNATURE: i32 = 644;
@@ -83,6 +85,19 @@ const MID_FREE_FUNCTION_SIGNATURE: i32 = 46;
 const SVC_FUNCTION: i32 = 636;
 const MID_NEW_FUNCTION: i32 = 3;
 const MID_FREE_FUNCTION: i32 = 55;
+
+const SVC_TVF_RELATION: i32 = 1400;
+const MID_NEW_TVF_RELATION: i32 = 0;
+const MID_FREE_TVF_RELATION: i32 = 10;
+
+const SVC_FIXED_OUTPUT_SCHEMA_TVF: i32 = 632;
+const MID_NEW_FIXED_OUTPUT_SCHEMA_TVF: i32 = 2;
+const MID_FREE_FIXED_OUTPUT_SCHEMA_TVF: i32 = 5;
+
+/// Field numbers of a `TVFRelation::Column` (`TVFSchemaColumn`) submessage: the
+/// column name and its type handle.
+const FIELD_TVF_COLUMN_NAME: u32 = 3;
+const FIELD_TVF_COLUMN_TYPE: u32 = 5;
 
 const SVC_SIMPLE_CONSTANT: i32 = 1354;
 const MID_NEW_SIMPLE_CONSTANT: i32 = 0;
@@ -430,6 +445,21 @@ pub struct QueryParameter {
     pub ty: ColumnType,
 }
 
+/// A user-defined table-valued function (TVF) with a fixed output schema and no
+/// arguments, registered into the catalog before analysis.
+///
+/// Registering it lets a call such as `SELECT * FROM my_tvf()` resolve, yielding
+/// the declared output columns. The output schema is fixed: it does not depend
+/// on any call arguments (argument support is not modelled yet).
+#[derive(Debug, Clone)]
+pub struct TvfDef {
+    /// The function name as called in SQL.
+    pub name: String,
+    /// The columns the function outputs, in order; each becomes a column of the
+    /// relation the call produces.
+    pub columns: Vec<ColumnDef>,
+}
+
 /// The declarations made visible to the analyzer for a query.
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
@@ -447,6 +477,8 @@ pub struct Catalog {
     pub constants: Vec<ConstantDef>,
     /// Typed query parameters (`@name`).
     pub parameters: Vec<QueryParameter>,
+    /// User-defined table-valued functions.
+    pub table_functions: Vec<TvfDef>,
 }
 
 /// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
@@ -470,6 +502,7 @@ struct CatalogContents<'a> {
     functions: &'a [FunctionDef],
     constants: &'a [ConstantDef],
     parameters: &'a [QueryParameter],
+    table_functions: &'a [TvfDef],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -481,16 +514,18 @@ impl<'a> CatalogContents<'a> {
             functions: &[],
             constants: &[],
             parameters: &[],
+            table_functions: &[],
         }
     }
 
-    /// The tables, functions, constants, and parameters declared by a [`Catalog`].
+    /// Every kind of declaration made by a [`Catalog`].
     const fn of(catalog: &'a Catalog) -> Self {
         Self {
             tables: catalog.tables.as_slice(),
             functions: catalog.functions.as_slice(),
             constants: catalog.constants.as_slice(),
             parameters: catalog.parameters.as_slice(),
+            table_functions: catalog.table_functions.as_slice(),
         }
     }
 }
@@ -852,6 +887,8 @@ impl Module {
         let _table_handles = self.add_tables(catalog, type_factory, contents.tables)?;
         let _function_handles = self.add_functions(catalog, type_factory, contents.functions)?;
         let _constant_handles = self.add_constants(catalog, contents.constants)?;
+        let _tvf_handles =
+            self.add_table_functions(catalog, type_factory, contents.table_functions)?;
         self.add_query_parameters(options, type_factory, contents.parameters)?;
         self.analyze(sql, options, catalog, type_factory, extract)
     }
@@ -1131,6 +1168,122 @@ impl Module {
         pb::append_handle(&mut req, 1, catalog);
         pb::append_handle(&mut req, 2, function);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_FUNCTION, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each table-valued function into `catalog`, returning the created
+    /// handles so the caller keeps them alive across the analysis.
+    fn add_table_functions(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        table_functions: &[TvfDef],
+    ) -> Result<Vec<Handle>, Error> {
+        // Each TVF contributes its relation, result argument, signature, and the
+        // TVF object itself.
+        let mut handles = Vec::with_capacity(table_functions.len().saturating_mul(4));
+        for tvf in table_functions {
+            self.add_table_function(catalog, type_factory, tvf, &mut handles)?;
+        }
+        Ok(handles)
+    }
+
+    /// Builds a fixed-output-schema TVF from `tvf` and registers it into
+    /// `catalog`. Every acquired handle is pushed onto `handles` so it outlives
+    /// the analysis (the TVF references its signature and relation by raw
+    /// pointer, so they must not be freed before the `AnalyzerOutput`).
+    fn add_table_function(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        tvf: &TvfDef,
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let relation = self.new_tvf_relation(type_factory, &tvf.columns)?;
+        // A fixed-output-schema TVF carries its result columns in the relation,
+        // so the signature's result is an unconstrained relation type.
+        let result_arg = self.new_any_relation_argument_type()?;
+        let signature = self.new_function_signature(result_arg.ptr(), &[])?;
+        let handle =
+            self.new_fixed_output_schema_tvf(&tvf.name, signature.ptr(), relation.ptr())?;
+        self.register_table_function(catalog, &tvf.name, handle.ptr())?;
+
+        handles.push(relation);
+        handles.push(result_arg);
+        handles.push(signature);
+        handles.push(handle);
+        Ok(())
+    }
+
+    /// Builds a `TVFRelation` output schema from `columns`, each contributing a
+    /// named column carrying its type handle.
+    fn new_tvf_relation(
+        &mut self,
+        type_factory: u64,
+        columns: &[ColumnDef],
+    ) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        for column in columns {
+            let type_handle = self.build_column_type(type_factory, &column.ty)?;
+            let mut column_msg = Vec::new();
+            pb::append_string(&mut column_msg, FIELD_TVF_COLUMN_NAME, &column.name);
+            pb::append_handle(&mut column_msg, FIELD_TVF_COLUMN_TYPE, type_handle);
+            pb::append_submessage(&mut req, 1, &column_msg);
+        }
+        self.acquire_handle(
+            SVC_TVF_RELATION,
+            MID_NEW_TVF_RELATION,
+            &req,
+            SVC_TVF_RELATION,
+            MID_FREE_TVF_RELATION,
+        )
+    }
+
+    /// Builds a `FunctionArgumentType` accepting any relation, used as a TVF
+    /// signature's result type.
+    fn new_any_relation_argument_type(&mut self) -> Result<Handle, Error> {
+        self.acquire_handle(
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_NEW_FUNCTION_ARGUMENT_TYPE_ANY_RELATION,
+            &[],
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_FREE_FUNCTION_ARGUMENT_TYPE,
+        )
+    }
+
+    /// Builds a `FixedOutputSchemaTVF` named `name`, carrying a single
+    /// `signature` and the `relation` describing its output columns.
+    fn new_fixed_output_schema_tvf(
+        &mut self,
+        name: &str,
+        signature: u64,
+        relation: u64,
+    ) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name); // single-element function name path
+        pb::append_handle(&mut req, 2, signature); // single-element signatures list
+        pb::append_handle(&mut req, 3, relation); // result schema
+        // Field 4 (options) is left absent, keeping the defaults.
+        self.acquire_handle(
+            SVC_FIXED_OUTPUT_SCHEMA_TVF,
+            MID_NEW_FIXED_OUTPUT_SCHEMA_TVF,
+            &req,
+            SVC_FIXED_OUTPUT_SCHEMA_TVF,
+            MID_FREE_FIXED_OUTPUT_SCHEMA_TVF,
+        )
+    }
+
+    /// Registers `tvf` into `catalog` under `name` (non-owning).
+    fn register_table_function(&mut self, catalog: u64, name: &str, tvf: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, tvf);
+        let resp = self.invoke(
+            SVC_SIMPLE_CATALOG,
+            MID_ADD_TABLE_VALUED_FUNCTION_NAMED,
+            &req,
+        )?;
         check_error(&resp)
     }
 

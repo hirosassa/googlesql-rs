@@ -10,7 +10,7 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef,
+    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef, TvfDef,
 };
 
 #[test]
@@ -363,6 +363,7 @@ fn resolves_a_registered_scalar_function() {
         }],
         constants: vec![],
         parameters: vec![],
+        table_functions: vec![],
     };
 
     let columns = module
@@ -396,6 +397,7 @@ fn resolves_a_registered_aggregate_function() {
         }],
         constants: vec![],
         parameters: vec![],
+        table_functions: vec![],
     };
 
     let columns = module
@@ -422,6 +424,7 @@ fn registered_function_type_checks_its_arguments() {
         }],
         constants: vec![],
         parameters: vec![],
+        table_functions: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -838,5 +841,51 @@ fn empty_disabled_feature_set_keeps_the_maximum_features() {
     assert!(
         result.is_ok(),
         "expected QUALIFY to be accepted, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_a_table_valued_function() {
+    let mut module = Module::new().unwrap();
+
+    // A fixed-output-schema TVF taking no arguments: calling it in a FROM clause
+    // resolves to its declared output columns.
+    let catalog = Catalog {
+        table_functions: vec![TvfDef {
+            name: "my_tvf".to_string(),
+            columns: vec![
+                ColumnDef {
+                    name: "id".to_string(),
+                    ty: ColumnType::Int64,
+                },
+                ColumnDef {
+                    name: "name".to_string(),
+                    ty: ColumnType::String,
+                },
+            ],
+        }],
+        ..Default::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT * FROM my_tvf()", &catalog)
+        .unwrap_or_else(|e| panic!("analysis failed: {e:?}"));
+
+    assert_eq!(columns.len(), 2, "expected the TVF's two output columns");
+    assert_eq!(columns[0].name(), "id");
+    assert_eq!(columns[0].type_name(), "INT64");
+    assert_eq!(columns[1].name(), "name");
+    assert_eq!(columns[1].type_name(), "STRING");
+}
+
+#[test]
+fn rejects_unknown_table_valued_function() {
+    let mut module = Module::new().unwrap();
+
+    // No TVF named `missing_tvf` is registered, so the call fails to resolve.
+    let result = module.analyze_statement_in("SELECT * FROM missing_tvf()", &Catalog::default());
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected an unresolved-function error, got: {result:?}"
     );
 }
