@@ -10,7 +10,8 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef, TvfDef,
+    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef, TvfArgument,
+    TvfDef,
 };
 
 #[test]
@@ -888,7 +889,7 @@ fn analyzes_a_table_valued_function_with_a_scalar_argument() {
     let catalog = Catalog {
         table_functions: vec![TvfDef {
             name: "my_tvf".to_string(),
-            arguments: vec![ColumnType::Int64],
+            arguments: vec![TvfArgument::Scalar(ColumnType::Int64)],
             columns: vec![ColumnDef {
                 name: "v".to_string(),
                 ty: ColumnType::Int64,
@@ -914,7 +915,7 @@ fn table_valued_function_type_checks_its_argument() {
     let catalog = Catalog {
         table_functions: vec![TvfDef {
             name: "my_tvf".to_string(),
-            arguments: vec![ColumnType::Int64],
+            arguments: vec![TvfArgument::Scalar(ColumnType::Int64)],
             columns: vec![ColumnDef {
                 name: "v".to_string(),
                 ty: ColumnType::Int64,
@@ -927,6 +928,75 @@ fn table_valued_function_type_checks_its_argument() {
     assert!(
         matches!(result, Err(Error::GoogleSql(_))),
         "expected an argument type error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_a_table_valued_function_with_an_any_relation_argument() {
+    let mut module = Module::new().unwrap();
+
+    // A TVF taking any table as input and returning a fixed schema: a `TABLE t`
+    // argument referencing a registered table resolves.
+    let catalog = Catalog {
+        tables: vec![TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        table_functions: vec![TvfDef {
+            name: "my_tvf".to_string(),
+            arguments: vec![TvfArgument::AnyRelation],
+            columns: vec![ColumnDef {
+                name: "v".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        ..Default::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT * FROM my_tvf(TABLE t)", &catalog)
+        .unwrap_or_else(|e| panic!("analysis failed: {e:?}"));
+
+    assert_eq!(columns.len(), 1, "expected the TVF's one output column");
+    assert_eq!(columns[0].name(), "v");
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn analyzes_a_table_valued_function_with_a_typed_relation_argument() {
+    let mut module = Module::new().unwrap();
+
+    // A TVF whose input relation must match a schema of `(a INT64)`; a registered
+    // table with that exact schema satisfies it.
+    let catalog = Catalog {
+        tables: vec![TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        table_functions: vec![TvfDef {
+            name: "my_tvf".to_string(),
+            arguments: vec![TvfArgument::Relation(vec![ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            }])],
+            columns: vec![ColumnDef {
+                name: "v".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        ..Default::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT * FROM my_tvf(TABLE t)", &catalog);
+    assert!(
+        result.is_ok(),
+        "expected the matching-schema table argument to resolve, got: {result:?}"
     );
 }
 

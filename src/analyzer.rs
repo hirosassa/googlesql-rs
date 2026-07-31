@@ -76,6 +76,7 @@ const MID_FREE_SIMPLE_COLUMN: i32 = 10;
 const SVC_FUNCTION_ARGUMENT_TYPE: i32 = 637;
 const MID_NEW_FUNCTION_ARGUMENT_TYPE: i32 = 2;
 const MID_NEW_FUNCTION_ARGUMENT_TYPE_ANY_RELATION: i32 = 9;
+const MID_NEW_FUNCTION_ARGUMENT_TYPE_RELATION_WITH_SCHEMA: i32 = 13;
 const MID_FREE_FUNCTION_ARGUMENT_TYPE: i32 = 52;
 
 const SVC_FUNCTION_SIGNATURE: i32 = 644;
@@ -445,21 +446,40 @@ pub struct QueryParameter {
     pub ty: ColumnType,
 }
 
+/// An argument accepted by a table-valued function (see [`TvfDef::arguments`]).
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL supports more argument kinds
+/// (e.g. model or connection arguments) than are modelled here; adding a variant
+/// later must not break callers that match on it.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TvfArgument {
+    /// A scalar argument of the given type, e.g. `my_tvf(5)` for
+    /// `Scalar(ColumnType::Int64)`.
+    Scalar(ColumnType),
+    /// A relation (table) argument accepting any input schema, e.g.
+    /// `my_tvf(TABLE t)` for any table `t`.
+    AnyRelation,
+    /// A relation (table) argument whose input must provide exactly these
+    /// columns (extra columns are not allowed), e.g. a table matching
+    /// `(a INT64)`.
+    Relation(Vec<ColumnDef>),
+}
+
 /// A user-defined table-valued function (TVF) with a fixed output schema,
 /// registered into the catalog before analysis.
 ///
 /// Registering it lets a call such as `SELECT * FROM my_tvf(5)` resolve,
 /// type-checking each argument against [`arguments`](Self::arguments) and
 /// yielding the declared output columns. The output schema is fixed: it does
-/// not depend on the argument values. Only scalar arguments are modelled;
-/// relation (table) arguments are not supported yet.
+/// not depend on the argument values.
 #[derive(Debug, Clone)]
 pub struct TvfDef {
     /// The function name as called in SQL.
     pub name: String,
-    /// The scalar argument types, in order; each call argument is checked against
-    /// these. Empty for a function called as `my_tvf()`.
-    pub arguments: Vec<ColumnType>,
+    /// The arguments, in order; each call argument is checked against these.
+    /// Empty for a function called as `my_tvf()`.
+    pub arguments: Vec<TvfArgument>,
     /// The columns the function outputs, in order; each becomes a column of the
     /// relation the call produces.
     pub columns: Vec<ColumnDef>,
@@ -1212,8 +1232,22 @@ impl Module {
 
         let mut argument_ptrs = Vec::with_capacity(tvf.arguments.len());
         for argument in &tvf.arguments {
-            let argument_type = self.build_column_type(type_factory, argument)?;
-            let argument_arg = self.new_function_argument_type(argument_type)?;
+            let argument_arg = match argument {
+                TvfArgument::Scalar(ty) => {
+                    let argument_type = self.build_column_type(type_factory, ty)?;
+                    self.new_function_argument_type(argument_type)?
+                }
+                TvfArgument::AnyRelation => self.new_any_relation_argument_type()?,
+                TvfArgument::Relation(columns) => {
+                    // The input schema is itself a TVFRelation the argument type
+                    // references, so keep it alive alongside the argument.
+                    let relation = self.new_tvf_relation(type_factory, columns)?;
+                    let argument_arg =
+                        self.new_relation_with_schema_argument_type(relation.ptr())?;
+                    handles.push(relation);
+                    argument_arg
+                }
+            };
             argument_ptrs.push(argument_arg.ptr());
             handles.push(argument_arg);
         }
@@ -1255,12 +1289,27 @@ impl Module {
     }
 
     /// Builds a `FunctionArgumentType` accepting any relation, used as a TVF
-    /// signature's result type.
+    /// signature's result type and for `AnyRelation` table arguments.
     fn new_any_relation_argument_type(&mut self) -> Result<Handle, Error> {
         self.acquire_handle(
             SVC_FUNCTION_ARGUMENT_TYPE,
             MID_NEW_FUNCTION_ARGUMENT_TYPE_ANY_RELATION,
             &[],
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_FREE_FUNCTION_ARGUMENT_TYPE,
+        )
+    }
+
+    /// Builds a `FunctionArgumentType` accepting a relation whose schema is
+    /// exactly `relation` (extra input columns are not allowed).
+    fn new_relation_with_schema_argument_type(&mut self, relation: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, relation);
+        pb::append_bool(&mut req, 2, false); // extra_relation_input_columns_allowed
+        self.acquire_handle(
+            SVC_FUNCTION_ARGUMENT_TYPE,
+            MID_NEW_FUNCTION_ARGUMENT_TYPE_RELATION_WITH_SCHEMA,
+            &req,
             SVC_FUNCTION_ARGUMENT_TYPE,
             MID_FREE_FUNCTION_ARGUMENT_TYPE,
         )
