@@ -51,6 +51,7 @@ const MID_GET_NUMERIC: i32 = 53;
 const MID_GET_STRING: i32 = 54;
 const MID_GET_TIME: i32 = 55;
 const MID_GET_TIMESTAMP: i32 = 56;
+const MID_MAKE_ARRAY_TYPE: i32 = 13;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -75,13 +76,14 @@ const MID_FREE_ANALYZER_OUTPUT: i32 = 11;
 
 /// A column type that a user table can expose to the analyzer.
 ///
-/// Each variant maps to a `TypeFactory` accessor for the corresponding
-/// GoogleSQL scalar type.
+/// Each scalar variant maps to a `TypeFactory` accessor for the corresponding
+/// GoogleSQL type; [`Array`](Self::Array) wraps an element type, built
+/// recursively (so `ARRAY<STRING>` is `Array(Box::new(String))`).
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL has more scalar types than are
-/// modelled here; adding a variant later must not be a breaking change for
-/// callers that match on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Marked `#[non_exhaustive]` because GoogleSQL has more types than are modelled
+/// here; adding a variant later must not be a breaking change for callers that
+/// match on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ColumnType {
     /// 64-bit signed integer (`INT64`).
@@ -112,12 +114,16 @@ pub enum ColumnType {
     Interval,
     /// Geospatial value (`GEOGRAPHY`).
     Geography,
+    /// An array of a given element type (`ARRAY<T>`). GoogleSQL forbids arrays of
+    /// arrays, so a nested `Array` element is rejected during analysis.
+    Array(Box<Self>),
 }
 
 impl ColumnType {
-    /// The `TypeFactory` method id that returns this type's handle.
-    const fn type_factory_mid(self) -> i32 {
-        match self {
+    /// The `TypeFactory` getter method id for a scalar type, or `None` for a
+    /// constructed type (e.g. [`Array`](Self::Array)) that needs a builder.
+    const fn scalar_type_factory_mid(&self) -> Option<i32> {
+        Some(match self {
             Self::Int64 => MID_GET_INT64,
             Self::String => MID_GET_STRING,
             Self::Bool => MID_GET_BOOL,
@@ -132,7 +138,8 @@ impl ColumnType {
             Self::Json => MID_GET_JSON,
             Self::Interval => MID_GET_INTERVAL,
             Self::Geography => MID_GET_GEOGRAPHY,
-        }
+            Self::Array(_) => return None,
+        })
     }
 }
 
@@ -450,11 +457,7 @@ impl Module {
         columns: &[ColumnDef],
     ) -> Result<(), Error> {
         for column in columns {
-            let type_handle = self.new_handle(
-                SVC_TYPE_FACTORY,
-                column.ty.type_factory_mid(),
-                &pb::handle_arg(type_factory),
-            )?;
+            let type_handle = self.build_column_type(type_factory, &column.ty)?;
 
             let mut column_req = Vec::new();
             pb::append_string(&mut column_req, 1, table_name);
@@ -492,6 +495,36 @@ impl Module {
             }
         }
         Ok(())
+    }
+
+    /// Builds a GoogleSQL type handle for `ty` via `type_factory`, recursing into
+    /// element types. The returned type is owned by the factory (reclaimed when
+    /// the factory is freed), so it is not registered for an individual free —
+    /// matching how the scalar getters' types are handled.
+    fn build_column_type(&mut self, type_factory: u64, ty: &ColumnType) -> Result<u64, Error> {
+        if let ColumnType::Array(element) = ty {
+            let element_type = self.build_column_type(type_factory, element)?;
+            return self.make_array_type(type_factory, element_type);
+        }
+        let mid = ty
+            .scalar_type_factory_mid()
+            .ok_or_else(|| Error::Protocol("column type has no type factory getter".into()))?;
+        self.new_handle(SVC_TYPE_FACTORY, mid, &pb::handle_arg(type_factory))
+    }
+
+    /// Wraps `element` in an `ARRAY<...>` type via `TypeFactory::MakeArrayType`.
+    /// GoogleSQL rejects arrays of arrays, surfacing as [`Error::GoogleSql`].
+    fn make_array_type(&mut self, type_factory: u64, element: u64) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        pb::append_handle(&mut req, 2, element);
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_ARRAY_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 2);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeArrayType returned null".into()));
+        }
+        Ok(ptr)
     }
 
     /// Registers `table` under `name` in `catalog` (non-owning).

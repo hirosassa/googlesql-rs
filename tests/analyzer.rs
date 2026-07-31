@@ -220,6 +220,51 @@ fn resolves_columns_of_each_scalar_type() {
 }
 
 #[test]
+fn resolves_an_array_column() {
+    let mut module = Module::new().unwrap();
+
+    // An ARRAY<STRING> column: the element type is built first, then wrapped in
+    // an array type, and the resolved output column's type name proves the
+    // round-trip end to end.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "tags".to_string(),
+            ty: ColumnType::Array(Box::new(ColumnType::String)),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT tags FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "ARRAY<STRING>");
+}
+
+#[test]
+fn unnests_an_array_column() {
+    let mut module = Module::new().unwrap();
+
+    // The array column is usable as a table source via UNNEST, and each element
+    // resolves to the array's element type.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "scores".to_string(),
+            ty: ColumnType::Array(Box::new(ColumnType::Int64)),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT s FROM t, UNNEST(scores) AS s", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
 fn analyzes_insert_statement() {
     let mut module = Module::new().unwrap();
 
