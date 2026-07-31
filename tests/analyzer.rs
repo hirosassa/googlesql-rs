@@ -374,6 +374,7 @@ fn resolves_a_registered_scalar_function() {
         enums: vec![],
         proto_files: vec![],
         property_graphs: vec![],
+        expression_columns: vec![],
     };
 
     let columns = module
@@ -415,6 +416,7 @@ fn resolves_a_registered_aggregate_function() {
         enums: vec![],
         proto_files: vec![],
         property_graphs: vec![],
+        expression_columns: vec![],
     };
 
     let columns = module
@@ -449,6 +451,7 @@ fn registered_function_type_checks_its_arguments() {
         enums: vec![],
         proto_files: vec![],
         property_graphs: vec![],
+        expression_columns: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1905,6 +1908,86 @@ fn analyze_expression_in_resolves_a_catalog_constant() {
     let type_name = module
         .analyze_expression_in("my_const * 2", &catalog)
         .unwrap();
+
+    assert_eq!(type_name, "INT64");
+}
+
+#[test]
+fn analyze_expression_with_columns_resolves_a_column_reference() {
+    let mut module = Module::new().unwrap();
+
+    // `a` and `b` are in-scope expression columns, so `a + b` resolves to the
+    // combined INT64 type even though there is no table.
+    let columns = vec![
+        ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        },
+        ColumnDef {
+            name: "b".to_string(),
+            ty: ColumnType::Int64,
+        },
+    ];
+
+    let type_name = module
+        .analyze_expression_with_columns("a + b", &columns)
+        .unwrap();
+
+    assert_eq!(type_name, "INT64");
+}
+
+#[test]
+fn analyze_expression_with_columns_passes_the_column_type_through() {
+    let mut module = Module::new().unwrap();
+
+    // A STRING column fed through UPPER resolves to STRING, confirming the
+    // declared column type reaches the analyzer.
+    let columns = vec![ColumnDef {
+        name: "name".to_string(),
+        ty: ColumnType::String,
+    }];
+
+    let type_name = module
+        .analyze_expression_with_columns("UPPER(name)", &columns)
+        .unwrap();
+
+    assert_eq!(type_name, "STRING");
+}
+
+#[test]
+fn analyze_expression_with_columns_errors_on_an_undeclared_column() {
+    let mut module = Module::new().unwrap();
+
+    // Only `a` is in scope; referencing `b` fails name resolution instead of
+    // silently producing a type.
+    let columns = vec![ColumnDef {
+        name: "a".to_string(),
+        ty: ColumnType::Int64,
+    }];
+
+    let result = module.analyze_expression_with_columns("a + b", &columns);
+
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a GoogleSql error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyze_expression_in_resolves_a_catalog_expression_column() {
+    let mut module = Module::new().unwrap();
+
+    // Expression columns declared on the catalog are in scope alongside its
+    // constants and functions, so `qty * 2` resolves against the INT64 column.
+    let catalog = Catalog {
+        expression_columns: vec![ColumnDef {
+            name: "qty".to_string(),
+            ty: ColumnType::Int64,
+        }],
+        ..Catalog::default()
+    };
+
+    let type_name = module.analyze_expression_in("qty * 2", &catalog).unwrap();
 
     assert_eq!(type_name, "INT64");
 }
