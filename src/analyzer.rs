@@ -114,6 +114,17 @@ const NODE_KIND_CREATE_FUNCTION_STMT: i32 = 77;
 const NODE_KIND_CREATE_TABLE_STMT: i32 = 91;
 const NODE_KIND_MERGE_STMT: i32 = 102;
 const NODE_KIND_CREATE_MATERIALIZED_VIEW_STMT: i32 = 120;
+
+/// `LanguageFeature` wire values passed to `DisableLanguageFeature` to turn a
+/// feature off (see [`LanguageFeature`]).
+const FEATURE_ANALYTIC_FUNCTIONS: i32 = 2;
+const FEATURE_TABLESAMPLE: i32 = 3;
+const FEATURE_NUMERIC_TYPE: i32 = 17;
+const FEATURE_GEOGRAPHY: i32 = 26;
+const FEATURE_NAMED_ARGUMENTS: i32 = 32;
+const FEATURE_JSON_TYPE: i32 = 44;
+const FEATURE_INTERVAL_TYPE: i32 = 50;
+const FEATURE_QUALIFY: i32 = 13034;
 /// `num_occurrences` for a required argument in a signature (exactly one).
 const ARGUMENT_REQUIRED_OCCURRENCES: i32 = 1;
 /// Group name assigned to functions registered through [`Catalog::functions`].
@@ -324,6 +335,55 @@ impl StatementKind {
     }
 }
 
+/// A GoogleSQL language feature that can be turned off with
+/// [`Module::disable_language_features`].
+///
+/// The analyzer enables the maximum feature set by default, so every feature
+/// here is normally on. Disabling one lets a caller enforce a stricter dialect
+/// subset — e.g. disabling [`Qualify`](Self::Qualify) rejects the `QUALIFY`
+/// clause, or [`AnalyticFunctions`](Self::AnalyticFunctions) rejects window
+/// functions.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL has many more features than are
+/// modelled here; adding a variant later must not break callers that match on
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LanguageFeature {
+    /// Analytic (window) functions, i.e. calls with an `OVER` clause.
+    AnalyticFunctions,
+    /// The `TABLESAMPLE` clause.
+    Tablesample,
+    /// The `NUMERIC` type.
+    NumericType,
+    /// The `GEOGRAPHY` type.
+    Geography,
+    /// Named arguments in function calls (`f(name => value)`).
+    NamedArguments,
+    /// The `JSON` type.
+    JsonType,
+    /// The `INTERVAL` type.
+    IntervalType,
+    /// The `QUALIFY` clause.
+    Qualify,
+}
+
+impl LanguageFeature {
+    /// The `LanguageFeature` wire value passed to `DisableLanguageFeature`.
+    const fn feature_id(self) -> i32 {
+        match self {
+            Self::AnalyticFunctions => FEATURE_ANALYTIC_FUNCTIONS,
+            Self::Tablesample => FEATURE_TABLESAMPLE,
+            Self::NumericType => FEATURE_NUMERIC_TYPE,
+            Self::Geography => FEATURE_GEOGRAPHY,
+            Self::NamedArguments => FEATURE_NAMED_ARGUMENTS,
+            Self::JsonType => FEATURE_JSON_TYPE,
+            Self::IntervalType => FEATURE_INTERVAL_TYPE,
+            Self::Qualify => FEATURE_QUALIFY,
+        }
+    }
+}
+
 /// A named constant registered into the catalog before analysis.
 ///
 /// Registering it lets the bare name resolve as an expression yielding the
@@ -446,6 +506,18 @@ impl Module {
     /// analysis on this [`Module`].
     pub fn set_supported_statement_kinds(&mut self, kinds: &[StatementKind]) {
         self.set_supported_statement_kinds_raw(kinds.iter().map(|k| k.node_kind()).collect());
+    }
+
+    /// Turns off the given language features, which are otherwise all enabled.
+    ///
+    /// The analyzer enables the maximum feature set by default; each feature
+    /// passed here is disabled on top of that, so syntax gated behind it then
+    /// fails to resolve (e.g. disabling [`LanguageFeature::Qualify`] rejects the
+    /// `QUALIFY` clause). Passing an empty slice disables nothing, restoring the
+    /// default. The setting applies to every subsequent analysis on this
+    /// [`Module`].
+    pub fn disable_language_features(&mut self, features: &[LanguageFeature]) {
+        self.set_disabled_language_features_raw(features.iter().map(|f| f.feature_id()).collect());
     }
 
     /// Analyzes a SQL statement against an empty catalog.
