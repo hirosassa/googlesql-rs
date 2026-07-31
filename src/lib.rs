@@ -58,7 +58,7 @@ mod pb;
 mod resolved;
 mod runtime;
 
-pub use analyzer::{ColumnDef, ColumnType, StructField, TableDef};
+pub use analyzer::{Catalog, ColumnDef, ColumnType, FunctionDef, StructField, TableDef};
 pub use ast::{AstNode, BinaryOp, BinaryOperator, Literal, UnaryOp};
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
 pub use parser::{ParsedExpression, ParsedScript, ParsedStatement, ParsedStatements, ParsedType};

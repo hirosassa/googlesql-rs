@@ -8,7 +8,9 @@
     reason = "test code"
 )]
 
-use googlesql::{ColumnDef, ColumnType, Error, Module, StructField, TableDef};
+use googlesql::{
+    Catalog, ColumnDef, ColumnType, Error, FunctionDef, Module, StructField, TableDef,
+};
 
 #[test]
 fn analyzes_literal_select() {
@@ -342,6 +344,57 @@ fn resolves_an_array_of_structs_column() {
 
     assert_eq!(columns.len(), 1);
     assert_eq!(columns[0].type_name(), "ARRAY<STRUCT<n INT64>>");
+}
+
+#[test]
+fn resolves_a_registered_scalar_function() {
+    let mut module = Module::new().unwrap();
+
+    // A user-defined scalar function my_add(INT64, INT64) -> INT64. Without the
+    // registration the call is an unrecognized-function error.
+    let catalog = Catalog {
+        tables: vec![],
+        functions: vec![FunctionDef {
+            name: "my_add".to_string(),
+            arguments: vec![ColumnType::Int64, ColumnType::Int64],
+            return_type: ColumnType::Int64,
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT my_add(1, 2) AS s", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn registered_function_type_checks_its_arguments() {
+    let mut module = Module::new().unwrap();
+
+    // The signature's argument types are enforced: passing a STRING where INT64
+    // is declared must fail to resolve.
+    let catalog = Catalog {
+        tables: vec![],
+        functions: vec![FunctionDef {
+            name: "needs_int".to_string(),
+            arguments: vec![ColumnType::Int64],
+            return_type: ColumnType::Bool,
+        }],
+    };
+
+    let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
+    assert!(result.is_err(), "argument type mismatch must not resolve");
+}
+
+#[test]
+fn unregistered_function_does_not_resolve() {
+    let mut module = Module::new().unwrap();
+
+    let empty = Catalog::default();
+    let result = module.analyze_statement_in("SELECT my_add(1, 2)", &empty);
+    assert!(result.is_err(), "unregistered function must not resolve");
 }
 
 #[test]
