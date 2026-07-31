@@ -368,7 +368,7 @@ impl Module {
             SVC_PARSER_OPTIONS,
             MID_FREE_PARSER_OPTIONS,
         )?;
-        let language = self.max_language_options()?;
+        let language = self.language_options()?;
         self.set_parser_language_options(options.ptr(), language)?;
         Ok(options)
     }

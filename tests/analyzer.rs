@@ -846,6 +846,82 @@ fn empty_disabled_feature_set_keeps_the_maximum_features() {
 }
 
 #[test]
+fn enabling_only_analytic_functions_starts_from_a_minimal_feature_set() {
+    let mut module = Module::new().unwrap();
+
+    // Start from the minimal feature set (every feature off) and turn on only
+    // analytic functions. Window functions then resolve, but any other gated
+    // feature stays off, proving the base is minimal rather than maximal.
+    module.enable_only_language_features(&[LanguageFeature::AnalyticFunctions]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "b".to_string(),
+                ty: ColumnType::Int64,
+            },
+        ],
+    };
+
+    let windowed = module.analyze_statement_with_catalog(
+        "SELECT ROW_NUMBER() OVER (ORDER BY a) FROM t",
+        std::slice::from_ref(&t),
+    );
+    assert!(
+        windowed.is_ok(),
+        "expected the window function to be accepted, got: {windowed:?}"
+    );
+
+    // QUALIFY is gated behind its own feature, which was not enabled, so it is
+    // rejected even though analytic functions are on.
+    let qualified = module.analyze_statement_with_catalog(
+        "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY b ORDER BY a) = 1",
+        std::slice::from_ref(&t),
+    );
+    assert!(
+        matches!(qualified, Err(Error::GoogleSql(_))),
+        "expected QUALIFY to be rejected, got: {qualified:?}"
+    );
+}
+
+#[test]
+fn empty_enabled_feature_set_disables_every_optional_feature() {
+    let mut module = Module::new().unwrap();
+
+    // An empty enable list leaves the minimal set untouched: every optional
+    // feature is off, so gated syntax fails while a plain query still resolves.
+    module.enable_only_language_features(&[]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let plain = module.analyze_statement_with_catalog("SELECT a FROM t", std::slice::from_ref(&t));
+    assert!(
+        plain.is_ok(),
+        "expected the plain query to be accepted, got: {plain:?}"
+    );
+
+    let windowed = module.analyze_statement_with_catalog(
+        "SELECT ROW_NUMBER() OVER (ORDER BY a) FROM t",
+        std::slice::from_ref(&t),
+    );
+    assert!(
+        matches!(windowed, Err(Error::GoogleSql(_))),
+        "expected the window function to be rejected, got: {windowed:?}"
+    );
+}
+
+#[test]
 fn analyzes_a_table_valued_function() {
     let mut module = Module::new().unwrap();
 

@@ -580,6 +580,20 @@ impl Module {
         self.set_disabled_language_features_raw(features.iter().map(|f| f.feature_id()).collect());
     }
 
+    /// Enables only the given language features, starting from a minimal set with
+    /// every optional feature turned off.
+    ///
+    /// This is the mirror image of [`disable_language_features`](Self::disable_language_features):
+    /// instead of the maximum feature set minus a few, the analyzer begins with
+    /// nothing optional enabled and turns on only the features passed here, so any
+    /// syntax gated behind an unlisted feature fails to resolve. Passing an empty
+    /// slice leaves every optional feature off. Calling this replaces any earlier
+    /// [`disable_language_features`](Self::disable_language_features) choice, and
+    /// the setting applies to every subsequent analysis on this [`Module`].
+    pub fn enable_only_language_features(&mut self, features: &[LanguageFeature]) {
+        self.set_enabled_language_features_raw(features.iter().map(|f| f.feature_id()).collect());
+    }
+
     /// Analyzes a SQL statement against an empty catalog.
     ///
     /// Performs type inference and name resolution. Returns [`Error::GoogleSql`]
@@ -784,7 +798,7 @@ impl Module {
             module.configure_options(options.ptr(), opts, catalog.parameters.is_empty())?;
             // Enable the maximum language feature set so gated syntax such as the
             // `QUALIFY` clause resolves.
-            let language = module.max_language_options()?;
+            let language = module.language_options()?;
             module.set_options_language(options.ptr(), language)?;
             module.analyze_with_options(sql, options.ptr(), catalog, extract)
         })
@@ -1455,7 +1469,7 @@ impl Module {
     fn add_builtin_functions(&mut self, catalog: u64) -> Result<(), Error> {
         // Enable the maximum language feature set so builtins match the features
         // the parser and analyzer accept (e.g. the `QUALIFY` clause).
-        let language = self.max_language_options()?;
+        let language = self.language_options()?;
         self.add_builtins_with_language(catalog, language)
     }
 
