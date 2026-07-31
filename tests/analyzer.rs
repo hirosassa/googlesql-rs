@@ -9,9 +9,9 @@
 )]
 
 use googlesql::{
-    Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, NamedCatalog, NamedType, ProcedureDef, QueryParameter, StatementKind,
-    StructField, TableDef, TvfArgument, TvfDef,
+    Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, Error,
+    FunctionDef, FunctionKind, LanguageFeature, Module, NamedCatalog, NamedType, ProcedureDef,
+    QueryParameter, StatementKind, StructField, TableDef, TvfArgument, TvfDef,
 };
 
 #[test]
@@ -369,6 +369,7 @@ fn resolves_a_registered_scalar_function() {
         procedures: vec![],
         connections: vec![],
         types: vec![],
+        enums: vec![],
     };
 
     let columns = module
@@ -407,6 +408,7 @@ fn resolves_a_registered_aggregate_function() {
         procedures: vec![],
         connections: vec![],
         types: vec![],
+        enums: vec![],
     };
 
     let columns = module
@@ -438,6 +440,7 @@ fn registered_function_type_checks_its_arguments() {
         procedures: vec![],
         connections: vec![],
         types: vec![],
+        enums: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1388,4 +1391,86 @@ fn rejects_a_cast_to_an_unknown_type() {
         matches!(result, Err(Error::GoogleSql(_))),
         "expected a type-not-found error, got: {result:?}"
     );
+}
+
+#[test]
+fn resolves_an_enum_type_in_a_cast() {
+    let mut module = Module::new().unwrap();
+
+    // Register "Color" as an enum with two values; the name is then usable as a
+    // type, and a CAST to it resolves.
+    let catalog = Catalog {
+        enums: vec![EnumDef {
+            name: "Color".to_string(),
+            values: vec![
+                EnumValue {
+                    name: "RED".to_string(),
+                    number: 0,
+                },
+                EnumValue {
+                    name: "GREEN".to_string(),
+                    number: 1,
+                },
+            ],
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT CAST(1 AS Color) AS c", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    // An enum type resolves to its ENUM<name> spelling; casting a string literal
+    // to it also resolves (GoogleSQL defers value validation to runtime).
+    assert_eq!(columns[0].type_name(), "ENUM<Color>");
+    assert!(
+        module
+            .analyze_statement_in("SELECT CAST('RED' AS Color)", &catalog)
+            .is_ok()
+    );
+}
+
+#[test]
+fn resolves_multiple_enum_types() {
+    let mut module = Module::new().unwrap();
+
+    // Two enums are built into one shared descriptor pool (each in its own
+    // uniquely named file), and both become usable as types.
+    let catalog = Catalog {
+        enums: vec![
+            EnumDef {
+                name: "Color".to_string(),
+                values: vec![EnumValue {
+                    name: "RED".to_string(),
+                    number: 0,
+                }],
+            },
+            EnumDef {
+                name: "Size".to_string(),
+                values: vec![
+                    EnumValue {
+                        name: "SMALL".to_string(),
+                        number: 0,
+                    },
+                    EnumValue {
+                        name: "LARGE".to_string(),
+                        number: 1,
+                    },
+                ],
+            },
+        ],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in(
+            "SELECT CAST(0 AS Color) AS c, CAST(1 AS Size) AS s",
+            &catalog,
+        )
+        .unwrap();
+
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[0].type_name(), "ENUM<Color>");
+    assert_eq!(columns[1].type_name(), "ENUM<Size>");
 }
