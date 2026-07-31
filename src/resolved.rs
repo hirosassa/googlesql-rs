@@ -125,9 +125,11 @@ const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 853;
 const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
 
 /// `ResolvedColumnDefinition`: `Name` is the declared column name (the `a` in
-/// `CREATE TABLE t (a INT64)`), returned as a string.
+/// `CREATE TABLE t (a INT64)`), returned as a string; `Type` is the declared
+/// column type, returned as a `Type` handle rendered via `Type::DebugString`.
 const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 844;
 const MID_COLUMN_DEFINITION_NAME: i32 = 14;
+const MID_COLUMN_DEFINITION_TYPE: i32 = 27;
 
 /// `ResolvedInsertStmt`: `InsertMode` is the conflict-handling mode, as a
 /// `ResolvedInsertStmtEnums::InsertMode` (1=OR ERROR, 2=OR IGNORE,
@@ -519,6 +521,7 @@ pub struct ResolvedNode {
     project_columns: Option<Vec<String>>,
     computed_column_name: Option<String>,
     column_definition_name: Option<String>,
+    column_definition_type: Option<String>,
     insert_mode: Option<InsertMode>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
@@ -750,6 +753,15 @@ impl ResolvedNode {
     /// node per declared column.
     pub fn column_definition_name(&self) -> Option<&str> {
         self.column_definition_name.as_deref()
+    }
+
+    /// The declared type of the column this node defines (the `INT64` in
+    /// `CREATE TABLE t (a INT64)`), rendered as a type name, or `None` if it is
+    /// not a `ResolvedColumnDefinition`. Pairs with
+    /// [`column_definition_name`](Self::column_definition_name) to recover a
+    /// `CREATE TABLE` column's full `name type` declaration.
+    pub fn column_definition_type(&self) -> Option<&str> {
+        self.column_definition_type.as_deref()
     }
 
     /// The conflict-handling mode of this node, or `None` if it is not a
@@ -1037,6 +1049,11 @@ impl Module {
         } else {
             None
         };
+        let column_definition_type = if kind == KIND_COLUMN_DEFINITION {
+            Some(self.node_column_definition_type(node)?)
+        } else {
+            None
+        };
         let insert_mode = if kind == KIND_INSERT_STMT {
             Some(self.node_insert_mode(node)?)
         } else {
@@ -1093,6 +1110,7 @@ impl Module {
             project_columns,
             computed_column_name,
             column_definition_name,
+            column_definition_type,
             insert_mode,
             parse_location,
             children,
@@ -1281,6 +1299,17 @@ impl Module {
             Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
             other => Err(Error::Protocol(format!("unknown set operation: {other:?}"))),
         }
+    }
+
+    /// Reads the declared type of a `ResolvedColumnDefinition`, rendered as a
+    /// type name (e.g. `INT64`, `STRING`) via `Type::DebugString`.
+    fn node_column_definition_type(&mut self, node: u64) -> Result<String, Error> {
+        let type_handle = self.rpc_handle(
+            SVC_RESOLVED_COLUMN_DEFINITION,
+            MID_COLUMN_DEFINITION_TYPE,
+            node,
+        )?;
+        self.type_debug_string(type_handle)
     }
 
     /// Reads the conflict-handling mode of a `ResolvedInsertStmt`.
