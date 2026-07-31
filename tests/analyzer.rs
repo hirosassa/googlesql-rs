@@ -10,7 +10,7 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, NamedCatalog, ProcedureDef, QueryParameter, StatementKind,
+    LanguageFeature, Module, NamedCatalog, NamedType, ProcedureDef, QueryParameter, StatementKind,
     StructField, TableDef, TvfArgument, TvfDef,
 };
 
@@ -368,6 +368,7 @@ fn resolves_a_registered_scalar_function() {
         catalogs: vec![],
         procedures: vec![],
         connections: vec![],
+        types: vec![],
     };
 
     let columns = module
@@ -405,6 +406,7 @@ fn resolves_a_registered_aggregate_function() {
         catalogs: vec![],
         procedures: vec![],
         connections: vec![],
+        types: vec![],
     };
 
     let columns = module
@@ -435,6 +437,7 @@ fn registered_function_type_checks_its_arguments() {
         catalogs: vec![],
         procedures: vec![],
         connections: vec![],
+        types: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1341,5 +1344,48 @@ fn rejects_a_reference_to_an_unknown_connection() {
     assert!(
         matches!(result, Err(Error::GoogleSql(_))),
         "expected a connection-not-found error, got: {result:?}"
+    );
+}
+
+#[test]
+fn resolves_a_named_type_in_a_cast() {
+    let mut module = Module::new().unwrap();
+
+    // Register "point" as an alias for STRUCT<x FLOAT64, y FLOAT64>; the name is
+    // then usable as a type, and the CAST resolves to the underlying struct.
+    let catalog = Catalog {
+        types: vec![NamedType {
+            name: "point".to_string(),
+            ty: ColumnType::Struct(vec![
+                StructField {
+                    name: "x".to_string(),
+                    ty: ColumnType::Float64,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: ColumnType::Float64,
+                },
+            ]),
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT CAST(NULL AS point) AS p", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    // FLOAT64 renders as DOUBLE in the resolved type name (internal product mode).
+    assert_eq!(columns[0].type_name(), "STRUCT<x DOUBLE, y DOUBLE>");
+}
+
+#[test]
+fn rejects_a_cast_to_an_unknown_type() {
+    let mut module = Module::new().unwrap();
+
+    let result = module.analyze_statement_in("SELECT CAST(NULL AS my_type)", &Catalog::default());
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a type-not-found error, got: {result:?}"
     );
 }
