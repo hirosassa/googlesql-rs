@@ -2144,6 +2144,82 @@ fn non_create_table_nodes_have_no_create_mode() {
     assert_eq!(root.create_mode(), None);
 }
 
+#[test]
+fn create_view_reports_its_mode() {
+    let mut module = Module::new().unwrap();
+
+    // CreateMode lives on the base ResolvedCreateStatement, so CREATE VIEW
+    // reports it through the same accessor as CREATE TABLE.
+    let root = module
+        .resolved_tree(
+            "CREATE OR REPLACE VIEW v AS SELECT id FROM users",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateViewStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::OrReplace));
+}
+
+#[test]
+fn create_table_as_select_reports_its_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "CREATE TABLE IF NOT EXISTS t AS SELECT id FROM users",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateTableAsSelectStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::IfNotExists));
+}
+
+#[test]
+fn create_function_reports_its_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("CREATE OR REPLACE FUNCTION f() AS (1)", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateFunctionStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::OrReplace));
+}
+
+#[test]
+fn create_materialized_view_reports_its_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "CREATE MATERIALIZED VIEW mv AS SELECT id FROM users",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateMaterializedViewStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::Default));
+}
+
+#[test]
+fn create_external_table_reports_its_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("CREATE EXTERNAL TABLE e OPTIONS(uri='x')", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateExternalTableStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::Default));
+}
+
 // A `deltas` table with the same shape as `users`, used as the MERGE source.
 fn deltas_table() -> TableDef {
     TableDef {
