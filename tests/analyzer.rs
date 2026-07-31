@@ -220,6 +220,108 @@ fn resolves_columns_of_each_scalar_type() {
 }
 
 #[test]
+fn analyzes_insert_statement() {
+    let mut module = Module::new().unwrap();
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // INSERT is a DML statement kind; the analyzer must be told to accept
+    // statement kinds beyond query for it to resolve.
+    let result = module.analyze_statement_with_catalog("INSERT INTO t (a) VALUES (1)", &[t]);
+
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_update_statement() {
+    let mut module = Module::new().unwrap();
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let result = module.analyze_statement_with_catalog("UPDATE t SET a = 1 WHERE a = 2", &[t]);
+
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_delete_statement() {
+    let mut module = Module::new().unwrap();
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let result = module.analyze_statement_with_catalog("DELETE FROM t WHERE a = 1", &[t]);
+
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_create_table_statement() {
+    let mut module = Module::new().unwrap();
+
+    // CREATE TABLE is a DDL statement kind and needs no catalog entries.
+    let result = module.analyze_statement_with_catalog("CREATE TABLE t (a INT64)", &[]);
+
+    assert!(
+        result.is_ok(),
+        "expected analysis to succeed, got: {result:?}"
+    );
+}
+
+#[test]
+fn output_columns_of_dml_is_empty_for_now() {
+    let mut module = Module::new().unwrap();
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // Output-column extraction is defined only for `ResolvedQueryStmt`. A DML
+    // statement now analyzes successfully but projects no query output columns,
+    // so the result is empty rather than an error. Surfacing DML-specific
+    // structure is left to a later slice.
+    let columns = module
+        .analyze_output_columns("INSERT INTO t (a) VALUES (1)", &[t])
+        .unwrap();
+
+    assert!(
+        columns.is_empty(),
+        "expected no output columns for DML, got {} column(s)",
+        columns.len()
+    );
+}
+
+#[test]
 fn analyze_statement_with_empty_catalog_matches_phase_one() {
     let mut module = Module::new().unwrap();
 

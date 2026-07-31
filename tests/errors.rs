@@ -60,18 +60,12 @@ fn unresolved_name_is_classified_as_analysis_with_a_location() {
     assert!(err.location().is_some(), "message: {}", err.message());
 }
 
-#[test]
-fn unsupported_statement_is_classified_as_unsupported() {
-    let mut module = Module::new().unwrap();
-    // The analyzer enables the maximum language feature set, so feature-gated
-    // syntax (recursive CTEs, `LIKE ANY`, `QUALIFY`, ...) now resolves. Statement
-    // kinds the analyzer does not implement still report `not supported`, which
-    // exercises the `Unsupported` classification.
-    let err = expect_sql_error(
-        module.analyze_statement_with_catalog("ALTER MODEL m SET OPTIONS()", &users()),
-    );
-    assert_eq!(err.kind(), SqlErrorKind::Unsupported);
-}
+// Note: the analyzer enables all statement kinds, so DML/DDL (INSERT,
+// CREATE TABLE, ALTER MODEL, ...) now resolve instead of reporting
+// "Statement not supported". The `Unsupported` classification itself — the
+// `not supported` phrase heuristic — is exercised directly in the unit tests
+// in `src/error.rs`, which is stable regardless of which features this
+// particular GoogleSQL build implements.
 
 #[test]
 fn multiline_query_reports_the_error_line_and_column() {
