@@ -41,6 +41,7 @@ const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
 const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
 const KIND_COLUMN_DEFINITION: &str = "ResolvedColumnDefinition";
 const KIND_INSERT_STMT: &str = "ResolvedInsertStmt";
+const KIND_CREATE_TABLE_STMT: &str = "ResolvedCreateTableStmt";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -143,6 +144,17 @@ const INSERT_MODE_OR_ERROR: i32 = 1;
 const INSERT_MODE_OR_IGNORE: i32 = 2;
 const INSERT_MODE_OR_REPLACE: i32 = 3;
 const INSERT_MODE_OR_UPDATE: i32 = 4;
+
+/// `ResolvedCreateStatement` (the base of `ResolvedCreateTableStmt` and the
+/// other CREATE forms): `CreateMode` is the existence-handling mode, as a
+/// `ResolvedCreateStatementEnums::CreateMode` (1=CREATE, 2=CREATE OR REPLACE,
+/// 3=CREATE IF NOT EXISTS). The method is on the base service, so it is invoked
+/// with the concrete statement's handle (an upcast).
+const SVC_RESOLVED_CREATE_STATEMENT: i32 = 905;
+const MID_CREATE_MODE: i32 = 9;
+const CREATE_MODE_DEFAULT: i32 = 1;
+const CREATE_MODE_OR_REPLACE: i32 = 2;
+const CREATE_MODE_IF_NOT_EXISTS: i32 = 3;
 
 /// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
 /// (each a literal or parameter, or a null handle when the clause is absent).
@@ -436,6 +448,23 @@ pub enum InsertMode {
     Update,
 }
 
+/// The existence-handling mode of a CREATE statement (e.g. a
+/// `ResolvedCreateTableStmt`).
+///
+/// A plain `CREATE` is [`Default`](Self::Default); `OR REPLACE` and
+/// `IF NOT EXISTS` select the other modes. Marked `#[non_exhaustive]` for
+/// parity with [`InsertMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CreateMode {
+    /// A plain `CREATE`: creating an existing object is an error.
+    Default,
+    /// `CREATE OR REPLACE`: an existing object is replaced.
+    OrReplace,
+    /// `CREATE IF NOT EXISTS`: creation is skipped if the object exists.
+    IfNotExists,
+}
+
 /// The kind of a `ResolvedSubqueryExpr`.
 ///
 /// Marked `#[non_exhaustive]` because GoogleSQL also defines `LIKE ANY`/`LIKE
@@ -527,6 +556,7 @@ pub struct ResolvedNode {
     column_definition_type: Option<String>,
     insert_mode: Option<InsertMode>,
     insert_columns: Option<Vec<String>>,
+    create_mode: Option<CreateMode>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -781,6 +811,14 @@ impl ResolvedNode {
     /// distinct from the table scan's full column set.
     pub fn insert_columns(&self) -> Option<&[String]> {
         self.insert_columns.as_deref()
+    }
+
+    /// The existence-handling mode of this node, or `None` if it is not a
+    /// `ResolvedCreateTableStmt`. A plain `CREATE TABLE` reports
+    /// [`CreateMode::Default`]; `CREATE OR REPLACE` and `CREATE ... IF NOT
+    /// EXISTS` report the others.
+    pub const fn create_mode(&self) -> Option<CreateMode> {
+        self.create_mode
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -1076,6 +1114,11 @@ impl Module {
         } else {
             None
         };
+        let create_mode = if kind == KIND_CREATE_TABLE_STMT {
+            Some(self.node_create_mode(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -1130,6 +1173,7 @@ impl Module {
             column_definition_type,
             insert_mode,
             insert_columns,
+            create_mode,
             parse_location,
             children,
         })
@@ -1355,6 +1399,21 @@ impl Module {
             Some(INSERT_MODE_OR_REPLACE) => Ok(InsertMode::Replace),
             Some(INSERT_MODE_OR_UPDATE) => Ok(InsertMode::Update),
             other => Err(Error::Protocol(format!("unknown insert mode: {other:?}"))),
+        }
+    }
+
+    /// Reads the existence-handling mode of a CREATE statement via the base
+    /// `ResolvedCreateStatement` service, invoked with the concrete statement's
+    /// handle. An unrecognized or missing value is surfaced as an error rather
+    /// than mapped to a default.
+    fn node_create_mode(&mut self, node: u64) -> Result<CreateMode, Error> {
+        let resp = self.invoke_handle(SVC_RESOLVED_CREATE_STATEMENT, MID_CREATE_MODE, node)?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(CREATE_MODE_DEFAULT) => Ok(CreateMode::Default),
+            Some(CREATE_MODE_OR_REPLACE) => Ok(CreateMode::OrReplace),
+            Some(CREATE_MODE_IF_NOT_EXISTS) => Ok(CreateMode::IfNotExists),
+            other => Err(Error::Protocol(format!("unknown create mode: {other:?}"))),
         }
     }
 
