@@ -9,8 +9,8 @@
 )]
 
 use googlesql::{
-    ColumnDef, ColumnType, CreateMode, Error, InsertMode, JoinType, LiteralValue, Module,
-    ResolvedNode, SetOperation, SubqueryKind, TableDef,
+    ColumnDef, ColumnType, CreateMode, Error, InsertMode, JoinType, LiteralValue, MergeAction,
+    MergeMatch, Module, ResolvedNode, SetOperation, SubqueryKind, TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -2142,4 +2142,109 @@ fn non_create_table_nodes_have_no_create_mode() {
 
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.create_mode(), None);
+}
+
+// A `deltas` table with the same shape as `users`, used as the MERGE source.
+fn deltas_table() -> TableDef {
+    TableDef {
+        name: "deltas".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "id".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "name".to_string(),
+                ty: ColumnType::String,
+            },
+        ],
+    }
+}
+
+#[test]
+fn merge_matched_update_clause_reports_its_match_and_action() {
+    let mut module = Module::new().unwrap();
+
+    // WHEN MATCHED ... THEN UPDATE resolves to a ResolvedMergeWhen that applies
+    // to matched rows and performs an update.
+    let root = module
+        .resolved_tree(
+            "MERGE users T USING deltas S ON T.id = S.id \
+             WHEN MATCHED THEN UPDATE SET name = S.name",
+            &[users_table(), deltas_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let when = find_kind(&root, "ResolvedMergeWhen").expect("a MERGE has a WHEN clause");
+    assert_eq!(when.merge_match(), Some(MergeMatch::Matched));
+    assert_eq!(when.merge_action(), Some(MergeAction::Update));
+}
+
+#[test]
+fn merge_not_matched_by_target_insert_clause_reports_its_match_and_action() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "MERGE users T USING deltas S ON T.id = S.id \
+             WHEN NOT MATCHED BY TARGET THEN INSERT (id, name) VALUES (S.id, S.name)",
+            &[users_table(), deltas_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let when = find_kind(&root, "ResolvedMergeWhen").expect("a MERGE has a WHEN clause");
+    assert_eq!(when.merge_match(), Some(MergeMatch::NotMatchedByTarget));
+    assert_eq!(when.merge_action(), Some(MergeAction::Insert));
+}
+
+#[test]
+fn merge_not_matched_by_source_delete_clause_reports_its_match_and_action() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "MERGE users T USING deltas S ON T.id = S.id \
+             WHEN NOT MATCHED BY SOURCE THEN DELETE",
+            &[users_table(), deltas_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let when = find_kind(&root, "ResolvedMergeWhen").expect("a MERGE has a WHEN clause");
+    assert_eq!(when.merge_match(), Some(MergeMatch::NotMatchedBySource));
+    assert_eq!(when.merge_action(), Some(MergeAction::Delete));
+}
+
+#[test]
+fn bare_not_matched_clause_defaults_to_by_target() {
+    let mut module = Module::new().unwrap();
+
+    // `WHEN NOT MATCHED` with no `BY` qualifier is shorthand for `BY TARGET`.
+    let root = module
+        .resolved_tree(
+            "MERGE users T USING deltas S ON T.id = S.id \
+             WHEN NOT MATCHED THEN INSERT (id, name) VALUES (S.id, S.name)",
+            &[users_table(), deltas_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    let when = find_kind(&root, "ResolvedMergeWhen").expect("a MERGE has a WHEN clause");
+    assert_eq!(when.merge_match(), Some(MergeMatch::NotMatchedByTarget));
+}
+
+#[test]
+fn non_merge_when_nodes_have_no_merge_match_or_action() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.merge_match(), None);
+    assert_eq!(root.merge_action(), None);
 }
