@@ -257,3 +257,69 @@ fn returns_error_for_invalid_type() {
         "a malformed type must produce Error::GoogleSql: {err:?}"
     );
 }
+
+/// A script containing scripting constructs parses into an AST rooted at a
+/// script node and round-trips through its canonical form.
+#[test]
+fn parses_a_script_with_scripting_statements() {
+    let mut module = Module::new().unwrap();
+    let parsed = module
+        .parse_script("DECLARE x INT64 DEFAULT 0;\nWHILE x < 10 DO\n  SET x = x + 1;\nEND WHILE;")
+        .unwrap();
+
+    assert_eq!(
+        parsed.root().kind(),
+        "ASTScript",
+        "a script is rooted at a script node"
+    );
+    let canonical = parsed.canonical_sql();
+    assert!(
+        canonical.contains("DECLARE") && canonical.contains("WHILE") && canonical.contains("SET"),
+        "canonical script must preserve its scripting statements: {canonical:?}"
+    );
+}
+
+/// `parse_script` accepts scripting constructs that `parse_statement` rejects —
+/// the two entry points are genuinely different, not aliases.
+#[test]
+fn parse_script_accepts_what_parse_statement_rejects() {
+    let mut module = Module::new().unwrap();
+    let script = "DECLARE x INT64 DEFAULT 0;";
+
+    let stmt_err = module.parse_statement(script).unwrap_err();
+    assert!(
+        matches!(stmt_err, Error::GoogleSql(_)),
+        "parse_statement must reject a scripting statement: {stmt_err:?}"
+    );
+
+    let parsed = module
+        .parse_script(script)
+        .expect("parse_script accepts a scripting statement");
+    assert_eq!(parsed.root().kind(), "ASTScript");
+}
+
+/// A plain statement is a valid single-statement script, still rooted at a
+/// script node.
+#[test]
+fn parses_a_plain_statement_as_a_script() {
+    let mut module = Module::new().unwrap();
+    let parsed = module.parse_script("SELECT 1").unwrap();
+
+    assert_eq!(parsed.root().kind(), "ASTScript");
+    assert!(
+        parsed.canonical_sql().contains("SELECT"),
+        "canonical script must preserve its statement: {:?}",
+        parsed.canonical_sql()
+    );
+}
+
+/// An invalid script returns a GoogleSql error.
+#[test]
+fn returns_error_for_invalid_script() {
+    let mut module = Module::new().unwrap();
+    let err = module.parse_script("DECLARE").unwrap_err();
+    assert!(
+        matches!(err, Error::GoogleSql(_)),
+        "a malformed script must produce Error::GoogleSql: {err:?}"
+    );
+}
