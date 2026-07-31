@@ -62,6 +62,6 @@ pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
 pub use parser::{ParsedExpression, ParsedStatement, ParsedStatements, ParsedType};
 pub use resolved::{
     CastInfo, ColumnReference, CreateMode, InsertMode, JoinType, LimitOffset, LiteralValue,
-    OutputColumn, ResolvedNode, SetOperation, SubqueryKind, TableRef,
+    MergeAction, MergeMatch, OutputColumn, ResolvedNode, SetOperation, SubqueryKind, TableRef,
 };
 pub use runtime::Module;

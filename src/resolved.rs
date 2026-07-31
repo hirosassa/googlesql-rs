@@ -42,6 +42,7 @@ const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
 const KIND_COLUMN_DEFINITION: &str = "ResolvedColumnDefinition";
 const KIND_INSERT_STMT: &str = "ResolvedInsertStmt";
 const KIND_CREATE_TABLE_STMT: &str = "ResolvedCreateTableStmt";
+const KIND_MERGE_WHEN: &str = "ResolvedMergeWhen";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -155,6 +156,21 @@ const MID_CREATE_MODE: i32 = 9;
 const CREATE_MODE_DEFAULT: i32 = 1;
 const CREATE_MODE_OR_REPLACE: i32 = 2;
 const CREATE_MODE_IF_NOT_EXISTS: i32 = 3;
+
+/// `ResolvedMergeWhen` (one `WHEN` clause of a `MERGE`): `ActionType` is the
+/// action it performs, as a `ResolvedMergeWhenEnums::ActionType` (1=INSERT,
+/// 2=UPDATE, 3=DELETE); `MatchType` is which rows it applies to, as a
+/// `ResolvedMergeWhenEnums::MatchType` (1=MATCHED, 2=NOT MATCHED BY SOURCE,
+/// 3=NOT MATCHED BY TARGET).
+const SVC_RESOLVED_MERGE_WHEN: i32 = 1159;
+const MID_MERGE_ACTION_TYPE: i32 = 8;
+const MID_MERGE_MATCH_TYPE: i32 = 16;
+const MERGE_ACTION_INSERT: i32 = 1;
+const MERGE_ACTION_UPDATE: i32 = 2;
+const MERGE_ACTION_DELETE: i32 = 3;
+const MERGE_MATCH_MATCHED: i32 = 1;
+const MERGE_MATCH_NOT_MATCHED_BY_SOURCE: i32 = 2;
+const MERGE_MATCH_NOT_MATCHED_BY_TARGET: i32 = 3;
 
 /// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
 /// (each a literal or parameter, or a null handle when the clause is absent).
@@ -465,6 +481,34 @@ pub enum CreateMode {
     IfNotExists,
 }
 
+/// The action a `MERGE` `WHEN` clause performs on a matched (or unmatched) row.
+///
+/// Marked `#[non_exhaustive]` for parity with the other resolved-tree enums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MergeAction {
+    /// `THEN INSERT ...`: a new row is inserted.
+    Insert,
+    /// `THEN UPDATE SET ...`: the matched row is updated.
+    Update,
+    /// `THEN DELETE`: the matched row is deleted.
+    Delete,
+}
+
+/// Which rows a `MERGE` `WHEN` clause applies to.
+///
+/// Marked `#[non_exhaustive]` for parity with the other resolved-tree enums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MergeMatch {
+    /// `WHEN MATCHED`: a source row that matched a target row.
+    Matched,
+    /// `WHEN NOT MATCHED BY SOURCE`: a target row with no matching source row.
+    NotMatchedBySource,
+    /// `WHEN NOT MATCHED [BY TARGET]`: a source row with no matching target row.
+    NotMatchedByTarget,
+}
+
 /// The kind of a `ResolvedSubqueryExpr`.
 ///
 /// Marked `#[non_exhaustive]` because GoogleSQL also defines `LIKE ANY`/`LIKE
@@ -557,6 +601,8 @@ pub struct ResolvedNode {
     insert_mode: Option<InsertMode>,
     insert_columns: Option<Vec<String>>,
     create_mode: Option<CreateMode>,
+    merge_action: Option<MergeAction>,
+    merge_match: Option<MergeMatch>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -819,6 +865,21 @@ impl ResolvedNode {
     /// EXISTS` report the others.
     pub const fn create_mode(&self) -> Option<CreateMode> {
         self.create_mode
+    }
+
+    /// The action this `MERGE` `WHEN` clause performs, or `None` if it is not a
+    /// `ResolvedMergeWhen`. Pairs with [`merge_match`](Self::merge_match): a
+    /// clause's action (`INSERT`/`UPDATE`/`DELETE`) and the rows it applies to
+    /// are independent.
+    pub const fn merge_action(&self) -> Option<MergeAction> {
+        self.merge_action
+    }
+
+    /// Which rows this `MERGE` `WHEN` clause applies to, or `None` if it is not
+    /// a `ResolvedMergeWhen`. `WHEN MATCHED` reports [`MergeMatch::Matched`];
+    /// the `NOT MATCHED BY SOURCE` / `BY TARGET` forms report the others.
+    pub const fn merge_match(&self) -> Option<MergeMatch> {
+        self.merge_match
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -1119,6 +1180,14 @@ impl Module {
         } else {
             None
         };
+        let (merge_action, merge_match) = if kind == KIND_MERGE_WHEN {
+            (
+                Some(self.node_merge_action(node)?),
+                Some(self.node_merge_match(node)?),
+            )
+        } else {
+            (None, None)
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -1174,6 +1243,8 @@ impl Module {
             insert_mode,
             insert_columns,
             create_mode,
+            merge_action,
+            merge_match,
             parse_location,
             children,
         })
@@ -1414,6 +1485,37 @@ impl Module {
             Some(CREATE_MODE_OR_REPLACE) => Ok(CreateMode::OrReplace),
             Some(CREATE_MODE_IF_NOT_EXISTS) => Ok(CreateMode::IfNotExists),
             other => Err(Error::Protocol(format!("unknown create mode: {other:?}"))),
+        }
+    }
+
+    /// Reads the action a `ResolvedMergeWhen` performs.
+    ///
+    /// `action_type()` is a `ResolvedMergeWhenEnums::ActionType`. An
+    /// unrecognized or missing value is surfaced as an error rather than mapped
+    /// to a default.
+    fn node_merge_action(&mut self, node: u64) -> Result<MergeAction, Error> {
+        let resp = self.invoke_handle(SVC_RESOLVED_MERGE_WHEN, MID_MERGE_ACTION_TYPE, node)?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(MERGE_ACTION_INSERT) => Ok(MergeAction::Insert),
+            Some(MERGE_ACTION_UPDATE) => Ok(MergeAction::Update),
+            Some(MERGE_ACTION_DELETE) => Ok(MergeAction::Delete),
+            other => Err(Error::Protocol(format!("unknown merge action: {other:?}"))),
+        }
+    }
+
+    /// Reads which rows a `ResolvedMergeWhen` applies to.
+    ///
+    /// `match_type()` is a `ResolvedMergeWhenEnums::MatchType`. An unrecognized
+    /// or missing value is surfaced as an error rather than mapped to a default.
+    fn node_merge_match(&mut self, node: u64) -> Result<MergeMatch, Error> {
+        let resp = self.invoke_handle(SVC_RESOLVED_MERGE_WHEN, MID_MERGE_MATCH_TYPE, node)?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(MERGE_MATCH_MATCHED) => Ok(MergeMatch::Matched),
+            Some(MERGE_MATCH_NOT_MATCHED_BY_SOURCE) => Ok(MergeMatch::NotMatchedBySource),
+            Some(MERGE_MATCH_NOT_MATCHED_BY_TARGET) => Ok(MergeMatch::NotMatchedByTarget),
+            other => Err(Error::Protocol(format!("unknown merge match: {other:?}"))),
         }
     }
 
