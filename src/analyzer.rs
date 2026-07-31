@@ -55,6 +55,7 @@ const MID_GET_TIMESTAMP: i32 = 56;
 const MID_MAKE_ARRAY_TYPE: i32 = 13;
 const MID_MAKE_STRUCT_TYPE: i32 = 33;
 const MID_MAKE_RANGE_TYPE: i32 = 26;
+const MID_MAKE_MAP_TYPE: i32 = 20;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -203,6 +204,9 @@ pub enum ColumnType {
     /// allows only `DATE`, `DATETIME`, or `TIMESTAMP` elements; any other element
     /// is rejected during analysis.
     Range(Box<Self>),
+    /// A map from a key type to a value type (`MAP<K, V>`). The key type must
+    /// support grouping; the value type is unrestricted.
+    Map(Box<Self>, Box<Self>),
 }
 
 /// A named field of a [`ColumnType::Struct`].
@@ -233,7 +237,7 @@ impl ColumnType {
             Self::Json => MID_GET_JSON,
             Self::Interval => MID_GET_INTERVAL,
             Self::Geography => MID_GET_GEOGRAPHY,
-            Self::Array(_) | Self::Struct(_) | Self::Range(_) => return None,
+            Self::Array(_) | Self::Struct(_) | Self::Range(_) | Self::Map(_, _) => return None,
         })
     }
 }
@@ -1113,6 +1117,11 @@ impl Module {
                 let element_type = self.build_column_type(type_factory, element)?;
                 self.make_range_type(type_factory, element_type)
             }
+            ColumnType::Map(key, value) => {
+                let key_type = self.build_column_type(type_factory, key)?;
+                let value_type = self.build_column_type(type_factory, value)?;
+                self.make_map_type(type_factory, key_type, value_type)
+            }
             scalar => {
                 let mid = scalar.scalar_type_factory_mid().ok_or_else(|| {
                     Error::Protocol("column type has no type factory getter".into())
@@ -1149,6 +1158,24 @@ impl Module {
         let ptr = pb::read_handle_at_field(&resp, 2);
         if ptr == 0 {
             return Err(Error::Protocol("MakeRangeType returned null".into()));
+        }
+        Ok(ptr)
+    }
+
+    /// Builds a `MAP<K, V>` type from `key` and `value` via
+    /// `TypeFactory::MakeMapType`. GoogleSQL requires the key type to support
+    /// grouping and gates the type behind a language feature; an unsupported key
+    /// or a disabled feature surfaces as [`Error::GoogleSql`].
+    fn make_map_type(&mut self, type_factory: u64, key: u64, value: u64) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        pb::append_handle(&mut req, 2, key);
+        pb::append_handle(&mut req, 3, value);
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_MAP_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 1);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeMapType returned null".into()));
         }
         Ok(ptr)
     }
