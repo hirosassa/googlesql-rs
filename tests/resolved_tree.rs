@@ -1217,6 +1217,33 @@ fn parse_location_is_none_without_a_recorded_range() {
     });
 }
 
+/// Returns the exact source substring that the first `kind` node's parse
+/// location spans, or `None` if no such node exists or it carries no location.
+fn located_text<'a>(root: &ResolvedNode, kind: &str, sql: &'a str) -> Option<&'a str> {
+    let range = find_kind(root, kind)?.parse_location()?;
+    Some(&sql[range])
+}
+
+#[test]
+fn parse_location_indexes_back_to_the_exact_source_token() {
+    let mut module = Module::new().unwrap();
+
+    // Each node's recorded byte range must slice out the precise token it came
+    // from. Asserting the sliced text (not just a well-formed range) catches a
+    // byte/char-offset confusion or an off-by-one that a range-validity check
+    // would silently pass, and pins the location to a specific node kind rather
+    // than "some node happens to span this text".
+    let sql = "SELECT id + 1 AS x FROM users";
+    let root = module
+        .resolved_tree(sql, &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(located_text(&root, "ResolvedTableScan", sql), Some("users"));
+    assert_eq!(located_text(&root, "ResolvedColumnRef", sql), Some("id"));
+    assert_eq!(located_text(&root, "ResolvedLiteral", sql), Some("1"));
+}
+
 /// Applies `f` to `node` and every descendant.
 fn for_each_node(node: &ResolvedNode, f: &mut impl FnMut(&ResolvedNode)) {
     f(node);
