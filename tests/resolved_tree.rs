@@ -544,6 +544,159 @@ fn complex_scalar_literals_carry_their_canonical_text() {
 }
 
 #[test]
+fn array_literal_carries_its_elements() {
+    let mut module = Module::new().unwrap();
+
+    // An array of literal elements constant-folds into a single ARRAY-typed
+    // ResolvedLiteral, whose value is the list of element values in order.
+    let root = module
+        .resolved_tree("SELECT [1, 2, 3]", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("an array constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Array(vec![
+            LiteralValue::Int64(1),
+            LiteralValue::Int64(2),
+            LiteralValue::Int64(3),
+        ]))
+    );
+}
+
+#[test]
+fn struct_literal_carries_its_named_and_anonymous_fields() {
+    let mut module = Module::new().unwrap();
+
+    // A named STRUCT keeps its field names; a bare tuple leaves them empty.
+    let named = module
+        .resolved_tree("SELECT STRUCT(1 AS a, 'x' AS b)", &[])
+        .unwrap()
+        .unwrap();
+    let literal =
+        find_kind(&named, "ResolvedLiteral").expect("a struct constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Struct(vec![
+            ("a".to_string(), LiteralValue::Int64(1)),
+            ("b".to_string(), LiteralValue::String("x".to_string())),
+        ]))
+    );
+
+    let anon = module
+        .resolved_tree("SELECT (1, 'x')", &[])
+        .unwrap()
+        .unwrap();
+    let literal =
+        find_kind(&anon, "ResolvedLiteral").expect("a tuple constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Struct(vec![
+            (String::new(), LiteralValue::Int64(1)),
+            (String::new(), LiteralValue::String("x".to_string())),
+        ]))
+    );
+}
+
+#[test]
+fn nested_composite_literal_recurses() {
+    let mut module = Module::new().unwrap();
+
+    // An array of structs exercises the recursive read: the outer ARRAY holds a
+    // STRUCT value, which in turn holds its scalar fields.
+    let root = module
+        .resolved_tree("SELECT [STRUCT(1 AS a, 'x' AS b)]", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("a nested constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Array(vec![LiteralValue::Struct(vec![
+            ("a".to_string(), LiteralValue::Int64(1)),
+            ("b".to_string(), LiteralValue::String("x".to_string())),
+        ])]))
+    );
+}
+
+#[test]
+fn json_literal_carries_its_text() {
+    let mut module = Module::new().unwrap();
+
+    // A JSON constant folds into a JSON-typed ResolvedLiteral whose value is the
+    // normalized JSON text GoogleSQL prints.
+    let root = module
+        .resolved_tree("SELECT JSON '{\"a\": 1}'", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("a JSON constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Json("{\"a\":1}".to_string()))
+    );
+}
+
+#[test]
+fn range_literal_carries_its_bounds() {
+    let mut module = Module::new().unwrap();
+
+    // A RANGE constant folds into a RANGE-typed ResolvedLiteral whose value is
+    // its start and end bounds. 2020-01-01 is day 18262 since the epoch, and the
+    // half-open end 2020-01-03 is day 18264.
+    let root = module
+        .resolved_tree("SELECT RANGE<DATE> '[2020-01-01, 2020-01-03)'", &[])
+        .unwrap()
+        .unwrap();
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("a RANGE constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Range {
+            start: Box::new(LiteralValue::Date(18262)),
+            end: Box::new(LiteralValue::Date(18264)),
+        })
+    );
+
+    // An unbounded end comes back as a NULL bound.
+    let unbounded = module
+        .resolved_tree("SELECT RANGE<DATE> '[2020-01-01, UNBOUNDED)'", &[])
+        .unwrap()
+        .unwrap();
+    let literal = find_kind(&unbounded, "ResolvedLiteral")
+        .expect("a RANGE constant produces a ResolvedLiteral");
+    assert_eq!(
+        literal.literal_value(),
+        Some(&LiteralValue::Range {
+            start: Box::new(LiteralValue::Date(18262)),
+            end: Box::new(LiteralValue::Null),
+        })
+    );
+}
+
+#[test]
+fn composite_literal_with_unmodelled_element_has_no_value() {
+    let mut module = Module::new().unwrap();
+
+    // BIGNUMERIC has no modelled LiteralValue variant, so an array of BIGNUMERIC
+    // elements cannot be represented faithfully: the whole composite reads back
+    // as no value rather than a partial one, even though the node is a literal.
+    let root = module
+        .resolved_tree("SELECT [BIGNUMERIC '1.5', BIGNUMERIC '2.5']", &[])
+        .unwrap()
+        .unwrap();
+
+    let literal =
+        find_kind(&root, "ResolvedLiteral").expect("an array constant produces a ResolvedLiteral");
+    assert_eq!(literal.type_name(), Some("ARRAY<BIGNUMERIC>"));
+    assert_eq!(literal.literal_value(), None);
+}
+
+#[test]
 fn non_literal_nodes_have_no_literal_value() {
     let mut module = Module::new().unwrap();
 
