@@ -65,6 +65,7 @@ const MID_ADD_TABLE_NAMED: i32 = 72;
 const MID_ADD_CATALOG_NAMED: i32 = 4;
 const MID_ADD_CONNECTION_NAMED: i32 = 6;
 const MID_ADD_CONSTANT_NAMED: i32 = 8;
+const MID_ADD_TYPE_NAMED: i32 = 75;
 const MID_ADD_TABLE_VALUED_FUNCTION_NAMED: i32 = 73;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
 
@@ -520,15 +521,31 @@ pub struct ProcedureDef {
     pub arguments: Vec<ColumnType>,
 }
 
+/// A user-defined named type registered into the catalog before analysis.
+///
+/// Registering it makes the name usable wherever a type name is expected, e.g.
+/// `CAST(x AS my_type)` or a typed `NULL`. The name resolves to its underlying
+/// [`ty`](Self::ty); it is an alias, so the resolved type is the underlying type
+/// (a `NamedType` mapping `point` to `STRUCT<x FLOAT64, y FLOAT64>` resolves to
+/// that struct).
+#[derive(Debug, Clone)]
+pub struct NamedType {
+    /// The type name as referenced in SQL.
+    pub name: String,
+    /// The underlying type the name resolves to.
+    pub ty: ColumnType,
+}
+
 /// The declarations made visible to the analyzer for a query.
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
 /// [`constants`](Self::constants), [`parameters`](Self::parameters),
 /// [`table_functions`](Self::table_functions), [`procedures`](Self::procedures),
-/// [`connections`](Self::connections), and nested [`catalogs`](Self::catalogs) a
-/// query may reference, passed to the `*_in` analysis entry points. The
-/// table-only entry points (e.g. [`Module::analyze_output_columns`]) are
-/// equivalent to a `Catalog` with only tables.
+/// [`connections`](Self::connections), [`types`](Self::types), and nested
+/// [`catalogs`](Self::catalogs) a query may reference, passed to the `*_in`
+/// analysis entry points. The table-only entry points (e.g.
+/// [`Module::analyze_output_columns`]) are equivalent to a `Catalog` with only
+/// tables.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     /// User-defined tables.
@@ -554,6 +571,9 @@ pub struct Catalog {
     /// a statement that references it resolve, e.g.
     /// `CREATE EXTERNAL TABLE ... WITH CONNECTION my_conn`.
     pub connections: Vec<String>,
+    /// User-defined named types, usable wherever a type name is expected (e.g.
+    /// `CAST(x AS my_type)`).
+    pub types: Vec<NamedType>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -599,6 +619,7 @@ struct CatalogContents<'a> {
     catalogs: &'a [NamedCatalog],
     procedures: &'a [ProcedureDef],
     connections: &'a [String],
+    types: &'a [NamedType],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -614,6 +635,7 @@ impl<'a> CatalogContents<'a> {
             catalogs: &[],
             procedures: &[],
             connections: &[],
+            types: &[],
         }
     }
 
@@ -628,6 +650,7 @@ impl<'a> CatalogContents<'a> {
             catalogs: catalog.catalogs.as_slice(),
             procedures: catalog.procedures.as_slice(),
             connections: catalog.connections.as_slice(),
+            types: catalog.types.as_slice(),
         }
     }
 }
@@ -1034,6 +1057,7 @@ impl Module {
         )?);
         self.add_procedures(catalog, type_factory, contents.procedures, &mut handles)?;
         self.add_connections(catalog, contents.connections, &mut handles)?;
+        self.add_types(catalog, type_factory, contents.types)?;
         for sub in contents.catalogs {
             let child = self.new_simple_catalog(&sub.name, type_factory)?;
             let child_handles = self.populate_catalog(
@@ -1529,6 +1553,33 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         pb::append_handle(&mut req, 3, connection);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_CONNECTION_NAMED, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each named type into `catalog`. The type itself is owned by the
+    /// `type_factory` (which outlives the analysis), so no handle is retained —
+    /// the catalog only stores the name-to-type alias.
+    fn add_types(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        types: &[NamedType],
+    ) -> Result<(), Error> {
+        for named in types {
+            let type_handle = self.build_column_type(type_factory, &named.ty)?;
+            self.register_type(catalog, &named.name, type_handle)?;
+        }
+        Ok(())
+    }
+
+    /// Registers `type_handle` under `name` in `catalog` (non-owning; the type is
+    /// owned by the `TypeFactory`).
+    fn register_type(&mut self, catalog: u64, name: &str, type_handle: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, type_handle);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_TYPE_NAMED, &req)?;
         check_error(&resp)
     }
 
