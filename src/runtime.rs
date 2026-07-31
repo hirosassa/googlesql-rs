@@ -26,7 +26,6 @@ const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 const SVC_LANGUAGE_OPTIONS: i32 = 678;
 const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
-const MID_FREE_LANGUAGE_OPTIONS: i32 = 29;
 
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
@@ -90,6 +89,22 @@ pub struct Module {
     /// Cache of named exports (e.g. `wasmify_get_type_name`), keyed by name, for
     /// the same reason as [`Module::invoke_cache`].
     export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
+    /// Cached maximum-feature `LanguageOptions` handle, built on first use by
+    /// [`Module::max_language_options`] and reused for the `Module`'s lifetime.
+    ///
+    /// The handle is immutable configuration every parse and analyze call wires
+    /// into its options, so building it once removes the two-RPC reconstruction
+    /// each call otherwise paid. It is intentionally not registered for deferred
+    /// free: the wasm-side allocation is reclaimed when the `Store` is dropped.
+    cached_language_options: Option<u64>,
+    /// Reusable request-encoding buffer for hot-path RPCs.
+    ///
+    /// The AST and resolved-tree walks issue thousands of small RPCs, most of
+    /// them a single handle argument. Encoding each request into this retained
+    /// buffer (via [`Module::invoke_handle`] and friends) rather than a fresh
+    /// `Vec` removes a per-call allocation; the buffer keeps its capacity across
+    /// calls. Only ever touched by the single owning thread between calls.
+    scratch: Vec<u8>,
 }
 
 /// Identifies the export a [`Module::call_typed`] call targets, used only to
@@ -235,6 +250,8 @@ impl Module {
             pending_frees: Arc::new(Mutex::new(Vec::new())),
             invoke_cache: HashMap::new(),
             export_cache: HashMap::new(),
+            cached_language_options: None,
+            scratch: Vec::new(),
         })
     }
 
@@ -311,29 +328,31 @@ impl Module {
         }
     }
 
-    /// Acquires a `LanguageOptions` handle with the maximum released language
-    /// feature set enabled.
+    /// Returns a cached `LanguageOptions` handle with the maximum released
+    /// language feature set enabled, building it on first use.
     ///
     /// GoogleSQL gates optional syntax (e.g. the `QUALIFY` clause) behind
     /// language features that default `LanguageOptions` leaves off. The parser
     /// and analyzer both wire the returned handle into their options so those
-    /// features are accepted. The handle is an RAII [`Handle`] freed by the
-    /// enclosing [`with_frees`](Module::with_frees).
-    pub(crate) fn acquire_max_language_options(&mut self) -> Result<Handle, Error> {
-        let language = self.acquire_handle(
-            SVC_LANGUAGE_OPTIONS,
-            MID_NEW_LANGUAGE_OPTIONS,
-            &[],
-            SVC_LANGUAGE_OPTIONS,
-            MID_FREE_LANGUAGE_OPTIONS,
-        )?;
+    /// features are accepted. The configuration is immutable and identical for
+    /// every call, so the handle is built once and cached for the `Module`'s
+    /// lifetime rather than reconstructed (two RPCs) per parse/analyze. It is
+    /// deliberately not registered for deferred free: the parser/analyzer option
+    /// setters copy it rather than adopt it, and its wasm-side allocation is
+    /// reclaimed when the `Store` is dropped with the instance.
+    pub(crate) fn max_language_options(&mut self) -> Result<u64, Error> {
+        if let Some(ptr) = self.cached_language_options {
+            return Ok(ptr);
+        }
+        let ptr = self.new_handle(SVC_LANGUAGE_OPTIONS, MID_NEW_LANGUAGE_OPTIONS, &[])?;
         let resp = self.invoke(
             SVC_LANGUAGE_OPTIONS,
             MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES,
-            &pb::handle_arg(language.ptr()),
+            &pb::handle_arg(ptr),
         )?;
         crate::error::check_error(&resp)?;
-        Ok(language)
+        self.cached_language_options = Some(ptr);
+        Ok(ptr)
     }
 
     /// Runs every free enqueued by a dropped [`Handle`], returning the first
@@ -421,6 +440,49 @@ impl Module {
             }
         };
         self.call_typed(func, ExportId::Named(name), req)
+    }
+
+    /// Invokes an RPC whose request is encoded into the reused
+    /// [`scratch`](Module::scratch) buffer by `build`, avoiding a fresh per-call
+    /// request allocation. The buffer retains its capacity between calls, so
+    /// `build` must only append to it (it is cleared first). Used by the
+    /// tree-walk hot paths.
+    pub(crate) fn invoke_encoded(
+        &mut self,
+        svc: i32,
+        mid: i32,
+        build: impl FnOnce(&mut Vec<u8>),
+    ) -> Result<Vec<u8>, Error> {
+        // Take the buffer out so `self.invoke` can borrow `self` mutably; put it
+        // back afterwards (on success or failure) to preserve its capacity.
+        let mut buf = std::mem::take(&mut self.scratch);
+        buf.clear();
+        build(&mut buf);
+        let resp = self.invoke(svc, mid, &buf);
+        self.scratch = buf;
+        resp
+    }
+
+    /// Invokes a single-handle RPC (`field 1 = ptr`) over the reused scratch
+    /// buffer — the dominant request shape in the AST and resolved-tree walks.
+    pub(crate) fn invoke_handle(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<Vec<u8>, Error> {
+        self.invoke_encoded(svc, mid, |buf| pb::append_handle(buf, 1, ptr))
+    }
+
+    /// Calls a named export whose request is encoded into the reused scratch
+    /// buffer, the [`invoke_encoded`](Module::invoke_encoded) counterpart for
+    /// named exports such as `wasmify_get_type_name`.
+    pub(crate) fn call_export_encoded(
+        &mut self,
+        name: &str,
+        build: impl FnOnce(&mut Vec<u8>),
+    ) -> Result<Vec<u8>, Error> {
+        let mut buf = std::mem::take(&mut self.scratch);
+        buf.clear();
+        build(&mut buf);
+        let resp = self.call_export(name, &buf);
+        self.scratch = buf;
+        resp
     }
 
     /// Resolves an export by name into a typed `(ptr,len) -> packed` function.
@@ -635,6 +697,66 @@ mod tests {
                 .len(),
             0,
             "flush must drain the queue and run every free"
+        );
+    }
+
+    /// The maximum-feature `LanguageOptions` handle is built once and cached:
+    /// the cache starts empty, the first call populates it with a non-null
+    /// handle, and a second call returns that same handle without rebuilding.
+    #[test]
+    fn max_language_options_is_cached() {
+        let mut module = super::Module::new().expect("instantiate module");
+        assert_eq!(
+            module.cached_language_options, None,
+            "cache must start empty before any call"
+        );
+
+        let first = module
+            .max_language_options()
+            .expect("build max language options");
+        assert_ne!(first, 0, "language options handle must be non-null");
+        assert_eq!(
+            module.cached_language_options,
+            Some(first),
+            "the first call must populate the cache"
+        );
+
+        let second = module
+            .max_language_options()
+            .expect("reuse max language options");
+        assert_eq!(
+            first, second,
+            "the second call must return the cached handle, not a fresh one"
+        );
+    }
+
+    /// `invoke_handle` drives a real single-handle RPC through the reused
+    /// scratch buffer and returns the buffer to the `Module` afterwards, keeping
+    /// its capacity for the next call rather than leaving the empty buffer that
+    /// `mem::take` installed. (The buffer is cleared before each build, so a
+    /// retained capacity never corrupts a later, shorter request.)
+    #[test]
+    fn invoke_handle_reuses_scratch_buffer() {
+        let mut module = super::Module::new().expect("instantiate module");
+        assert_eq!(
+            module.scratch.capacity(),
+            0,
+            "scratch must start unallocated"
+        );
+
+        let resp = module
+            .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
+            .expect("NewParserOptions RPC");
+        let handle = super::pb::read_handle_at_field(&resp, 1);
+        assert_ne!(handle, 0, "NewParserOptions must return a non-null handle");
+
+        // Free it back through the single-handle helper under test.
+        module
+            .invoke_handle(SVC_PARSER_OPTIONS, MID_FREE_PARSER_OPTIONS, handle)
+            .expect("FreeParserOptions via invoke_handle");
+        assert!(
+            module.scratch.capacity() > 0,
+            "the scratch buffer must be returned to the Module with capacity to reuse"
         );
     }
 

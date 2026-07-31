@@ -63,7 +63,7 @@ impl Module {
         let byte_range = self.node_byte_range(node_ptr)?;
 
         let num_children = self.node_num_children(node_ptr)?;
-        let mut children = Vec::new();
+        let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
         for i in 0..num_children {
             let child_ptr = self.node_child(node_ptr, i)?;
             if child_ptr != 0 {
@@ -83,9 +83,8 @@ impl Module {
     /// Works for any handle: `wasmify_get_type_name` reports the C++ type name,
     /// so the resolved-AST walk reuses it to identify node kinds too.
     pub(crate) fn node_kind(&mut self, node_ptr: u64) -> Result<String, Error> {
-        let mut req = Vec::new();
-        pb::append_uint64(&mut req, 1, node_ptr);
-        let resp = self.call_export(EXPORT_TYPE_NAME, &req)?;
+        let resp =
+            self.call_export_encoded(EXPORT_TYPE_NAME, |buf| pb::append_uint64(buf, 1, node_ptr))?;
         check_error(&resp)?;
         let name = pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::Protocol("type name not found".into()))?;
@@ -97,21 +96,17 @@ impl Module {
 
     /// Returns the number of children of a node.
     fn node_num_children(&mut self, node_ptr: u64) -> Result<i32, Error> {
-        let resp = self.invoke(
-            SVC_AST_NODE_BASE,
-            MID_NUM_CHILDREN,
-            &pb::handle_arg(node_ptr),
-        )?;
+        let resp = self.invoke_handle(SVC_AST_NODE_BASE, MID_NUM_CHILDREN, node_ptr)?;
         check_error(&resp)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
     }
 
     /// Returns the handle of the `i`-th child node.
     fn node_child(&mut self, node_ptr: u64, i: i32) -> Result<u64, Error> {
-        let mut req = Vec::new();
-        pb::append_handle(&mut req, 1, node_ptr);
-        pb::append_int32(&mut req, 2, i);
-        let resp = self.invoke(SVC_AST_NODE_BASE, MID_CHILD, &req)?;
+        let resp = self.invoke_encoded(SVC_AST_NODE_BASE, MID_CHILD, |buf| {
+            pb::append_handle(buf, 1, node_ptr);
+            pb::append_int32(buf, 2, i);
+        })?;
         check_error(&resp)?;
         Ok(pb::read_handle_at_field(&resp, 1))
     }
@@ -149,18 +144,14 @@ impl Module {
 
     /// Returns the byte offset of a `ParseLocationPoint`.
     fn point_byte_offset(&mut self, point_ptr: u64) -> Result<i32, Error> {
-        let resp = self.invoke(
-            SVC_LOCATION_POINT,
-            MID_GET_BYTE_OFFSET,
-            &pb::handle_arg(point_ptr),
-        )?;
+        let resp = self.invoke_handle(SVC_LOCATION_POINT, MID_GET_BYTE_OFFSET, point_ptr)?;
         check_error(&resp)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(-1))
     }
 
     /// Common helper: passes a single handle and returns the handle from field 1 of the response.
     pub(crate) fn rpc_handle(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<u64, Error> {
-        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        let resp = self.invoke_handle(svc, mid, ptr)?;
         check_error(&resp)?;
         Ok(pb::read_handle_at_field(&resp, 1))
     }

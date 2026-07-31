@@ -761,11 +761,8 @@ impl Module {
             return Ok(Vec::new());
         }
 
-        let column_resp = self.invoke(
-            SVC_RESOLVED_QUERY_STMT,
-            MID_OUTPUT_COLUMN_LIST,
-            &pb::handle_arg(statement),
-        )?;
+        let column_resp =
+            self.invoke_handle(SVC_RESOLVED_QUERY_STMT, MID_OUTPUT_COLUMN_LIST, statement)?;
         check_error(&column_resp)?;
 
         pb::read_handles_at_field(&column_resp, 1)
@@ -991,8 +988,9 @@ impl Module {
         } else {
             None
         };
-        let mut children = Vec::new();
-        for child in self.child_nodes(node)? {
+        let child_ptrs = self.child_nodes(node)?;
+        let mut children = Vec::with_capacity(child_ptrs.len());
+        for child in child_ptrs {
             if child != 0 {
                 children.push(self.build_resolved_node(child)?);
             }
@@ -1095,11 +1093,7 @@ impl Module {
     /// a table scan (its table columns, unpruned) and a project scan (the columns
     /// its `SELECT` list produces); each column's `Name` is read in turn.
     fn node_scan_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_SCAN,
-            MID_SCAN_COLUMN_LIST,
-            &pb::handle_arg(node),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_SCAN, MID_SCAN_COLUMN_LIST, node)?;
         check_error(&resp)?;
         pb::read_handles_at_field(&resp, 1)
             .into_iter()
@@ -1113,11 +1107,7 @@ impl Module {
     /// missing field means the scan has no explicit alias (an empty alias), not
     /// an error.
     fn node_alias(&mut self, node: u64) -> Result<String, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_TABLE_SCAN,
-            MID_TABLE_SCAN_ALIAS,
-            &pb::handle_arg(node),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_TABLE_SCAN, MID_TABLE_SCAN_ALIAS, node)?;
         check_error(&resp)?;
         Ok(pb::read_string_at_field(&resp, 1).unwrap_or_default())
     }
@@ -1127,10 +1117,10 @@ impl Module {
     /// `column_index_list()` is a repeated int32, one ordinal per scanned column
     /// aligned with `column_list()`. An empty scan yields an empty vector.
     fn node_column_index_list(&mut self, node: u64) -> Result<Vec<i32>, Error> {
-        let resp = self.invoke(
+        let resp = self.invoke_handle(
             SVC_RESOLVED_TABLE_SCAN,
             MID_TABLE_SCAN_COLUMN_INDEX_LIST,
-            &pb::handle_arg(node),
+            node,
         )?;
         check_error(&resp)?;
         Ok(pb::read_int32s_at_field(&resp, 1))
@@ -1171,7 +1161,7 @@ impl Module {
     /// unrecognized or missing value is surfaced as an error rather than being
     /// silently mapped to a default.
     fn node_join_type(&mut self, node: u64) -> Result<JoinType, Error> {
-        let resp = self.invoke(SVC_RESOLVED_JOIN_SCAN, MID_JOIN_TYPE, &pb::handle_arg(node))?;
+        let resp = self.invoke_handle(SVC_RESOLVED_JOIN_SCAN, MID_JOIN_TYPE, node)?;
         check_error(&resp)?;
         match pb::read_int32_at_field(&resp, 1) {
             Some(JOIN_TYPE_INNER) => Ok(JoinType::Inner),
@@ -1212,11 +1202,7 @@ impl Module {
     /// with a join kind, the value always names a concrete operator (no zero
     /// default), so an unrecognized or missing value is surfaced as an error.
     fn node_set_operation(&mut self, node: u64) -> Result<SetOperation, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_SET_OPERATION_SCAN,
-            MID_OP_TYPE,
-            &pb::handle_arg(node),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_SET_OPERATION_SCAN, MID_OP_TYPE, node)?;
         check_error(&resp)?;
         match pb::read_int32_at_field(&resp, 1) {
             Some(OP_TYPE_UNION_ALL) => Ok(SetOperation::UnionAll),
@@ -1236,11 +1222,7 @@ impl Module {
     /// any other unrecognized or missing one) is surfaced as an error rather
     /// than being silently mapped to a default.
     fn node_subquery_kind(&mut self, node: u64) -> Result<SubqueryKind, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_SUBQUERY_EXPR,
-            MID_SUBQUERY_TYPE,
-            &pb::handle_arg(node),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_SUBQUERY_EXPR, MID_SUBQUERY_TYPE, node)?;
         check_error(&resp)?;
         match pb::read_int32_at_field(&resp, 1) {
             Some(SUBQUERY_TYPE_SCALAR) => Ok(SubqueryKind::Scalar),
@@ -1275,7 +1257,7 @@ impl Module {
     /// Each entry is a `ResolvedComputedColumn` whose `column()` is the
     /// `ResolvedColumn` naming it.
     fn node_computed_column_names(&mut self, node: u64, mid: i32) -> Result<Vec<String>, Error> {
-        let resp = self.invoke(SVC_RESOLVED_AGGREGATE_SCAN_BASE, mid, &pb::handle_arg(node))?;
+        let resp = self.invoke_handle(SVC_RESOLVED_AGGREGATE_SCAN_BASE, mid, node)?;
         check_error(&resp)?;
         pb::read_handles_at_field(&resp, 1)
             .into_iter()
@@ -1341,10 +1323,10 @@ impl Module {
     /// a zero-argument call (e.g. `CURRENT_TIMESTAMP()`); a negative count is
     /// invalid and surfaces as an error rather than being silently clamped.
     fn node_argument_count(&mut self, node: u64) -> Result<usize, Error> {
-        let resp = self.invoke(
+        let resp = self.invoke_handle(
             SVC_RESOLVED_FUNCTION_CALL_BASE,
             MID_ARGUMENT_LIST_SIZE,
-            &pb::handle_arg(node),
+            node,
         )?;
         check_error(&resp)?;
         let count = pb::read_int32_at_field(&resp, 1).unwrap_or(0);
@@ -1406,7 +1388,7 @@ impl Module {
     /// error-checked response bytes. Every `value_*` reader shares this
     /// call/`check_error` prologue and differs only in how it decodes field 1.
     fn value_resp(&mut self, value: u64, mid: i32) -> Result<Vec<u8>, Error> {
-        let resp = self.invoke(SVC_VALUE, mid, &pb::handle_arg(value))?;
+        let resp = self.invoke_handle(SVC_VALUE, mid, value)?;
         check_error(&resp)?;
         Ok(resp)
     }
@@ -1471,7 +1453,7 @@ impl Module {
     /// Only `ResolvedExpr` subclasses carry a type; asking a scan or statement
     /// for one would be meaningless, so `IsExpression` gates the lookup.
     fn node_type_name(&mut self, node: u64) -> Result<Option<String>, Error> {
-        let is_expr = self.invoke(SVC_RESOLVED_NODE, MID_IS_EXPRESSION, &pb::handle_arg(node))?;
+        let is_expr = self.invoke_handle(SVC_RESOLVED_NODE, MID_IS_EXPRESSION, node)?;
         check_error(&is_expr)?;
         if !pb::read_bool_at_field(&is_expr, 1) {
             return Ok(None);
@@ -1499,11 +1481,7 @@ impl Module {
 
     /// Adds the table and columns read by one `ResolvedTableScan` to `tables`.
     fn record_table_scan(&mut self, scan: u64, tables: &mut Vec<TableRef>) -> Result<(), Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_SCAN,
-            MID_SCAN_COLUMN_LIST,
-            &pb::handle_arg(scan),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_SCAN, MID_SCAN_COLUMN_LIST, scan)?;
         check_error(&resp)?;
         for column in pb::read_handles_at_field(&resp, 1) {
             let table_name = self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_TABLE_NAME, column)?;
@@ -1515,11 +1493,7 @@ impl Module {
 
     /// Returns the child node handles of a resolved node via `GetChildNodes`.
     fn child_nodes(&mut self, node: u64) -> Result<Vec<u64>, Error> {
-        let resp = self.invoke(
-            SVC_RESOLVED_NODE,
-            MID_GET_CHILD_NODES,
-            &pb::handle_arg(node),
-        )?;
+        let resp = self.invoke_handle(SVC_RESOLVED_NODE, MID_GET_CHILD_NODES, node)?;
         check_error(&resp)?;
         Ok(pb::read_handles_at_field(&resp, 1))
     }
@@ -1537,7 +1511,7 @@ impl Module {
 
     /// Common helper: passes a single handle and returns the string from field 1.
     fn rpc_string(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<String, Error> {
-        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        let resp = self.invoke_handle(svc, mid, ptr)?;
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::Protocol("string field not found".into()))
@@ -1546,7 +1520,7 @@ impl Module {
     /// Common helper: passes a single handle and returns the int32 from field 1.
     /// An absent field decodes as `0` (proto3 omits a zero default).
     fn rpc_int32(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<i32, Error> {
-        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        let resp = self.invoke_handle(svc, mid, ptr)?;
         check_error(&resp)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
     }
@@ -1554,7 +1528,7 @@ impl Module {
     /// Common helper: passes a single handle and returns the bool from field 1.
     /// An absent field decodes as `false` (proto3 omits a false default).
     fn rpc_bool(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<bool, Error> {
-        let resp = self.invoke(svc, mid, &pb::handle_arg(ptr))?;
+        let resp = self.invoke_handle(svc, mid, ptr)?;
         check_error(&resp)?;
         Ok(pb::read_bool_at_field(&resp, 1))
     }

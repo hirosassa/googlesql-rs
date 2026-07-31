@@ -278,8 +278,8 @@ impl Module {
             module.configure_options(options.ptr(), opts)?;
             // Enable the maximum language feature set so gated syntax such as the
             // `QUALIFY` clause resolves.
-            let language = module.acquire_max_language_options()?;
-            module.set_options_language(options.ptr(), language.ptr())?;
+            let language = module.max_language_options()?;
+            module.set_options_language(options.ptr(), language)?;
             module.analyze_with_options(sql, options.ptr(), tables, extract)
         })
     }
@@ -510,9 +510,8 @@ impl Module {
     fn add_builtin_functions(&mut self, catalog: u64) -> Result<(), Error> {
         // Enable the maximum language feature set so builtins match the features
         // the parser and analyzer accept (e.g. the `QUALIFY` clause).
-        let language = self.acquire_max_language_options()?;
-        // `language` is consumed here; the top-level flush frees it afterwards.
-        self.add_builtins_with_language(catalog, language.ptr())
+        let language = self.max_language_options()?;
+        self.add_builtins_with_language(catalog, language)
     }
 
     /// Invokes `AddBuiltinFunctionsAndTypes` with a `BuiltinFunctionOptions`
