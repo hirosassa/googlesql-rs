@@ -370,6 +370,7 @@ fn resolves_a_registered_scalar_function() {
         connections: vec![],
         types: vec![],
         enums: vec![],
+        proto_files: vec![],
     };
 
     let columns = module
@@ -409,6 +410,7 @@ fn resolves_a_registered_aggregate_function() {
         connections: vec![],
         types: vec![],
         enums: vec![],
+        proto_files: vec![],
     };
 
     let columns = module
@@ -441,6 +443,7 @@ fn registered_function_type_checks_its_arguments() {
         connections: vec![],
         types: vec![],
         enums: vec![],
+        proto_files: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1473,4 +1476,131 @@ fn resolves_multiple_enum_types() {
     assert_eq!(columns.len(), 2);
     assert_eq!(columns[0].type_name(), "ENUM<Color>");
     assert_eq!(columns[1].type_name(), "ENUM<Size>");
+}
+
+// --- Minimal protobuf wire encoders, just enough to build a FileDescriptorProto
+// for the proto-type tests. A real caller would obtain these bytes from
+// `protoc --descriptor_set_out` or a protobuf library.
+
+fn wire_varint(buf: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let byte = u8::try_from(v & 0x7f).unwrap();
+        v >>= 7;
+        if v == 0 {
+            buf.push(byte);
+            break;
+        }
+        buf.push(byte | 0x80);
+    }
+}
+
+fn wire_len_delimited(buf: &mut Vec<u8>, field: u32, bytes: &[u8]) {
+    wire_varint(buf, u64::from(field) << 3 | 2);
+    wire_varint(buf, u64::try_from(bytes.len()).unwrap());
+    buf.extend_from_slice(bytes);
+}
+
+fn wire_string(buf: &mut Vec<u8>, field: u32, s: &str) {
+    wire_len_delimited(buf, field, s.as_bytes());
+}
+
+fn wire_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
+    wire_varint(buf, u64::from(field) << 3);
+    wire_varint(buf, u64::from(v.unsigned_abs()));
+}
+
+/// Serializes a `FileDescriptorProto` declaring one message:
+/// `message <name> { optional string <field_name> = 1; }`.
+fn person_file_descriptor(name: &str, field_name: &str) -> Vec<u8> {
+    // FieldDescriptorProto: name=1, number=3, label=4 (LABEL_OPTIONAL=1),
+    // type=5 (TYPE_STRING=9).
+    let mut field = Vec::new();
+    wire_string(&mut field, 1, field_name);
+    wire_int32(&mut field, 3, 1);
+    wire_int32(&mut field, 4, 1);
+    wire_int32(&mut field, 5, 9);
+
+    // DescriptorProto: name=1, field=2.
+    let mut message = Vec::new();
+    wire_string(&mut message, 1, name);
+    wire_len_delimited(&mut message, 2, &field);
+
+    // FileDescriptorProto: name=1, message_type=4.
+    let mut file = Vec::new();
+    wire_string(&mut file, 1, "person.proto");
+    wire_len_delimited(&mut file, 4, &message);
+    file
+}
+
+#[test]
+fn resolves_a_proto_typed_column() {
+    let mut module = Module::new().unwrap();
+
+    // The descriptor bytes declare a `Person` message; a column typed as that
+    // proto message resolves against the pool built from `proto_files`.
+    let catalog = Catalog {
+        proto_files: vec![person_file_descriptor("Person", "name")],
+        tables: vec![TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "p".to_string(),
+                ty: ColumnType::Proto("Person".to_string()),
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT p FROM t", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "PROTO<Person>");
+}
+
+#[test]
+fn resolves_a_proto_type_inside_an_array() {
+    let mut module = Module::new().unwrap();
+
+    // ColumnType::Proto composes with the other type constructors: an
+    // ARRAY<Person> column builds the proto element type via the pool, then
+    // wraps it, proving proto resolution reaches nested type building.
+    let catalog = Catalog {
+        proto_files: vec![person_file_descriptor("Person", "name")],
+        types: vec![NamedType {
+            name: "people".to_string(),
+            ty: ColumnType::Array(Box::new(ColumnType::Proto("Person".to_string()))),
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT CAST(NULL AS people) AS ps", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "ARRAY<PROTO<Person>>");
+}
+
+#[test]
+fn rejects_a_proto_type_without_descriptors() {
+    let mut module = Module::new().unwrap();
+
+    // Referencing a proto type with no `proto_files` registered cannot resolve.
+    let catalog = Catalog {
+        tables: vec![TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "p".to_string(),
+                ty: ColumnType::Proto("Person".to_string()),
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT p FROM t", &catalog);
+    assert!(
+        result.is_err(),
+        "expected resolution to fail without descriptors, got: {result:?}"
+    );
 }
