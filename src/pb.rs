@@ -46,6 +46,21 @@ pub fn append_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
     append_varint(buf, u64::try_from(v).unwrap_or(0));
 }
 
+/// Appends an int64 field (wire type 0, varint) to `buf`.
+///
+/// Negative values use the full 10-byte two's-complement varint encoding, matching
+/// protobuf's `int64`.
+pub fn append_int64(buf: &mut Vec<u8>, field: u32, v: i64) {
+    append_tag(buf, field, 0);
+    append_varint(buf, u64::from_ne_bytes(v.to_ne_bytes()));
+}
+
+/// Appends a double field (wire type 1, fixed 64-bit little-endian) to `buf`.
+pub fn append_double(buf: &mut Vec<u8>, field: u32, v: f64) {
+    append_tag(buf, field, 1);
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
 /// Appends a bool field (wire type 0, varint `0`/`1`) to `buf`.
 pub fn append_bool(buf: &mut Vec<u8>, field: u32, v: bool) {
     append_tag(buf, field, 0);
