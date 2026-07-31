@@ -27,6 +27,7 @@ const SVC_LANGUAGE_OPTIONS: i32 = 678;
 const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
 const MID_SET_SUPPORTS_ALL_STATEMENT_KINDS: i32 = 20;
+const MID_ADD_SUPPORTED_STATEMENT_KIND: i32 = 2;
 
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
@@ -98,6 +99,11 @@ pub struct Module {
     /// each call otherwise paid. It is intentionally not registered for deferred
     /// free: the wasm-side allocation is reclaimed when the `Store` is dropped.
     cached_language_options: Option<u64>,
+    /// `ResolvedNodeKind` wire values the analyzer is restricted to, or empty to
+    /// accept every kind (the default). Set by
+    /// [`Module::set_supported_statement_kinds`](crate::Module::set_supported_statement_kinds)
+    /// and applied when [`Module::max_language_options`] (re)builds its handle.
+    supported_statement_kinds: Vec<i32>,
     /// Reusable request-encoding buffer for hot-path RPCs.
     ///
     /// The AST and resolved-tree walks issue thousands of small RPCs, most of
@@ -262,6 +268,7 @@ impl Module {
             invoke_cache: HashMap::new(),
             export_cache: HashMap::new(),
             cached_language_options: None,
+            supported_statement_kinds: Vec::new(),
             scratch: Vec::new(),
             req_scratch_ptr: 0,
             req_scratch_cap: 0,
@@ -367,19 +374,43 @@ impl Module {
             &pb::handle_arg(ptr),
         )?;
         crate::error::check_error(&resp)?;
-        // Accept every statement kind (DML, DDL, script control), not just
-        // query. Without this the analyzer rejects e.g. INSERT/CREATE TABLE
-        // with "Statement not supported"; the parser is unaffected since it
-        // never restricts statement kinds. Equivalent to passing an empty set
-        // to SetSupportedStatementKinds.
-        let resp = self.invoke(
-            SVC_LANGUAGE_OPTIONS,
-            MID_SET_SUPPORTS_ALL_STATEMENT_KINDS,
-            &pb::handle_arg(ptr),
-        )?;
-        crate::error::check_error(&resp)?;
+        if self.supported_statement_kinds.is_empty() {
+            // Accept every statement kind (DML, DDL, script control), not just
+            // query. Without this the analyzer rejects e.g. INSERT/CREATE TABLE
+            // with "Statement not supported"; the parser is unaffected since it
+            // never restricts statement kinds. Equivalent to passing an empty set
+            // to SetSupportedStatementKinds.
+            let resp = self.invoke(
+                SVC_LANGUAGE_OPTIONS,
+                MID_SET_SUPPORTS_ALL_STATEMENT_KINDS,
+                &pb::handle_arg(ptr),
+            )?;
+            crate::error::check_error(&resp)?;
+        } else {
+            // Adding kinds leaves the supported set non-empty, so only those
+            // resolve and every other kind is rejected. Clone the small kind list
+            // so the `&mut self` invoke does not borrow it during iteration.
+            for kind in self.supported_statement_kinds.clone() {
+                let mut req = Vec::new();
+                pb::append_handle(&mut req, 1, ptr);
+                pb::append_int32(&mut req, 2, kind);
+                let resp =
+                    self.invoke(SVC_LANGUAGE_OPTIONS, MID_ADD_SUPPORTED_STATEMENT_KIND, &req)?;
+                crate::error::check_error(&resp)?;
+            }
+        }
         self.cached_language_options = Some(ptr);
         Ok(ptr)
+    }
+
+    /// Restricts the analyzer to the given `ResolvedNodeKind` wire values, or
+    /// restores "accept every kind" when `kinds` is empty. Invalidates the cached
+    /// [`LanguageOptions`](Self::max_language_options) handle so the next analysis
+    /// rebuilds it with the new restriction; the stale handle is reclaimed with
+    /// the `Store`, matching the cache's existing no-free policy.
+    pub(crate) fn set_supported_statement_kinds_raw(&mut self, kinds: Vec<i32>) {
+        self.supported_statement_kinds = kinds;
+        self.cached_language_options = None;
     }
 
     /// Runs every free enqueued by a dropped [`Handle`], returning the first
