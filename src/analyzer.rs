@@ -145,6 +145,7 @@ const MID_FREE_FIXED_OUTPUT_SCHEMA_TVF: i32 = 5;
 
 const SVC_SIMPLE_PROPERTY_GRAPH: i32 = 1375;
 const MID_NEW_SIMPLE_PROPERTY_GRAPH: i32 = 0;
+const MID_ADD_GRAPH_EDGE_TABLE: i32 = 2;
 const MID_ADD_GRAPH_LABEL: i32 = 3;
 const MID_ADD_GRAPH_NODE_TABLE: i32 = 4;
 const MID_ADD_GRAPH_PROPERTY_DECLARATION: i32 = 5;
@@ -152,6 +153,12 @@ const MID_FREE_SIMPLE_PROPERTY_GRAPH: i32 = 14;
 
 const SVC_GRAPH_NODE_TABLE: i32 = 1366;
 const MID_NEW_GRAPH_NODE_TABLE: i32 = 0;
+
+const SVC_GRAPH_EDGE_TABLE: i32 = 1360;
+const MID_NEW_GRAPH_EDGE_TABLE: i32 = 0;
+
+const SVC_GRAPH_NODE_TABLE_REFERENCE: i32 = 1367;
+const MID_NEW_GRAPH_NODE_TABLE_REFERENCE: i32 = 0;
 
 const SVC_GRAPH_ELEMENT_LABEL: i32 = 1363;
 const MID_NEW_GRAPH_ELEMENT_LABEL: i32 = 0;
@@ -626,14 +633,61 @@ pub struct NamedType {
 ///
 /// Registering it lets a graph query resolve against it, e.g.
 /// `GRAPH people MATCH (n:Person) RETURN n.name`. A property graph is a set of
-/// node (vertex) tables, each backed by an input table schema and exposing
-/// typed properties grouped under labels.
+/// node (vertex) tables and edge tables, each backed by an input table schema
+/// and exposing typed properties grouped under labels.
 #[derive(Debug, Clone)]
 pub struct PropertyGraphDef {
     /// The graph name, as referenced by `GRAPH <name>`.
     pub name: String,
     /// The node (vertex) tables that make up the graph.
     pub node_tables: Vec<GraphNodeTableDef>,
+    /// The edge tables connecting node tables, each carrying a source and a
+    /// destination reference into a [`node_tables`](Self::node_tables) entry.
+    pub edge_tables: Vec<GraphEdgeTableDef>,
+}
+
+/// An edge table within a [`PropertyGraphDef`], connecting a source node to a
+/// destination node.
+///
+/// Like a [`GraphNodeTableDef`] it is backed by an inline input schema and
+/// exposes properties through labels, and additionally carries a
+/// [`source`](Self::source) and [`destination`](Self::destination) reference
+/// pinning each edge to the nodes it connects.
+#[derive(Debug, Clone)]
+pub struct GraphEdgeTableDef {
+    /// The element table name, as referenced by a graph pattern.
+    pub name: String,
+    /// The input table schema backing the edge table.
+    pub columns: Vec<ColumnDef>,
+    /// Indices into [`columns`](Self::columns) forming each edge's key.
+    pub key_columns: Vec<u32>,
+    /// The labels exposed by the edge table, each declaring a set of properties.
+    ///
+    /// A property name must be declared at most once across the edge table's
+    /// labels; GoogleSQL rejects a graph that declares the same property twice.
+    pub labels: Vec<GraphLabelDef>,
+    /// The source (tail) node the edge starts from.
+    pub source: GraphNodeReferenceDef,
+    /// The destination (head) node the edge points to.
+    pub destination: GraphNodeReferenceDef,
+}
+
+/// A reference from a [`GraphEdgeTableDef`] to one of its graph's node tables,
+/// pinning an edge endpoint to a node by matching columns.
+///
+/// The edge's [`edge_columns`](Self::edge_columns) (indices into the edge
+/// table's input schema) are matched against the referenced node table's
+/// [`node_columns`](Self::node_columns) (indices into that node table's input
+/// schema), the way a foreign key matches a primary key.
+#[derive(Debug, Clone)]
+pub struct GraphNodeReferenceDef {
+    /// The name of a node table in the same [`PropertyGraphDef`].
+    pub node_table: String,
+    /// Indices into the edge table's input columns forming the endpoint key.
+    pub edge_columns: Vec<u32>,
+    /// Indices into the referenced node table's input columns matched against
+    /// [`edge_columns`](Self::edge_columns).
+    pub node_columns: Vec<u32>,
 }
 
 /// A node (vertex) table within a [`PropertyGraphDef`].
@@ -854,6 +908,19 @@ fn encode_enum_fdp(def: &EnumDef, index: usize) -> Vec<u8> {
     );
     pb::append_submessage(&mut fdp, FIELD_FDP_ENUM_TYPE, &enum_type);
     fdp
+}
+
+/// Appends each `u32` column index in `indices` as a repeated `int32` at
+/// `field`, failing if one exceeds `i32::MAX` (indices are always small, so this
+/// is a guard rather than an expected case). Shared by the graph element table
+/// and node reference builders, which all carry column indices this way.
+fn append_column_indices(req: &mut Vec<u8>, field: u32, indices: &[u32]) -> Result<(), Error> {
+    for &index in indices {
+        let value = i32::try_from(index)
+            .map_err(|_| Error::Protocol("graph column index out of range".into()))?;
+        pb::append_int32(req, field, value);
+    }
+    Ok(())
 }
 
 impl Module {
@@ -1997,17 +2064,22 @@ impl Module {
         Ok(())
     }
 
-    /// Assembles a `SimplePropertyGraph` from `graph` — its node tables, the
-    /// labels they expose, and the property declarations/definitions backing
+    /// Assembles a `SimplePropertyGraph` from `graph` — its node and edge tables,
+    /// the labels they expose, and the property declarations/definitions backing
     /// those labels — and registers it into `catalog` under its name.
     ///
     /// Each `Add*` on the graph transfers ownership, so the graph owns its
-    /// labels, node tables, and property declarations (and a node table owns its
-    /// property definitions); freeing the graph reclaims them all. The catalog
-    /// only references the graph (`AddPropertyGraph2` is non-owning), so the
-    /// graph handle — and each node table's input `SimpleTable`, which the node
+    /// labels, node/edge tables, and property declarations (and an element table
+    /// owns its property definitions); freeing the graph reclaims them all. The
+    /// catalog only references the graph (`AddPropertyGraph2` is non-owning), so
+    /// the graph handle — and each element table's input `SimpleTable`, which the
     /// table references rather than owns — are kept alive on `handles` until the
     /// analysis completes.
+    ///
+    /// Node tables are built first so their handles are available for edge
+    /// tables' source/destination references (an edge references a node table
+    /// non-owningly, and the reference stays valid after `AddNodeTable` hands the
+    /// node table to the graph).
     fn add_property_graph(
         &mut self,
         catalog: u64,
@@ -2016,12 +2088,24 @@ impl Module {
         handles: &mut Vec<Handle>,
     ) -> Result<(), Error> {
         let graph_handle = self.new_property_graph(&graph.name)?;
+        let mut node_ptrs = Vec::with_capacity(graph.node_tables.len());
         for node in &graph.node_tables {
-            self.add_graph_node_table(
+            let node_ptr = self.add_graph_node_table(
                 graph_handle.ptr(),
                 type_factory,
                 &graph.name,
                 node,
+                handles,
+            )?;
+            node_ptrs.push((node.name.as_str(), node_ptr));
+        }
+        for edge in &graph.edge_tables {
+            self.add_graph_edge_table(
+                graph_handle.ptr(),
+                type_factory,
+                &graph.name,
+                edge,
+                &node_ptrs,
                 handles,
             )?;
         }
@@ -2044,11 +2128,12 @@ impl Module {
         )
     }
 
-    /// Builds one node table into `graph`: its input `SimpleTable`, the property
-    /// declarations and definitions for each label's properties, the labels, and
-    /// the node table itself. The input table handle is pushed onto `handles`
-    /// (the node table references it non-owningly, so it must outlive the
-    /// analysis); every other object is transferred into and owned by `graph`.
+    /// Builds one node table into `graph`: its input `SimpleTable`, the labels
+    /// it exposes (with their property declarations and definitions), and the
+    /// node table itself. The input table handle is pushed onto `handles` (the
+    /// node table references it non-owningly, so it must outlive the analysis);
+    /// every other object is transferred into and owned by `graph`. Returns the
+    /// node table handle so an edge table can reference it.
     fn add_graph_node_table(
         &mut self,
         graph: u64,
@@ -2056,13 +2141,71 @@ impl Module {
         graph_name: &str,
         node: &GraphNodeTableDef,
         handles: &mut Vec<Handle>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let input = self.add_input_table(type_factory, &node.name, &node.columns)?;
+        let (label_ptrs, definition_ptrs) =
+            self.build_graph_labels(graph, type_factory, graph_name, &node.labels)?;
+        let node_ptr = self.new_graph_node_table(
+            &node.name,
+            graph_name,
+            input.ptr(),
+            &node.key_columns,
+            &label_ptrs,
+            &definition_ptrs,
+        )?;
+        self.register_graph_node_table(graph, node_ptr)?;
+        handles.push(input);
+        Ok(node_ptr)
+    }
 
-        let mut label_ptrs = Vec::with_capacity(node.labels.len());
+    /// Builds one edge table into `graph`, mirroring
+    /// [`add_graph_node_table`](Self::add_graph_node_table) but additionally
+    /// pinning each edge to its source and destination node tables via
+    /// references looked up in `node_ptrs` (name → node table handle).
+    fn add_graph_edge_table(
+        &mut self,
+        graph: u64,
+        type_factory: u64,
+        graph_name: &str,
+        edge: &GraphEdgeTableDef,
+        node_ptrs: &[(&str, u64)],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let input = self.add_input_table(type_factory, &edge.name, &edge.columns)?;
+        let (label_ptrs, definition_ptrs) =
+            self.build_graph_labels(graph, type_factory, graph_name, &edge.labels)?;
+        let source = self.new_graph_node_reference(&edge.source, node_ptrs)?;
+        let destination = self.new_graph_node_reference(&edge.destination, node_ptrs)?;
+        let edge_ptr = self.new_graph_edge_table(
+            &edge.name,
+            graph_name,
+            input.ptr(),
+            &edge.key_columns,
+            &label_ptrs,
+            &definition_ptrs,
+            source,
+            destination,
+        )?;
+        self.register_graph_edge_table(graph, edge_ptr)?;
+        handles.push(input);
+        Ok(())
+    }
+
+    /// Builds the property declarations, definitions, and labels for a graph
+    /// element table (node or edge). Each declaration and label is added to (and
+    /// owned by) `graph`; the returned label handles are referenced by the
+    /// element table and the returned definition handles are transferred into it.
+    fn build_graph_labels(
+        &mut self,
+        graph: u64,
+        type_factory: u64,
+        graph_name: &str,
+        labels: &[GraphLabelDef],
+    ) -> Result<(Vec<u64>, Vec<u64>), Error> {
+        let mut label_ptrs = Vec::with_capacity(labels.len());
         let mut definition_ptrs =
-            Vec::with_capacity(node.labels.iter().map(|label| label.properties.len()).sum());
-        for label in &node.labels {
+            Vec::with_capacity(labels.iter().map(|label| label.properties.len()).sum());
+        for label in labels {
             let mut declaration_ptrs = Vec::with_capacity(label.properties.len());
             for property in &label.properties {
                 let property_type = self.build_column_type(type_factory, &property.ty)?;
@@ -2079,19 +2222,36 @@ impl Module {
             self.register_graph_label(graph, label_ptr)?;
             label_ptrs.push(label_ptr);
         }
+        Ok((label_ptrs, definition_ptrs))
+    }
 
-        let node_ptr = self.new_graph_node_table(
-            &node.name,
-            graph_name,
-            input.ptr(),
-            &node.key_columns,
-            &label_ptrs,
-            &definition_ptrs,
-        )?;
-        self.register_graph_node_table(graph, node_ptr)?;
-
-        handles.push(input);
-        Ok(())
+    /// Builds a `SimpleGraphNodeTableReference` pinning an edge endpoint to the
+    /// node table named by `reference`, matching the edge's columns against the
+    /// node's. The returned raw handle is transferred into an edge table.
+    fn new_graph_node_reference(
+        &mut self,
+        reference: &GraphNodeReferenceDef,
+        node_ptrs: &[(&str, u64)],
+    ) -> Result<u64, Error> {
+        let node_table = node_ptrs
+            .iter()
+            .find(|(name, _)| *name == reference.node_table)
+            .map(|(_, ptr)| *ptr)
+            .ok_or_else(|| {
+                Error::Protocol(format!(
+                    "edge references unknown node table {}",
+                    reference.node_table
+                ))
+            })?;
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, node_table);
+        append_column_indices(&mut req, 2, &reference.edge_columns)?;
+        append_column_indices(&mut req, 3, &reference.node_columns)?;
+        self.new_handle(
+            SVC_GRAPH_NODE_TABLE_REFERENCE,
+            MID_NEW_GRAPH_NODE_TABLE_REFERENCE,
+            &req,
+        )
     }
 
     /// Builds a standalone `SimpleTable` named `name` with `columns` to back a
@@ -2153,9 +2313,9 @@ impl Module {
     }
 
     /// Builds a `SimpleGraphPropertyDefinition` binding `declaration` to the SQL
-    /// expression `value_sql`, evaluated over the node table's input columns. The
-    /// returned raw handle is transferred into a node table's property
-    /// definitions.
+    /// expression `value_sql`, evaluated over the element (node or edge) table's
+    /// input columns. The returned raw handle is transferred into an element
+    /// table's property definitions.
     fn new_graph_property_definition(
         &mut self,
         declaration: u64,
@@ -2215,12 +2375,7 @@ impl Module {
         pb::append_string(&mut req, 1, name);
         pb::append_string(&mut req, 2, graph_name); // single-element graph name path
         pb::append_handle(&mut req, 3, input);
-        for &key in key_columns {
-            let index = i32::try_from(key).map_err(|_| {
-                Error::Protocol("graph node table key column index out of range".into())
-            })?;
-            pb::append_int32(&mut req, 4, index);
-        }
+        append_column_indices(&mut req, 4, key_columns)?;
         for &label in labels {
             pb::append_handle(&mut req, 5, label);
         }
@@ -2237,6 +2392,53 @@ impl Module {
         pb::append_handle(&mut req, 1, graph);
         pb::append_handle(&mut req, 2, node_table);
         let resp = self.invoke(SVC_SIMPLE_PROPERTY_GRAPH, MID_ADD_GRAPH_NODE_TABLE, &req)?;
+        check_error(&resp)
+    }
+
+    /// Builds a `SimpleGraphEdgeTable` over the `input` table, keyed by
+    /// `key_columns`, exposing `labels`, defining `definitions`, and connecting
+    /// `source` to `destination` (both `SimpleGraphNodeTableReference` handles,
+    /// transferred into the edge table). The returned raw handle is transferred
+    /// into the graph by
+    /// [`register_graph_edge_table`](Self::register_graph_edge_table).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the SimpleGraphEdgeTable constructor's fields directly"
+    )]
+    fn new_graph_edge_table(
+        &mut self,
+        name: &str,
+        graph_name: &str,
+        input: u64,
+        key_columns: &[u32],
+        labels: &[u64],
+        definitions: &[u64],
+        source: u64,
+        destination: u64,
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_string(&mut req, 2, graph_name); // single-element graph name path
+        pb::append_handle(&mut req, 3, input);
+        append_column_indices(&mut req, 4, key_columns)?;
+        for &label in labels {
+            pb::append_handle(&mut req, 5, label);
+        }
+        for &definition in definitions {
+            pb::append_handle(&mut req, 6, definition);
+        }
+        pb::append_handle(&mut req, 7, source);
+        pb::append_handle(&mut req, 8, destination);
+        // Fields 9 (dynamic label) and 10 (dynamic properties) are left absent.
+        self.new_handle(SVC_GRAPH_EDGE_TABLE, MID_NEW_GRAPH_EDGE_TABLE, &req)
+    }
+
+    /// Adds `edge_table` to `graph` (`AddEdgeTable`, transferring ownership).
+    fn register_graph_edge_table(&mut self, graph: u64, edge_table: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, graph);
+        pb::append_handle(&mut req, 2, edge_table);
+        let resp = self.invoke(SVC_SIMPLE_PROPERTY_GRAPH, MID_ADD_GRAPH_EDGE_TABLE, &req)?;
         check_error(&resp)
     }
 

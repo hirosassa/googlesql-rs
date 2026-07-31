@@ -10,9 +10,10 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, Error,
-    FunctionDef, FunctionKind, GraphLabelDef, GraphNodeTableDef, GraphPropertyDef, LanguageFeature,
-    Module, NamedCatalog, NamedType, ProcedureDef, PropertyGraphDef, QueryParameter, StatementKind,
-    StructField, TableDef, TvfArgument, TvfDef,
+    FunctionDef, FunctionKind, GraphEdgeTableDef, GraphLabelDef, GraphNodeReferenceDef,
+    GraphNodeTableDef, GraphPropertyDef, LanguageFeature, Module, NamedCatalog, NamedType,
+    ProcedureDef, PropertyGraphDef, QueryParameter, StatementKind, StructField, TableDef,
+    TvfArgument, TvfDef,
 };
 
 #[test]
@@ -1649,6 +1650,7 @@ fn resolves_a_graph_query_over_a_property_graph() {
                     ],
                 }],
             }],
+            edge_tables: vec![],
         }],
         ..Catalog::default()
     };
@@ -1690,6 +1692,7 @@ fn rejects_a_graph_query_against_an_unknown_label() {
                     }],
                 }],
             }],
+            edge_tables: vec![],
         }],
         ..Catalog::default()
     };
@@ -1699,5 +1702,144 @@ fn rejects_a_graph_query_against_an_unknown_label() {
     assert!(
         matches!(result, Err(Error::GoogleSql(_))),
         "expected an unknown-label error, got: {result:?}"
+    );
+}
+
+#[test]
+fn resolves_a_graph_query_over_edges() {
+    let mut module = Module::new().unwrap();
+
+    // A graph with a "Person" node table and a "Knows" edge table connecting one
+    // person to another. A path pattern `(a:Person)-[e:Knows]->(b:Person)` then
+    // resolves, proving the edge table and its source/destination node
+    // references are wired into the graph.
+    let catalog = Catalog {
+        property_graphs: vec![PropertyGraphDef {
+            name: "social".to_string(),
+            node_tables: vec![GraphNodeTableDef {
+                name: "Person".to_string(),
+                columns: vec![
+                    ColumnDef {
+                        name: "id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                    ColumnDef {
+                        name: "name".to_string(),
+                        ty: ColumnType::String,
+                    },
+                ],
+                key_columns: vec![0],
+                labels: vec![GraphLabelDef {
+                    name: "Person".to_string(),
+                    properties: vec![GraphPropertyDef {
+                        name: "name".to_string(),
+                        ty: ColumnType::String,
+                        value_sql: "name".to_string(),
+                    }],
+                }],
+            }],
+            edge_tables: vec![GraphEdgeTableDef {
+                name: "Knows".to_string(),
+                columns: vec![
+                    ColumnDef {
+                        name: "from_id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                    ColumnDef {
+                        name: "to_id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                ],
+                key_columns: vec![0, 1],
+                labels: vec![GraphLabelDef {
+                    name: "Knows".to_string(),
+                    properties: vec![],
+                }],
+                source: GraphNodeReferenceDef {
+                    node_table: "Person".to_string(),
+                    edge_columns: vec![0],
+                    node_columns: vec![0],
+                },
+                destination: GraphNodeReferenceDef {
+                    node_table: "Person".to_string(),
+                    edge_columns: vec![1],
+                    node_columns: vec![0],
+                },
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in(
+            "GRAPH social MATCH (a:Person)-[e:Knows]->(b:Person) RETURN a.name AS name",
+            &catalog,
+        )
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "STRING");
+}
+
+#[test]
+fn rejects_an_edge_referencing_an_unknown_node_table() {
+    let mut module = Module::new().unwrap();
+
+    // The edge's source references a node table "Ghost" that the graph never
+    // declares, so building the graph fails before analysis.
+    let catalog = Catalog {
+        property_graphs: vec![PropertyGraphDef {
+            name: "social".to_string(),
+            node_tables: vec![GraphNodeTableDef {
+                name: "Person".to_string(),
+                columns: vec![ColumnDef {
+                    name: "id".to_string(),
+                    ty: ColumnType::Int64,
+                }],
+                key_columns: vec![0],
+                labels: vec![GraphLabelDef {
+                    name: "Person".to_string(),
+                    properties: vec![],
+                }],
+            }],
+            edge_tables: vec![GraphEdgeTableDef {
+                name: "Knows".to_string(),
+                columns: vec![
+                    ColumnDef {
+                        name: "from_id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                    ColumnDef {
+                        name: "to_id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                ],
+                key_columns: vec![0, 1],
+                labels: vec![GraphLabelDef {
+                    name: "Knows".to_string(),
+                    properties: vec![],
+                }],
+                source: GraphNodeReferenceDef {
+                    node_table: "Ghost".to_string(),
+                    edge_columns: vec![0],
+                    node_columns: vec![0],
+                },
+                destination: GraphNodeReferenceDef {
+                    node_table: "Person".to_string(),
+                    edge_columns: vec![1],
+                    node_columns: vec![0],
+                },
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in(
+        "GRAPH social MATCH (a:Person)-[e:Knows]->(b:Person) RETURN 1 AS x",
+        &catalog,
+    );
+    assert!(
+        matches!(result, Err(Error::Protocol(_))),
+        "expected an unknown-node-table error, got: {result:?}"
     );
 }
