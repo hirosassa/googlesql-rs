@@ -26,6 +26,7 @@ const SVC_ANALYZER_OPTIONS: i32 = 554;
 const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
 const MID_SET_PRUNE_UNUSED_COLUMNS: i32 = 80;
 const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
+const MID_ADD_QUERY_PARAMETER: i32 = 4;
 const MID_SET_PARSE_LOCATION_RECORD_TYPE: i32 = 77;
 const MID_SET_LANGUAGE: i32 = 74;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
@@ -278,13 +279,30 @@ pub enum ConstantValue {
     String(String),
 }
 
-/// The user-defined catalog entries made visible to the analyzer.
+/// A typed query parameter declared for the analysis.
 ///
-/// Bundles the [`tables`](Self::tables), [`functions`](Self::functions), and
-/// [`constants`](Self::constants) a query may reference, passed to the `*_in`
-/// analysis entry points. The table-only entry points (e.g.
-/// [`Module::analyze_output_columns`]) are equivalent to a `Catalog` with no
-/// functions or constants.
+/// Declaring `@id` as `INT64` lets `SELECT @id` resolve to a known type and
+/// type-checks every use of the parameter against it. Without any declaration a
+/// `@param` still resolves (its type is inferred from context).
+///
+/// Declaring any parameter switches the analysis to strict mode: every other
+/// `@param` in the query must then be declared too, or analysis fails. So either
+/// declare no parameters (all inferred) or declare all of them.
+#[derive(Debug, Clone)]
+pub struct QueryParameter {
+    /// The parameter name, without the leading `@`.
+    pub name: String,
+    /// The parameter's type.
+    pub ty: ColumnType,
+}
+
+/// The declarations made visible to the analyzer for a query.
+///
+/// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
+/// [`constants`](Self::constants), and [`parameters`](Self::parameters) a query
+/// may reference, passed to the `*_in` analysis entry points. The table-only
+/// entry points (e.g. [`Module::analyze_output_columns`]) are equivalent to a
+/// `Catalog` with only tables.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     /// User-defined tables.
@@ -293,6 +311,8 @@ pub struct Catalog {
     pub functions: Vec<FunctionDef>,
     /// User-defined named constants.
     pub constants: Vec<ConstantDef>,
+    /// Typed query parameters (`@name`).
+    pub parameters: Vec<QueryParameter>,
 }
 
 /// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
@@ -315,25 +335,28 @@ struct CatalogContents<'a> {
     tables: &'a [TableDef],
     functions: &'a [FunctionDef],
     constants: &'a [ConstantDef],
+    parameters: &'a [QueryParameter],
 }
 
 impl<'a> CatalogContents<'a> {
-    /// Only tables, no user-defined functions or constants (the table-only entry
+    /// Only tables, no functions, constants, or parameters (the table-only entry
     /// points).
     const fn tables_only(tables: &'a [TableDef]) -> Self {
         Self {
             tables,
             functions: &[],
             constants: &[],
+            parameters: &[],
         }
     }
 
-    /// The tables, functions, and constants declared by a [`Catalog`].
+    /// The tables, functions, constants, and parameters declared by a [`Catalog`].
     const fn of(catalog: &'a Catalog) -> Self {
         Self {
             tables: catalog.tables.as_slice(),
             functions: catalog.functions.as_slice(),
             constants: catalog.constants.as_slice(),
+            parameters: catalog.parameters.as_slice(),
         }
     }
 }
@@ -536,7 +559,11 @@ impl Module {
                 SVC_ANALYZER_OPTIONS,
                 MID_FREE_ANALYZER_OPTIONS,
             )?;
-            module.configure_options(options.ptr(), opts)?;
+            // Declared parameters switch on strict parameter mode (undeclared
+            // parameters rejected, declared ones type-checked); with none
+            // declared, undeclared parameters stay allowed so a bare `@param`
+            // resolves with an inferred type.
+            module.configure_options(options.ptr(), opts, catalog.parameters.is_empty())?;
             // Enable the maximum language feature set so gated syntax such as the
             // `QUALIFY` clause resolves.
             let language = module.max_language_options()?;
@@ -545,14 +572,24 @@ impl Module {
         })
     }
 
-    /// Applies analysis options. Always accepts undeclared query parameters, so a
+    /// Applies analysis options. When `allow_undeclared_parameters` is set, a
     /// statement using `@param` resolves (with the parameter's type inferred from
     /// context) instead of erroring; this leaves parameter-free statements
-    /// unaffected. Enables column pruning when requested so table scans expose
-    /// only referenced columns, and parse-location recording so resolved nodes
-    /// carry their source byte range.
-    fn configure_options(&mut self, options: u64, opts: AnalysisOptions) -> Result<(), Error> {
-        self.set_options_bool(options, MID_SET_ALLOW_UNDECLARED_PARAMETERS, true)?;
+    /// unaffected. It is cleared when the caller declares typed parameters, which
+    /// are mutually exclusive with undeclared ones in GoogleSQL. Enables column
+    /// pruning when requested so table scans expose only referenced columns, and
+    /// parse-location recording so resolved nodes carry their source byte range.
+    fn configure_options(
+        &mut self,
+        options: u64,
+        opts: AnalysisOptions,
+        allow_undeclared_parameters: bool,
+    ) -> Result<(), Error> {
+        self.set_options_bool(
+            options,
+            MID_SET_ALLOW_UNDECLARED_PARAMETERS,
+            allow_undeclared_parameters,
+        )?;
         if opts.prune_columns {
             self.set_options_bool(options, MID_SET_PRUNE_UNUSED_COLUMNS, true)?;
         }
@@ -657,6 +694,7 @@ impl Module {
         let _table_handles = self.add_tables(catalog, type_factory, contents.tables)?;
         let _function_handles = self.add_functions(catalog, type_factory, contents.functions)?;
         let _constant_handles = self.add_constants(catalog, contents.constants)?;
+        self.add_query_parameters(options, type_factory, contents.parameters)?;
         self.analyze(sql, options, catalog, type_factory, extract)
     }
 
@@ -1002,6 +1040,37 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         pb::append_handle(&mut req, 3, constant);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_CONSTANT_NAMED, &req)?;
+        check_error(&resp)
+    }
+
+    /// Declares each typed query parameter on the `AnalyzerOptions`. The parameter
+    /// types are owned by `type_factory` (which outlives the analysis), so no
+    /// handles need to be retained here.
+    fn add_query_parameters(
+        &mut self,
+        options: u64,
+        type_factory: u64,
+        parameters: &[QueryParameter],
+    ) -> Result<(), Error> {
+        for parameter in parameters {
+            let type_handle = self.build_column_type(type_factory, &parameter.ty)?;
+            self.add_query_parameter(options, &parameter.name, type_handle)?;
+        }
+        Ok(())
+    }
+
+    /// Declares a single named query parameter of type `type_handle` on `options`.
+    fn add_query_parameter(
+        &mut self,
+        options: u64,
+        name: &str,
+        type_handle: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, options);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, type_handle);
+        let resp = self.invoke(SVC_ANALYZER_OPTIONS, MID_ADD_QUERY_PARAMETER, &req)?;
         check_error(&resp)
     }
 
