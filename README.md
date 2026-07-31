@@ -218,14 +218,40 @@ cargo run --example error_location
 
 ## Status
 
-- ✅ SQL statement parsing and normalization (`parse_statement` → `canonical_sql`)
-- ✅ Typed access to AST nodes (type name, byte range, child traversal)
-- ✅ SQL formatting (`format_sql`)
-- ✅ Analyzer (`analyze_statement`) — statement validation via type inference and name resolution, with builtin functions/operators registered
-- ✅ Analyzer: user-defined tables in the catalog (`TableDef`, `analyze_statement_with_catalog`)
-- ✅ Analyzer: resolved query output schema (`analyze_output_columns` → `OutputColumn`)
-- ✅ Analyzer: table and column lineage (`referenced_tables` → `TableRef`)
-- ✅ Analyzer: typed access to the resolved AST (`resolved_tree` → `ResolvedNode`: kind, resolved type, column references, literal values, function/table names, cast types, parameters, aggregates, join/set-operation kinds, CTE names, and more)
+**Parser**
+
+- ✅ Parse a statement and normalize it (`parse_statement` → `canonical_sql`)
+- ✅ Parse whole scripts (`parse_script`) and iterate their statements (`parse_script_statements`)
+- ✅ Parse a bare expression (`parse_expression`) or a type declaration (`parse_type`)
+- ✅ Typed access to AST nodes (kind, byte range, child traversal), plus semantic accessors: identifier name, binary/unary operator, and literal value
+
+**Formatter**
+
+- ✅ Pretty-print a statement into GoogleSQL's canonical layout (`format_sql`)
+
+**Analyzer**
+
+- ✅ Validate a statement via type inference and name resolution (`analyze_statement`), with builtin functions/operators registered
+- ✅ Analyze DML, DDL, and script statements — not only queries
+- ✅ Analyze a standalone expression and report its inferred type (`analyze_expression`), optionally against named in-scope columns
+- ✅ Resolve a type name to its canonical `Type` (`AnalyzeType`)
+- ✅ Options: restrict analysis to selected statement kinds, toggle language features, declare typed / infer positional query parameters, and select the product mode (internal ZetaSQL vs. external / BigQuery)
+
+**Analyzer catalog** (`TableDef` and friends)
+
+- ✅ User-defined tables, including `ARRAY` / `STRUCT` / `RANGE` / `MAP` columns and nested sub-catalog namespaces
+- ✅ User-defined functions, aggregate functions, table-valued functions, procedures, and named constants
+- ✅ User-defined named types, enum types, and proto message types
+- ✅ External connections and property graphs (with edge tables)
+
+**Analyzer outputs**
+
+- ✅ Resolved query output schema (`analyze_output_columns` → `OutputColumn`)
+- ✅ Table and column lineage (`referenced_tables` → `TableRef`)
+- ✅ Fully typed resolved AST (`resolved_tree` → `ResolvedNode`): kind, resolved type, column references, literal values (scalar and composite `ARRAY` / `STRUCT` / `RANGE` / `JSON`), function/table names, cast types, parameters, aggregates, join/set-operation kinds, CTE names, DML/DDL structure, and more
+
+**Errors**
+
 - ✅ Structured error locations (`SqlError::location` → `ErrorLocation`: line and column of a GoogleSQL error)
 
 ## Building
