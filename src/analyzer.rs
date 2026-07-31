@@ -35,6 +35,7 @@ const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
 const MID_SET_PRUNE_UNUSED_COLUMNS: i32 = 80;
 const MID_SET_ALLOW_UNDECLARED_PARAMETERS: i32 = 57;
 const MID_ADD_QUERY_PARAMETER: i32 = 4;
+const MID_ADD_EXPRESSION_COLUMN: i32 = 2;
 const MID_SET_PARSE_LOCATION_RECORD_TYPE: i32 = 77;
 const MID_SET_LANGUAGE: i32 = 74;
 const MID_SET_PARAMETER_MODE: i32 = 76;
@@ -805,6 +806,16 @@ pub struct Catalog {
     /// User-defined property graphs, resolvable by a graph query (e.g.
     /// `GRAPH people MATCH (n:Person) RETURN n.name`).
     pub property_graphs: Vec<PropertyGraphDef>,
+    /// Named columns made resolvable by name in the analyzed SQL, without
+    /// belonging to any table.
+    ///
+    /// Each entry adds a column that an expression or statement may reference by
+    /// its bare name (e.g. an `enabled` [`ColumnType::Bool`] column lets
+    /// [`Module::analyze_expression_in`] resolve `NOT enabled`). This models the
+    /// row an expression is evaluated against, such as a generated column,
+    /// `CHECK` constraint, or computed default. Like [`parameters`](Self::parameters),
+    /// they are an analysis-wide setting honored only on the top-level catalog.
+    pub expression_columns: Vec<ColumnDef>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -911,6 +922,7 @@ struct CatalogContents<'a> {
     enums: &'a [EnumDef],
     proto_files: &'a [Vec<u8>],
     property_graphs: &'a [PropertyGraphDef],
+    expression_columns: &'a [ColumnDef],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -930,6 +942,27 @@ impl<'a> CatalogContents<'a> {
             enums: &[],
             proto_files: &[],
             property_graphs: &[],
+            expression_columns: &[],
+        }
+    }
+
+    /// Only in-scope expression columns, no tables or other declarations (the
+    /// [`Module::analyze_expression_with_columns`] entry point).
+    const fn expression_columns_only(expression_columns: &'a [ColumnDef]) -> Self {
+        Self {
+            tables: &[],
+            functions: &[],
+            constants: &[],
+            parameters: &[],
+            table_functions: &[],
+            catalogs: &[],
+            procedures: &[],
+            connections: &[],
+            types: &[],
+            enums: &[],
+            proto_files: &[],
+            property_graphs: &[],
+            expression_columns,
         }
     }
 
@@ -948,6 +981,7 @@ impl<'a> CatalogContents<'a> {
             enums: catalog.enums.as_slice(),
             proto_files: catalog.proto_files.as_slice(),
             property_graphs: catalog.property_graphs.as_slice(),
+            expression_columns: catalog.expression_columns.as_slice(),
         }
     }
 }
@@ -1111,6 +1145,33 @@ impl Module {
         self.run_analysis(
             sql,
             CatalogContents::tables_only(tables),
+            AnalysisOptions {
+                target: AnalysisTarget::Expression,
+                ..AnalysisOptions::default()
+            },
+            Self::expression_type,
+        )
+    }
+
+    /// Analyzes a standalone scalar expression that may reference `columns` by
+    /// name, and returns its inferred type.
+    ///
+    /// Unlike [`Module::analyze_expression`], each [`ColumnDef`] in `columns` is
+    /// an in-scope expression column the expression may reference by its bare name
+    /// (e.g. `a + b` over two `INT64` columns resolves to `INT64`), modeling the
+    /// row an expression is evaluated against — a generated column, `CHECK`
+    /// constraint, or computed default. The builtin functions and operators are
+    /// still in scope; only catalog tables, constants, and functions are not (use
+    /// [`Module::analyze_expression_in`] with [`Catalog::expression_columns`] for
+    /// those). Returns [`Error::GoogleSql`] on a syntax error or unresolved name.
+    pub fn analyze_expression_with_columns(
+        &mut self,
+        sql: &str,
+        columns: &[ColumnDef],
+    ) -> Result<String, Error> {
+        self.run_analysis(
+            sql,
+            CatalogContents::expression_columns_only(columns),
             AnalysisOptions {
                 target: AnalysisTarget::Expression,
                 ..AnalysisOptions::default()
@@ -1623,6 +1684,9 @@ impl Module {
         // Query parameters are an analysis-wide `AnalyzerOptions` setting rather
         // than a catalog declaration, so only the top-level contents supply them.
         self.add_query_parameters(call.options, type_factory, contents.parameters)?;
+        // Expression columns are the same kind of analysis-wide `AnalyzerOptions`
+        // setting as parameters, so only the top-level contents supply them.
+        self.add_expression_columns(call.options, type_factory, contents.expression_columns)?;
         let result = terminal(self, sql, call, catalog, type_factory);
         drop(handles);
         result
@@ -3016,6 +3080,39 @@ impl Module {
             self.add_query_parameter(options, &parameter.name, type_handle)?;
         }
         Ok(())
+    }
+
+    /// Declares each named expression column on the `AnalyzerOptions`, making it
+    /// resolvable by its bare name in the analyzed SQL. The column types are owned
+    /// by `type_factory` (which outlives the analysis), so no handles need to be
+    /// retained here.
+    fn add_expression_columns(
+        &mut self,
+        options: u64,
+        type_factory: u64,
+        columns: &[ColumnDef],
+    ) -> Result<(), Error> {
+        for column in columns {
+            let type_handle = self.build_column_type(type_factory, &column.ty)?;
+            self.add_expression_column(options, &column.name, type_handle)?;
+        }
+        Ok(())
+    }
+
+    /// Declares a single expression column named `name` of type `type_handle` on
+    /// `options`.
+    fn add_expression_column(
+        &mut self,
+        options: u64,
+        name: &str,
+        type_handle: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, options);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, type_handle);
+        let resp = self.invoke(SVC_ANALYZER_OPTIONS, MID_ADD_EXPRESSION_COLUMN, &req)?;
+        check_error(&resp)
     }
 
     /// Declares a single named query parameter of type `type_handle` on `options`.
