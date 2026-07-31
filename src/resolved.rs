@@ -39,6 +39,7 @@ const KIND_GET_STRUCT_FIELD: &str = "ResolvedGetStructField";
 const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
 const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
 const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
+const KIND_COLUMN_DEFINITION: &str = "ResolvedColumnDefinition";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -121,6 +122,11 @@ const MID_AGGREGATE_LIST: i32 = 15;
 /// `ResolvedComputedColumn`: `Column` is the `ResolvedColumn` it defines.
 const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 853;
 const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
+
+/// `ResolvedColumnDefinition`: `Name` is the declared column name (the `a` in
+/// `CREATE TABLE t (a INT64)`), returned as a string.
+const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 844;
+const MID_COLUMN_DEFINITION_NAME: i32 = 14;
 
 /// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
 /// (each a literal or parameter, or a null handle when the clause is absent).
@@ -483,6 +489,7 @@ pub struct ResolvedNode {
     is_outer: Option<bool>,
     project_columns: Option<Vec<String>>,
     computed_column_name: Option<String>,
+    column_definition_name: Option<String>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -705,6 +712,14 @@ impl ResolvedNode {
     /// result; this is that column's name.
     pub fn computed_column_name(&self) -> Option<&str> {
         self.computed_column_name.as_deref()
+    }
+
+    /// The name of the column this node declares (the `a` in
+    /// `CREATE TABLE t (a INT64)`), or `None` if it is not a
+    /// `ResolvedColumnDefinition`. A `CREATE TABLE` statement carries one such
+    /// node per declared column.
+    pub fn column_definition_name(&self) -> Option<&str> {
+        self.column_definition_name.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -976,6 +991,15 @@ impl Module {
         } else {
             None
         };
+        let column_definition_name = if kind == KIND_COLUMN_DEFINITION {
+            Some(self.rpc_string(
+                SVC_RESOLVED_COLUMN_DEFINITION,
+                MID_COLUMN_DEFINITION_NAME,
+                node,
+            )?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -1026,6 +1050,7 @@ impl Module {
             is_outer,
             project_columns,
             computed_column_name,
+            column_definition_name,
             parse_location,
             children,
         })
