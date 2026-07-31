@@ -1186,3 +1186,47 @@ fn analyzes_a_query_against_a_two_level_nested_catalog() {
         "expected the two-level qualified table to resolve, got: {result:?}"
     );
 }
+
+#[test]
+fn resolves_a_range_column() {
+    let mut module = Module::new().unwrap();
+
+    // A RANGE<DATE> column: the element type (DATE) is built first, then wrapped
+    // in a range type, and the resolved output column's type name proves the
+    // round-trip end to end.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "span".to_string(),
+            ty: ColumnType::Range(Box::new(ColumnType::Date)),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT span FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "RANGE<DATE>");
+}
+
+#[test]
+fn rejects_a_range_of_an_unsupported_element_type() {
+    let mut module = Module::new().unwrap();
+
+    // GoogleSQL only allows RANGE over DATE, DATETIME, or TIMESTAMP, so a
+    // RANGE<INT64> is rejected when the type is built.
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "span".to_string(),
+            ty: ColumnType::Range(Box::new(ColumnType::Int64)),
+        }],
+    };
+
+    let result = module.analyze_output_columns("SELECT span FROM t", &[table]);
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected RANGE<INT64> to be rejected, got: {result:?}"
+    );
+}

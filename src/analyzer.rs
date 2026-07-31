@@ -54,6 +54,7 @@ const MID_GET_TIME: i32 = 55;
 const MID_GET_TIMESTAMP: i32 = 56;
 const MID_MAKE_ARRAY_TYPE: i32 = 13;
 const MID_MAKE_STRUCT_TYPE: i32 = 33;
+const MID_MAKE_RANGE_TYPE: i32 = 26;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -198,6 +199,10 @@ pub enum ColumnType {
     Array(Box<Self>),
     /// A struct with named, typed fields (`STRUCT<name T, ...>`), in order.
     Struct(Vec<StructField>),
+    /// A contiguous range over an ordered element type (`RANGE<T>`). GoogleSQL
+    /// allows only `DATE`, `DATETIME`, or `TIMESTAMP` elements; any other element
+    /// is rejected during analysis.
+    Range(Box<Self>),
 }
 
 /// A named field of a [`ColumnType::Struct`].
@@ -228,7 +233,7 @@ impl ColumnType {
             Self::Json => MID_GET_JSON,
             Self::Interval => MID_GET_INTERVAL,
             Self::Geography => MID_GET_GEOGRAPHY,
-            Self::Array(_) | Self::Struct(_) => return None,
+            Self::Array(_) | Self::Struct(_) | Self::Range(_) => return None,
         })
     }
 }
@@ -1104,6 +1109,10 @@ impl Module {
                 self.make_array_type(type_factory, element_type)
             }
             ColumnType::Struct(fields) => self.make_struct_type(type_factory, fields),
+            ColumnType::Range(element) => {
+                let element_type = self.build_column_type(type_factory, element)?;
+                self.make_range_type(type_factory, element_type)
+            }
             scalar => {
                 let mid = scalar.scalar_type_factory_mid().ok_or_else(|| {
                     Error::Protocol("column type has no type factory getter".into())
@@ -1124,6 +1133,22 @@ impl Module {
         let ptr = pb::read_handle_at_field(&resp, 2);
         if ptr == 0 {
             return Err(Error::Protocol("MakeArrayType returned null".into()));
+        }
+        Ok(ptr)
+    }
+
+    /// Wraps `element` in a `RANGE<...>` type via `TypeFactory::MakeRangeType`.
+    /// GoogleSQL allows only `DATE`/`DATETIME`/`TIMESTAMP` elements; any other
+    /// surfaces as [`Error::GoogleSql`].
+    fn make_range_type(&mut self, type_factory: u64, element: u64) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        pb::append_handle(&mut req, 2, element);
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_RANGE_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 2);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeRangeType returned null".into()));
         }
         Ok(ptr)
     }
