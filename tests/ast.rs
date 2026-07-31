@@ -144,3 +144,46 @@ fn unary_expression_node_exposes_its_operator() {
     let parsed = module.parse_expression("a + b").unwrap();
     assert_eq!(parsed.root().unary_operator(), None);
 }
+
+#[test]
+fn literal_nodes_expose_their_typed_values() {
+    use googlesql::Literal;
+    let mut module = Module::new().unwrap();
+
+    // A string literal is decoded: quotes stripped and escapes resolved, so the
+    // value differs from the raw source text `'a\tb'`.
+    let parsed = module.parse_expression(r"'a\tb'").unwrap();
+    assert_eq!(
+        parsed.root().literal(),
+        Some(&Literal::String("a\tb".to_string()))
+    );
+
+    // Integer and float literals expose their source image.
+    let parsed = module.parse_expression("42").unwrap();
+    assert_eq!(
+        parsed.root().literal(),
+        Some(&Literal::Int("42".to_string()))
+    );
+    let parsed = module.parse_expression("3.5").unwrap();
+    assert_eq!(
+        parsed.root().literal(),
+        Some(&Literal::Float("3.5".to_string()))
+    );
+
+    // Boolean and NULL literals.
+    let parsed = module.parse_expression("TRUE").unwrap();
+    assert_eq!(parsed.root().literal(), Some(&Literal::Bool(true)));
+    let parsed = module.parse_expression("NULL").unwrap();
+    assert_eq!(parsed.root().literal(), Some(&Literal::Null));
+
+    // A bytes literal decodes to its raw bytes, escapes resolved.
+    let parsed = module.parse_expression(r"b'\x00\xff'").unwrap();
+    assert_eq!(
+        parsed.root().literal(),
+        Some(&Literal::Bytes(vec![0x00, 0xff]))
+    );
+
+    // A non-literal node carries no literal value.
+    let parsed = module.parse_expression("a + b").unwrap();
+    assert_eq!(parsed.root().literal(), None);
+}
