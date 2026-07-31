@@ -60,7 +60,7 @@ mod runtime;
 
 pub use analyzer::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, FunctionDef, FunctionKind,
-    QueryParameter, StatementKind, StructField, TableDef,
+    LanguageFeature, QueryParameter, StatementKind, StructField, TableDef,
 };
 pub use ast::{AstNode, BinaryOp, BinaryOperator, Literal, UnaryOp};
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};

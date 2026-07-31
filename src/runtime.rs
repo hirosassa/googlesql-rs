@@ -28,6 +28,7 @@ const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
 const MID_SET_SUPPORTS_ALL_STATEMENT_KINDS: i32 = 20;
 const MID_ADD_SUPPORTED_STATEMENT_KIND: i32 = 2;
+const MID_DISABLE_LANGUAGE_FEATURE: i32 = 4;
 
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
@@ -104,6 +105,11 @@ pub struct Module {
     /// [`Module::set_supported_statement_kinds`](crate::Module::set_supported_statement_kinds)
     /// and applied when [`Module::max_language_options`] (re)builds its handle.
     supported_statement_kinds: Vec<i32>,
+    /// `LanguageFeature` wire values disabled on top of the maximum feature set,
+    /// or empty to keep every feature (the default). Set by
+    /// [`Module::disable_language_features`](crate::Module::disable_language_features)
+    /// and applied when [`Module::max_language_options`] (re)builds its handle.
+    disabled_language_features: Vec<i32>,
     /// Reusable request-encoding buffer for hot-path RPCs.
     ///
     /// The AST and resolved-tree walks issue thousands of small RPCs, most of
@@ -269,6 +275,7 @@ impl Module {
             export_cache: HashMap::new(),
             cached_language_options: None,
             supported_statement_kinds: Vec::new(),
+            disabled_language_features: Vec::new(),
             scratch: Vec::new(),
             req_scratch_ptr: 0,
             req_scratch_cap: 0,
@@ -399,6 +406,16 @@ impl Module {
                 crate::error::check_error(&resp)?;
             }
         }
+        // Turn off any features the caller disabled on top of the maximum set, so
+        // syntax gated behind them fails to resolve. Clone the small list so the
+        // `&mut self` invoke does not borrow it during iteration.
+        for feature in self.disabled_language_features.clone() {
+            let mut req = Vec::new();
+            pb::append_handle(&mut req, 1, ptr);
+            pb::append_int32(&mut req, 2, feature);
+            let resp = self.invoke(SVC_LANGUAGE_OPTIONS, MID_DISABLE_LANGUAGE_FEATURE, &req)?;
+            crate::error::check_error(&resp)?;
+        }
         self.cached_language_options = Some(ptr);
         Ok(ptr)
     }
@@ -410,6 +427,15 @@ impl Module {
     /// the `Store`, matching the cache's existing no-free policy.
     pub(crate) fn set_supported_statement_kinds_raw(&mut self, kinds: Vec<i32>) {
         self.supported_statement_kinds = kinds;
+        self.cached_language_options = None;
+    }
+
+    /// Disables the given `LanguageFeature` wire values on top of the maximum
+    /// feature set, or restores the full set when `features` is empty. Invalidates
+    /// the cached [`LanguageOptions`](Self::max_language_options) handle so the
+    /// next analysis rebuilds it, matching the no-free policy above.
+    pub(crate) fn set_disabled_language_features_raw(&mut self, features: Vec<i32>) {
+        self.disabled_language_features = features;
         self.cached_language_options = None;
     }
 

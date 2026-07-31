@@ -10,7 +10,7 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    Module, QueryParameter, StatementKind, StructField, TableDef,
+    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef,
 };
 
 #[test]
@@ -745,5 +745,98 @@ fn supported_statement_kinds_can_allow_multiple_kinds() {
     assert!(
         matches!(update, Err(Error::GoogleSql(_))),
         "expected UPDATE to be rejected, got: {update:?}"
+    );
+}
+
+#[test]
+fn disabling_the_qualify_feature_rejects_the_qualify_clause() {
+    let mut module = Module::new().unwrap();
+
+    // QUALIFY is gated behind its own language feature; disabling it makes the
+    // clause fail to resolve even though the maximum feature set is otherwise on.
+    module.disable_language_features(&[LanguageFeature::Qualify]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "b".to_string(),
+                ty: ColumnType::Int64,
+            },
+        ],
+    };
+
+    let qualified = module.analyze_statement_with_catalog(
+        "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY b ORDER BY a) = 1",
+        std::slice::from_ref(&t),
+    );
+    assert!(
+        matches!(qualified, Err(Error::GoogleSql(_))),
+        "expected QUALIFY to be rejected, got: {qualified:?}"
+    );
+
+    // A plain query does not use the disabled feature, so it still resolves.
+    let plain = module.analyze_statement_with_catalog("SELECT a FROM t", std::slice::from_ref(&t));
+    assert!(
+        plain.is_ok(),
+        "expected the plain query to be accepted, got: {plain:?}"
+    );
+}
+
+#[test]
+fn disabling_analytic_functions_rejects_window_functions() {
+    let mut module = Module::new().unwrap();
+
+    module.disable_language_features(&[LanguageFeature::AnalyticFunctions]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "a".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    let windowed =
+        module.analyze_statement_with_catalog("SELECT ROW_NUMBER() OVER (ORDER BY a) FROM t", &[t]);
+    assert!(
+        matches!(windowed, Err(Error::GoogleSql(_))),
+        "expected the window function to be rejected, got: {windowed:?}"
+    );
+}
+
+#[test]
+fn empty_disabled_feature_set_keeps_the_maximum_features() {
+    let mut module = Module::new().unwrap();
+
+    // An empty set disables nothing, so gated syntax such as QUALIFY still
+    // resolves exactly as it does by default.
+    module.disable_language_features(&[]);
+
+    let t = TableDef {
+        name: "t".to_string(),
+        columns: vec![
+            ColumnDef {
+                name: "a".to_string(),
+                ty: ColumnType::Int64,
+            },
+            ColumnDef {
+                name: "b".to_string(),
+                ty: ColumnType::Int64,
+            },
+        ],
+    };
+
+    let result = module.analyze_statement_with_catalog(
+        "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY b ORDER BY a) = 1",
+        &[t],
+    );
+    assert!(
+        result.is_ok(),
+        "expected QUALIFY to be accepted, got: {result:?}"
     );
 }
