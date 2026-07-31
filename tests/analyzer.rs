@@ -12,8 +12,8 @@ use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, Error,
     FunctionDef, FunctionKind, GraphEdgeTableDef, GraphLabelDef, GraphNodeReferenceDef,
     GraphNodeTableDef, GraphPropertyDef, LanguageFeature, Module, NamedCatalog, NamedType,
-    ProcedureDef, PropertyGraphDef, QueryParameter, StatementKind, StructField, TableDef,
-    TvfArgument, TvfDef,
+    ProcedureDef, ProductMode, PropertyGraphDef, QueryParameter, StatementKind, StructField,
+    TableDef, TvfArgument, TvfDef,
 };
 
 #[test]
@@ -1429,9 +1429,9 @@ fn resolves_an_enum_type_in_a_cast() {
         .unwrap();
 
     assert_eq!(columns.len(), 1);
-    // An enum type resolves to its ENUM<name> spelling; casting a string literal
-    // to it also resolves (GoogleSQL defers value validation to runtime).
-    assert_eq!(columns[0].type_name(), "ENUM<Color>");
+    // An enum type resolves to its catalog name; casting a string literal to it
+    // also resolves (GoogleSQL defers value validation to runtime).
+    assert_eq!(columns[0].type_name(), "Color");
     assert!(
         module
             .analyze_statement_in("SELECT CAST('RED' AS Color)", &catalog)
@@ -1479,8 +1479,8 @@ fn resolves_multiple_enum_types() {
         .unwrap();
 
     assert_eq!(columns.len(), 2);
-    assert_eq!(columns[0].type_name(), "ENUM<Color>");
-    assert_eq!(columns[1].type_name(), "ENUM<Size>");
+    assert_eq!(columns[0].type_name(), "Color");
+    assert_eq!(columns[1].type_name(), "Size");
 }
 
 // --- Minimal protobuf wire encoders, just enough to build a FileDescriptorProto
@@ -1560,7 +1560,7 @@ fn resolves_a_proto_typed_column() {
         .unwrap();
 
     assert_eq!(columns.len(), 1);
-    assert_eq!(columns[0].type_name(), "PROTO<Person>");
+    assert_eq!(columns[0].type_name(), "Person");
 }
 
 #[test]
@@ -1584,7 +1584,7 @@ fn resolves_a_proto_type_inside_an_array() {
         .unwrap();
 
     assert_eq!(columns.len(), 1);
-    assert_eq!(columns[0].type_name(), "ARRAY<PROTO<Person>>");
+    assert_eq!(columns[0].type_name(), "ARRAY<Person>");
 }
 
 #[test]
@@ -1974,6 +1974,58 @@ fn analyze_type_in_resolves_a_catalog_named_type() {
     let type_name = module.analyze_type_in("point", &catalog).unwrap();
 
     assert_eq!(type_name, "STRUCT<x DOUBLE, y DOUBLE>");
+}
+
+#[test]
+fn product_mode_defaults_to_internal_type_names() {
+    let mut module = Module::new().unwrap();
+
+    // Internal (the default) renders the 64-bit float type as DOUBLE.
+    assert_eq!(module.analyze_type("FLOAT64", &[]).unwrap(), "DOUBLE");
+}
+
+#[test]
+fn external_product_mode_renders_bigquery_type_names() {
+    let mut module = Module::new().unwrap();
+    module.set_product_mode(ProductMode::External);
+
+    // External (BigQuery) mode renders the same type as FLOAT64.
+    assert_eq!(module.analyze_type("FLOAT64", &[]).unwrap(), "FLOAT64");
+    assert_eq!(
+        module.analyze_type("STRUCT<x FLOAT64>", &[]).unwrap(),
+        "STRUCT<x FLOAT64>"
+    );
+}
+
+#[test]
+fn product_mode_affects_resolved_output_column_type_names() {
+    let mut module = Module::new().unwrap();
+    module.set_product_mode(ProductMode::External);
+
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "c".to_string(),
+            ty: ColumnType::Float64,
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT c FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns[0].type_name(), "FLOAT64");
+}
+
+#[test]
+fn product_mode_can_be_switched_back_to_internal() {
+    let mut module = Module::new().unwrap();
+
+    module.set_product_mode(ProductMode::External);
+    assert_eq!(module.analyze_type("FLOAT64", &[]).unwrap(), "FLOAT64");
+
+    module.set_product_mode(ProductMode::Internal);
+    assert_eq!(module.analyze_type("FLOAT64", &[]).unwrap(), "DOUBLE");
 }
 
 #[test]

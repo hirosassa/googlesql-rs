@@ -10,7 +10,7 @@
 
 use googlesql::{
     ColumnDef, ColumnType, CreateMode, Error, InsertMode, JoinType, LiteralValue, MergeAction,
-    MergeMatch, Module, ResolvedNode, SetOperation, SubqueryKind, TableDef,
+    MergeMatch, Module, ProductMode, ResolvedNode, SetOperation, SubqueryKind, TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -402,6 +402,21 @@ fn literal_nodes_carry_bool_string_and_double_values() {
             .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
         assert_eq!(literal.literal_value(), Some(&expected), "for {sql}");
     }
+}
+
+#[test]
+fn double_literal_value_survives_external_product_mode() {
+    let mut module = Module::new().unwrap();
+    module.set_product_mode(ProductMode::External);
+
+    // In external mode the double type renders as FLOAT64, but literal-value
+    // dispatch keys off the fixed internal spelling, so the value still reads as
+    // a Double rather than falling through to None.
+    let root = module.resolved_tree("SELECT 2.5", &[]).unwrap().unwrap();
+    let literal = find_kind(&root, "ResolvedLiteral").expect("a ResolvedLiteral");
+
+    assert_eq!(literal.type_name(), Some("FLOAT64"));
+    assert_eq!(literal.literal_value(), Some(&LiteralValue::Double(2.5)));
 }
 
 #[test]

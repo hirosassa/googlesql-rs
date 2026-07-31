@@ -50,7 +50,7 @@ const KIND_CREATE_EXTERNAL_TABLE_STMT: &str = "ResolvedCreateExternalTableStmt";
 const KIND_CREATE_FUNCTION_STMT: &str = "ResolvedCreateFunctionStmt";
 const KIND_MERGE_WHEN: &str = "ResolvedMergeWhen";
 
-/// Resolved type names (from `Type::DebugString`) of the scalar literals whose
+/// Resolved type names (from `Type::TypeName`) of the scalar literals whose
 /// values [`LiteralValue`] models.
 const TYPE_INT64: &str = "INT64";
 const TYPE_BOOL: &str = "BOOL";
@@ -142,7 +142,7 @@ const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
 
 /// `ResolvedColumnDefinition`: `Name` is the declared column name (the `a` in
 /// `CREATE TABLE t (a INT64)`), returned as a string; `Type` is the declared
-/// column type, returned as a `Type` handle rendered via `Type::DebugString`.
+/// column type, returned as a `Type` handle rendered via `Type::TypeName`.
 const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 844;
 const MID_COLUMN_DEFINITION_NAME: i32 = 14;
 const MID_COLUMN_DEFINITION_TYPE: i32 = 27;
@@ -324,7 +324,10 @@ const MID_COLUMN_TABLE_NAME: i32 = 11;
 const MID_COLUMN_TYPE: i32 = 13;
 
 const SVC_TYPE: i32 = 1417;
-const MID_TYPE_DEBUG_STRING: i32 = 14;
+const MID_TYPE_NAME: i32 = 81;
+/// `ProductMode::PRODUCT_INTERNAL` (1): the fixed mode for rendering the type
+/// name that literal-value dispatch matches on, independent of display mode.
+const PRODUCT_MODE_INTERNAL: i32 = 1;
 
 /// A column in a query's output schema.
 ///
@@ -1152,7 +1155,7 @@ impl Module {
             None
         };
         let literal_value = if kind == KIND_LITERAL {
-            self.node_literal_value(node, type_name.as_deref())?
+            self.node_literal_value(node)?
         } else {
             None
         };
@@ -1736,8 +1739,7 @@ impl Module {
         if expr == 0 || self.node_kind(expr)? != KIND_LITERAL {
             return Ok(None);
         }
-        let type_name = self.node_type_name(expr)?;
-        match self.node_literal_value(expr, type_name.as_deref())? {
+        match self.node_literal_value(expr)? {
             Some(LiteralValue::Int64(value)) => Ok(Some(value)),
             _ => Ok(None),
         }
@@ -1787,70 +1789,63 @@ impl Module {
 
     /// Reads the constant a `ResolvedLiteral` node carries.
     ///
-    /// The literal is an expression, so `type_name` (its resolved type) is
-    /// already known; it selects which typed `Value` accessor to call. Types
-    /// this crate does not model yield `None` rather than an error.
-    fn node_literal_value(
-        &mut self,
-        node: u64,
-        type_name: Option<&str>,
-    ) -> Result<Option<LiteralValue>, Error> {
+    /// Types this crate does not model yield `None` rather than an error.
+    fn node_literal_value(&mut self, node: u64) -> Result<Option<LiteralValue>, Error> {
         let value = self.rpc_handle(SVC_RESOLVED_LITERAL, MID_LITERAL_VALUE, node)?;
-        self.read_value(value, type_name)
+        self.read_value(value)
     }
 
-    /// Reads a `Value` handle of the given resolved type into a [`LiteralValue`].
+    /// Reads a `Value` handle into a [`LiteralValue`].
     ///
-    /// Scalars dispatch on `type_name` (their debug string matches the type name
-    /// exactly); composites, whose element types are not known statically, route
-    /// on the value's `TypeKind` and recurse into their element values. Types
-    /// this crate does not model yield `None`; a composite yields `None` if any
-    /// element does.
-    fn read_value(
-        &mut self,
-        value: u64,
-        type_name: Option<&str>,
-    ) -> Result<Option<LiteralValue>, Error> {
+    /// The value's type is taken from the value itself and rendered in the fixed
+    /// internal mode, so dispatch is independent of the module's display product
+    /// mode. Scalars dispatch on that name; composites, whose element types are
+    /// not known statically, route on the value's `TypeKind` and recurse into
+    /// their element values. Types this crate does not model yield `None`; a
+    /// composite yields `None` if any element does.
+    fn read_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
         // A NULL value has no readable contents; the typed accessors below trap
         // on the wasm side if called on one, so detect NULL before dispatching.
         if self.value_is_null(value)? {
             return Ok(Some(LiteralValue::Null));
         }
-        let scalar = match type_name {
-            Some(TYPE_INT64) => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
-            Some(TYPE_INT32) => LiteralValue::Int32(self.value_int32(value, MID_VALUE_INT32)?),
-            Some(TYPE_UINT32) => LiteralValue::Uint32(self.value_uint32(value, MID_VALUE_UINT32)?),
-            Some(TYPE_UINT64) => LiteralValue::Uint64(self.value_uint64(value, MID_VALUE_UINT64)?),
-            Some(TYPE_FLOAT) => LiteralValue::Float(self.value_float(value, MID_VALUE_FLOAT)?),
-            Some(TYPE_BOOL) => LiteralValue::Bool(self.value_bool(value, MID_VALUE_BOOL)?),
-            Some(TYPE_STRING) => {
+        let type_handle = self.rpc_handle(SVC_VALUE, MID_VALUE_TYPE, value)?;
+        let type_name = self.dispatch_type_name(type_handle)?;
+        let scalar = match type_name.as_str() {
+            TYPE_INT64 => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
+            TYPE_INT32 => LiteralValue::Int32(self.value_int32(value, MID_VALUE_INT32)?),
+            TYPE_UINT32 => LiteralValue::Uint32(self.value_uint32(value, MID_VALUE_UINT32)?),
+            TYPE_UINT64 => LiteralValue::Uint64(self.value_uint64(value, MID_VALUE_UINT64)?),
+            TYPE_FLOAT => LiteralValue::Float(self.value_float(value, MID_VALUE_FLOAT)?),
+            TYPE_BOOL => LiteralValue::Bool(self.value_bool(value, MID_VALUE_BOOL)?),
+            TYPE_STRING => {
                 LiteralValue::String(self.rpc_string(SVC_VALUE, MID_VALUE_STRING, value)?)
             }
-            Some(TYPE_DOUBLE) => LiteralValue::Double(self.value_double(value, MID_VALUE_DOUBLE)?),
-            Some(TYPE_BYTES) => LiteralValue::Bytes(self.value_bytes(value, MID_VALUE_BYTES)?),
-            Some(TYPE_DATE) => LiteralValue::Date(self.value_int32(value, MID_VALUE_DATE)?),
-            Some(TYPE_TIMESTAMP) => {
+            TYPE_DOUBLE => LiteralValue::Double(self.value_double(value, MID_VALUE_DOUBLE)?),
+            TYPE_BYTES => LiteralValue::Bytes(self.value_bytes(value, MID_VALUE_BYTES)?),
+            TYPE_DATE => LiteralValue::Date(self.value_int32(value, MID_VALUE_DATE)?),
+            TYPE_TIMESTAMP => {
                 LiteralValue::Timestamp(self.value_int64(value, MID_VALUE_TIMESTAMP_MICROS)?)
             }
-            Some(TYPE_NUMERIC) => LiteralValue::Numeric(self.value_child_string(
+            TYPE_NUMERIC => LiteralValue::Numeric(self.value_child_string(
                 value,
                 MID_VALUE_NUMERIC,
                 SVC_NUMERIC_VALUE,
                 MID_NUMERIC_APPEND_TO_STRING,
             )?),
-            Some(TYPE_DATETIME) => LiteralValue::Datetime(self.value_child_string(
+            TYPE_DATETIME => LiteralValue::Datetime(self.value_child_string(
                 value,
                 MID_VALUE_DATETIME,
                 SVC_DATETIME_VALUE,
                 MID_DATETIME_DEBUG_STRING,
             )?),
-            Some(TYPE_TIME) => LiteralValue::Time(self.value_child_string(
+            TYPE_TIME => LiteralValue::Time(self.value_child_string(
                 value,
                 MID_VALUE_TIME,
                 SVC_TIME_VALUE,
                 MID_TIME_DEBUG_STRING,
             )?),
-            Some(TYPE_INTERVAL) => LiteralValue::Interval(self.value_child_string(
+            TYPE_INTERVAL => LiteralValue::Interval(self.value_child_string(
                 value,
                 MID_VALUE_INTERVAL,
                 SVC_INTERVAL_VALUE,
@@ -1879,15 +1874,6 @@ impl Module {
         }
     }
 
-    /// Reads a nested child `Value` whose type is discovered from the value
-    /// itself, then recurses. Used for array elements, struct fields, and range
-    /// bounds, where the element type is not carried by the enclosing node.
-    fn read_child_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
-        let type_handle = self.rpc_handle(SVC_VALUE, MID_VALUE_TYPE, value)?;
-        let type_name = self.type_debug_string(type_handle)?;
-        self.read_value(value, Some(&type_name))
-    }
-
     /// Reads an `ARRAY` value as its element values in order. Yields `None` if
     /// any element is of a type this crate does not model.
     fn read_array_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
@@ -1895,7 +1881,7 @@ impl Module {
         let mut elements = Vec::new();
         for index in 0..count {
             let element = self.value_indexed_child(value, MID_VALUE_ELEMENT, index)?;
-            let Some(literal) = self.read_child_value(element)? else {
+            let Some(literal) = self.read_value(element)? else {
                 return Ok(None);
             };
             elements.push(literal);
@@ -1913,7 +1899,7 @@ impl Module {
         for index in 0..count {
             let name = self.struct_field_name(struct_type, index)?;
             let field = self.value_indexed_child(value, MID_VALUE_FIELD, index)?;
-            let Some(literal) = self.read_child_value(field)? else {
+            let Some(literal) = self.read_value(field)? else {
                 return Ok(None);
             };
             fields.push((name, literal));
@@ -1926,10 +1912,8 @@ impl Module {
     fn read_range_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
         let start_value = self.rpc_handle(SVC_VALUE, MID_VALUE_RANGE_START, value)?;
         let end_value = self.rpc_handle(SVC_VALUE, MID_VALUE_RANGE_END, value)?;
-        let (Some(start), Some(end)) = (
-            self.read_child_value(start_value)?,
-            self.read_child_value(end_value)?,
-        ) else {
+        let (Some(start), Some(end)) = (self.read_value(start_value)?, self.read_value(end_value)?)
+        else {
             return Ok(None);
         };
         Ok(Some(LiteralValue::Range {
@@ -2120,12 +2104,29 @@ impl Module {
         Ok(pb::read_handles_at_field(&resp, 1))
     }
 
-    /// Returns a type handle's human-readable name via `Type::DebugString(false)`.
+    /// Returns a type handle's SQL name in the module's configured product mode
+    /// (e.g. `DOUBLE` in internal mode, `FLOAT64` in external/BigQuery mode). Used
+    /// wherever a type name is surfaced to the caller.
     fn type_debug_string(&mut self, type_handle: u64) -> Result<String, Error> {
+        let mode = self.product_mode();
+        self.render_type_name(type_handle, mode)
+    }
+
+    /// Returns a type handle's SQL name in the fixed internal product mode,
+    /// independent of the module's display mode. Literal-value dispatch matches on
+    /// this so a value's type resolves to the same scalar spelling
+    /// (e.g. `DOUBLE`, `FLOAT`) whether the module renders types internally or
+    /// externally.
+    fn dispatch_type_name(&mut self, type_handle: u64) -> Result<String, Error> {
+        self.render_type_name(type_handle, PRODUCT_MODE_INTERNAL)
+    }
+
+    /// Renders a type handle's SQL name via `Type::TypeName(mode)`.
+    fn render_type_name(&mut self, type_handle: u64, mode: i32) -> Result<String, Error> {
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, type_handle);
-        pb::append_bool(&mut req, 2, false); // details = false: just the type name
-        let resp = self.invoke(SVC_TYPE, MID_TYPE_DEBUG_STRING, &req)?;
+        pb::append_int32(&mut req, 2, mode);
+        let resp = self.invoke(SVC_TYPE, MID_TYPE_NAME, &req)?;
         check_error(&resp)?;
         pb::read_string_at_field(&resp, 1)
             .ok_or_else(|| Error::Protocol("type name not found".into()))
