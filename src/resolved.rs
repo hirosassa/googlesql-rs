@@ -58,6 +58,14 @@ const TYPE_DOUBLE: &str = "DOUBLE";
 const TYPE_BYTES: &str = "BYTES";
 const TYPE_DATE: &str = "DATE";
 const TYPE_TIMESTAMP: &str = "TIMESTAMP";
+const TYPE_INT32: &str = "INT32";
+const TYPE_UINT32: &str = "UINT32";
+const TYPE_UINT64: &str = "UINT64";
+const TYPE_FLOAT: &str = "FLOAT";
+const TYPE_NUMERIC: &str = "NUMERIC";
+const TYPE_DATETIME: &str = "DATETIME";
+const TYPE_TIME: &str = "TIME";
+const TYPE_INTERVAL: &str = "INTERVAL";
 
 /// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
 /// `IsExpression` reports whether a node carries a resolved type.
@@ -232,6 +240,24 @@ const MID_VALUE_BYTES: i32 = 111;
 const MID_VALUE_DATE: i32 = 112;
 const MID_VALUE_TIMESTAMP_MICROS: i32 = 106;
 const MID_VALUE_IS_NULL: i32 = 131;
+const MID_VALUE_INT32: i32 = 127;
+const MID_VALUE_UINT32: i32 = 150;
+const MID_VALUE_UINT64: i32 = 151;
+const MID_VALUE_FLOAT: i32 = 123;
+// The complex scalars expose their value through a child object handle whose
+// own accessor prints the canonical text form.
+const MID_VALUE_NUMERIC: i32 = 141;
+const MID_VALUE_DATETIME: i32 = 113;
+const MID_VALUE_TIME: i32 = 147;
+const MID_VALUE_INTERVAL: i32 = 129;
+const SVC_NUMERIC_VALUE: i32 = 690;
+const MID_NUMERIC_APPEND_TO_STRING: i32 = 12;
+const SVC_DATETIME_VALUE: i32 = 612;
+const MID_DATETIME_DEBUG_STRING: i32 = 9;
+const SVC_TIME_VALUE: i32 = 1414;
+const MID_TIME_DEBUG_STRING: i32 = 9;
+const SVC_INTERVAL_VALUE: i32 = 674;
+const MID_INTERVAL_APPEND_TO_STRING: i32 = 3;
 
 /// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
@@ -359,6 +385,14 @@ impl ColumnReference {
 pub enum LiteralValue {
     /// An `INT64` constant.
     Int64(i64),
+    /// An `INT32` constant.
+    Int32(i32),
+    /// A `UINT32` constant.
+    Uint32(u32),
+    /// A `UINT64` constant.
+    Uint64(u64),
+    /// A `FLOAT` constant (32-bit).
+    Float(f32),
     /// A `BOOL` constant.
     Bool(bool),
     /// A `STRING` constant.
@@ -372,6 +406,19 @@ pub enum LiteralValue {
     /// A `TIMESTAMP` constant, as the number of microseconds since the
     /// 1970-01-01 epoch.
     Timestamp(i64),
+    /// A `NUMERIC` constant, as GoogleSQL's canonical decimal text (e.g. `1.5`).
+    /// Fixed-point NUMERIC has no lossless primitive representation, so its exact
+    /// value is carried as the string form GoogleSQL prints.
+    Numeric(String),
+    /// A `DATETIME` constant, as GoogleSQL's canonical text (e.g.
+    /// `2020-01-02 03:04:05`).
+    Datetime(String),
+    /// A `TIME` constant, as GoogleSQL's canonical text (e.g. `03:04:05`).
+    Time(String),
+    /// An `INTERVAL` constant, as GoogleSQL's canonical text in
+    /// `<years>-<months> <days> <hours>:<minutes>:<seconds>` form (e.g.
+    /// `0-0 1 0:0:0` for one day).
+    Interval(String),
     /// A `NULL` constant. Its resolved type is still available through the
     /// node's [`type_name`](ResolvedNode::type_name) (e.g. `INT64` for
     /// `CAST(NULL AS INT64)`); this variant carries no payload because a `NULL`
@@ -1676,6 +1723,10 @@ impl Module {
         }
         let literal = match type_name {
             Some(TYPE_INT64) => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
+            Some(TYPE_INT32) => LiteralValue::Int32(self.value_int32(value, MID_VALUE_INT32)?),
+            Some(TYPE_UINT32) => LiteralValue::Uint32(self.value_uint32(value, MID_VALUE_UINT32)?),
+            Some(TYPE_UINT64) => LiteralValue::Uint64(self.value_uint64(value, MID_VALUE_UINT64)?),
+            Some(TYPE_FLOAT) => LiteralValue::Float(self.value_float(value, MID_VALUE_FLOAT)?),
             Some(TYPE_BOOL) => LiteralValue::Bool(self.value_bool(value, MID_VALUE_BOOL)?),
             Some(TYPE_STRING) => {
                 LiteralValue::String(self.rpc_string(SVC_VALUE, MID_VALUE_STRING, value)?)
@@ -1686,6 +1737,30 @@ impl Module {
             Some(TYPE_TIMESTAMP) => {
                 LiteralValue::Timestamp(self.value_int64(value, MID_VALUE_TIMESTAMP_MICROS)?)
             }
+            Some(TYPE_NUMERIC) => LiteralValue::Numeric(self.value_child_string(
+                value,
+                MID_VALUE_NUMERIC,
+                SVC_NUMERIC_VALUE,
+                MID_NUMERIC_APPEND_TO_STRING,
+            )?),
+            Some(TYPE_DATETIME) => LiteralValue::Datetime(self.value_child_string(
+                value,
+                MID_VALUE_DATETIME,
+                SVC_DATETIME_VALUE,
+                MID_DATETIME_DEBUG_STRING,
+            )?),
+            Some(TYPE_TIME) => LiteralValue::Time(self.value_child_string(
+                value,
+                MID_VALUE_TIME,
+                SVC_TIME_VALUE,
+                MID_TIME_DEBUG_STRING,
+            )?),
+            Some(TYPE_INTERVAL) => LiteralValue::Interval(self.value_child_string(
+                value,
+                MID_VALUE_INTERVAL,
+                SVC_INTERVAL_VALUE,
+                MID_INTERVAL_APPEND_TO_STRING,
+            )?),
             _ => return Ok(None),
         };
         Ok(Some(literal))
@@ -1745,6 +1820,48 @@ impl Module {
     fn value_int32(&mut self, value: u64, mid: i32) -> Result<i32, Error> {
         let resp = self.value_resp(value, mid)?;
         Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
+    }
+
+    /// Reads a uint32 from a `Value` handle via the given accessor. An absent
+    /// field decodes as `0` for the same proto3 reason as [`value_int64`].
+    fn value_uint32(&mut self, value: u64, mid: i32) -> Result<u32, Error> {
+        let resp = self.value_resp(value, mid)?;
+        Ok(pb::read_uint32_at_field(&resp, 1).unwrap_or(0))
+    }
+
+    /// Reads a uint64 from a `Value` handle via the given accessor. An absent
+    /// field decodes as `0` for the same proto3 reason as [`value_int64`].
+    fn value_uint64(&mut self, value: u64, mid: i32) -> Result<u64, Error> {
+        let resp = self.value_resp(value, mid)?;
+        Ok(pb::read_uint64_at_field(&resp, 1).unwrap_or(0))
+    }
+
+    /// Reads a float from a `Value` handle via the given accessor. An absent
+    /// field decodes as `0.0` for the same proto3 reason as [`value_int64`].
+    fn value_float(&mut self, value: u64, mid: i32) -> Result<f32, Error> {
+        let resp = self.value_resp(value, mid)?;
+        Ok(pb::read_float_at_field(&resp, 1).unwrap_or(0.0))
+    }
+
+    /// Reads a complex scalar's canonical text form.
+    ///
+    /// A `NUMERIC`/`DATETIME`/`TIME`/`INTERVAL` value has no primitive
+    /// representation: its accessor (`value_mid`) hands back a child object
+    /// handle, whose own string accessor (`str_svc`/`str_mid`) prints the
+    /// canonical text. An absent string decodes as empty for the same proto3
+    /// reason as [`value_int64`] — a zero-length canonical form is never emitted
+    /// in practice, but this keeps the reader total.
+    fn value_child_string(
+        &mut self,
+        value: u64,
+        value_mid: i32,
+        str_svc: i32,
+        str_mid: i32,
+    ) -> Result<String, Error> {
+        let child = self.rpc_handle(SVC_VALUE, value_mid, value)?;
+        let resp = self.invoke_handle(str_svc, str_mid, child)?;
+        check_error(&resp)?;
+        Ok(pb::read_string_at_field(&resp, 1).unwrap_or_default())
     }
 
     /// Reads the `ResolvedColumn` a `ResolvedColumnRef` node points at.

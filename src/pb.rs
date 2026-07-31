@@ -269,6 +269,54 @@ pub fn read_int64_at_field(resp: &[u8], field: u32) -> Option<i64> {
     None
 }
 
+/// Reads a uint32 (varint) at the given field number from a response.
+pub fn read_uint32_at_field(resp: &[u8], field: u32) -> Option<u32> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 0 {
+                return read_varint(&mut cur).map(|v| u32::try_from(v & 0xFFFF_FFFF).unwrap_or(0));
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
+/// Reads a uint64 (varint) at the given field number from a response.
+pub fn read_uint64_at_field(resp: &[u8], field: u32) -> Option<u64> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 0 {
+                return read_varint(&mut cur);
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
+/// Reads a float (fixed32) at the given field number from a response.
+///
+/// A proto `float` is a wire-type-5 field: four little-endian IEEE-754 bytes.
+pub fn read_float_at_field(resp: &[u8], field: u32) -> Option<f32> {
+    let mut cur = resp;
+    while let Some((f, w)) = read_tag(&mut cur) {
+        if f == field {
+            if w == 5 {
+                let bytes: [u8; 4] = cur.get(..4)?.try_into().ok()?;
+                return Some(f32::from_le_bytes(bytes));
+            }
+            return None;
+        }
+        skip(&mut cur, w)?;
+    }
+    None
+}
+
 /// Reads a double (fixed64) at the given field number from a response.
 ///
 /// A proto `double` is a wire-type-1 field: eight little-endian IEEE-754 bytes.
@@ -608,6 +656,33 @@ mod tests {
         let mut buf = Vec::new();
         append_uint64(&mut buf, 1, 42);
         assert_eq!(read_string_at_field(&buf, 1), None);
+    }
+
+    #[test]
+    fn uint32_and_uint64_decode_their_full_range() {
+        // Unsigned varints keep their high bit as magnitude, so the type maxima
+        // round-trip rather than reading back as negative.
+        let mut buf = Vec::new();
+        append_uint64(&mut buf, 1, u64::from(u32::MAX));
+        assert_eq!(read_uint32_at_field(&buf, 1), Some(u32::MAX));
+
+        let mut wide = Vec::new();
+        append_uint64(&mut wide, 1, u64::MAX);
+        assert_eq!(read_uint64_at_field(&wide, 1), Some(u64::MAX));
+    }
+
+    #[test]
+    fn float_decodes_a_fixed32_field() {
+        // A proto float is four little-endian IEEE-754 bytes at wire type 5.
+        let mut buf = Vec::new();
+        append_tag(&mut buf, 1, 5);
+        buf.extend_from_slice(&1.5f32.to_le_bytes());
+        assert_eq!(read_float_at_field(&buf, 1), Some(1.5));
+
+        // A field of the wrong wire type is not a float: reading yields None.
+        let mut wrong = Vec::new();
+        append_uint64(&mut wrong, 1, 42);
+        assert_eq!(read_float_at_field(&wrong, 1), None);
     }
 
     #[test]
