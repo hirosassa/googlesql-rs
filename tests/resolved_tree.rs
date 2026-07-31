@@ -1868,3 +1868,85 @@ fn non_computed_column_nodes_have_no_computed_column_name() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.computed_column_name(), None);
 }
+
+#[test]
+fn insert_statement_roots_the_tree_and_names_its_target_table() {
+    let mut module = Module::new().unwrap();
+
+    // An INSERT resolves to a ResolvedInsertStmt whose first child scans the
+    // target table.
+    let root = module
+        .resolved_tree("INSERT INTO users (id) VALUES (1)", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedInsertStmt");
+    let scan = find_kind(&root, "ResolvedTableScan").expect("an INSERT scans its target table");
+    assert_eq!(scan.table_name(), Some("users"));
+}
+
+#[test]
+fn update_statement_roots_the_tree_and_names_its_target_table() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("UPDATE users SET name = 'x' WHERE id = 1", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedUpdateStmt");
+    let scan = find_kind(&root, "ResolvedTableScan").expect("an UPDATE scans its target table");
+    assert_eq!(scan.table_name(), Some("users"));
+}
+
+#[test]
+fn delete_statement_roots_the_tree_and_names_its_target_table() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("DELETE FROM users WHERE id = 1", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedDeleteStmt");
+    let scan = find_kind(&root, "ResolvedTableScan").expect("a DELETE scans its target table");
+    assert_eq!(scan.table_name(), Some("users"));
+}
+
+#[test]
+fn create_table_statement_reports_its_column_definitions() {
+    let mut module = Module::new().unwrap();
+
+    // Each column of a CREATE TABLE becomes a ResolvedColumnDefinition that
+    // names the column it declares.
+    let root = module
+        .resolved_tree("CREATE TABLE t (a INT64, b STRING)", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateTableStmt");
+    let names: Vec<&str> = root
+        .children()
+        .iter()
+        .filter(|c| c.kind() == "ResolvedColumnDefinition")
+        .map(|c| {
+            c.column_definition_name()
+                .expect("a column definition names its column")
+        })
+        .collect();
+    assert_eq!(names, vec!["a", "b"]);
+}
+
+#[test]
+fn non_column_definition_nodes_have_no_column_definition_name() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    // The statement root does not declare a column.
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.column_definition_name(), None);
+}
