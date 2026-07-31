@@ -31,6 +31,13 @@ const MID_ADD_SUPPORTED_STATEMENT_KIND: i32 = 2;
 const MID_DISABLE_LANGUAGE_FEATURE: i32 = 4;
 const MID_DISABLE_ALL_LANGUAGE_FEATURES: i32 = 3;
 const MID_ENABLE_LANGUAGE_FEATURE: i32 = 6;
+const MID_SET_PRODUCT_MODE: i32 = 28;
+
+/// `ProductMode::PRODUCT_INTERNAL`: the default type surface (e.g. `DOUBLE`,
+/// `INT64`). GoogleSQL numbers its `ProductMode` enum from 1, so this is 1, not 0.
+/// The public [`ProductMode`](crate::ProductMode) enum owns the wire mapping;
+/// this is only the default the `Module` starts with.
+const PRODUCT_MODE_INTERNAL: i32 = 1;
 
 /// How the analyzer's optional [`LanguageFeature`](crate::LanguageFeature) set
 /// is built for [`Module::language_options`].
@@ -129,6 +136,11 @@ pub struct Module {
     /// and [`Module::enable_only_language_features`](crate::Module::enable_only_language_features),
     /// and applied when [`Module::language_options`] (re)builds its handle.
     language_feature_mode: LanguageFeatureMode,
+    /// The `ProductMode` wire value (INTERNAL by default) applied when
+    /// [`Module::language_options`] (re)builds its handle, and used to render
+    /// resolved type names. Set by
+    /// [`Module::set_product_mode`](crate::Module::set_product_mode).
+    product_mode: i32,
     /// The `DescriptorPool` handle in effect for the current analysis, or `None`
     /// when no proto descriptors are registered.
     ///
@@ -308,6 +320,7 @@ impl Module {
             descriptor_pool: None,
             supported_statement_kinds: Vec::new(),
             language_feature_mode: LanguageFeatureMode::Maximum(Vec::new()),
+            product_mode: PRODUCT_MODE_INTERNAL,
             scratch: Vec::new(),
             req_scratch_ptr: 0,
             req_scratch_cap: 0,
@@ -474,8 +487,32 @@ impl Module {
                 crate::error::check_error(&resp)?;
             }
         }
+        // Select the type surface (INTERNAL vs EXTERNAL/BigQuery). A fresh
+        // LanguageOptions already defaults to INTERNAL, but set it explicitly so
+        // the field is the single source of truth.
+        let mut mode_req = Vec::new();
+        pb::append_handle(&mut mode_req, 1, ptr);
+        pb::append_int32(&mut mode_req, 2, self.product_mode);
+        let resp = self.invoke(SVC_LANGUAGE_OPTIONS, MID_SET_PRODUCT_MODE, &mode_req)?;
+        crate::error::check_error(&resp)?;
+
         self.cached_language_options = Some(ptr);
         Ok(ptr)
+    }
+
+    /// The current `ProductMode` wire value, used when rendering resolved type
+    /// names so they match the configured type surface.
+    pub(crate) const fn product_mode(&self) -> i32 {
+        self.product_mode
+    }
+
+    /// Sets the `ProductMode` wire value and invalidates the cached
+    /// [`LanguageOptions`](Self::language_options) handle so the next analysis
+    /// rebuilds it with the new mode; the stale handle is reclaimed with the
+    /// `Store`, matching the cache's existing no-free policy.
+    pub(crate) const fn set_product_mode_raw(&mut self, mode: i32) {
+        self.product_mode = mode;
+        self.cached_language_options = None;
     }
 
     /// Restricts the analyzer to the given `ResolvedNodeKind` wire values, or

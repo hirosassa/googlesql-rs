@@ -985,6 +985,32 @@ fn append_column_indices(req: &mut Vec<u8>, field: u32, indices: &[u32]) -> Resu
     Ok(())
 }
 
+/// The product mode selecting GoogleSQL's type surface, set via
+/// [`Module::set_product_mode`].
+///
+/// It governs both how types render (`DOUBLE` vs `FLOAT64`) and the analysis
+/// rules tied to the surface. The default is [`ProductMode::Internal`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProductMode {
+    /// The internal type surface: `DOUBLE`, `INT64`, and so on. The default.
+    #[default]
+    Internal,
+    /// The external (BigQuery) type surface: `FLOAT64`, `INT64`, and so on.
+    External,
+}
+
+impl ProductMode {
+    /// The GoogleSQL `ProductMode` wire value. The enum is numbered from 1, so
+    /// `Internal` is 1 (`PRODUCT_INTERNAL`) and `External` is 2 (`PRODUCT_EXTERNAL`).
+    const fn raw(self) -> i32 {
+        match self {
+            Self::Internal => 1,
+            Self::External => 2,
+        }
+    }
+}
+
 impl Module {
     /// Restricts analysis to the given statement kinds; other kinds then fail
     /// with a "Statement not supported" error.
@@ -996,6 +1022,18 @@ impl Module {
     /// analysis on this [`Module`].
     pub fn set_supported_statement_kinds(&mut self, kinds: &[StatementKind]) {
         self.set_supported_statement_kinds_raw(kinds.iter().map(|k| k.node_kind()).collect());
+    }
+
+    /// Selects the product mode, which determines the type surface used for
+    /// analysis and type-name rendering.
+    ///
+    /// The default is [`ProductMode::Internal`] (type names like `DOUBLE`,
+    /// `INT64`). [`ProductMode::External`] selects the BigQuery-facing surface,
+    /// where the same types render as `FLOAT64`, `INT64`, and so on. The mode
+    /// applies to every subsequent analysis on this [`Module`] and to the resolved
+    /// type names it returns.
+    pub const fn set_product_mode(&mut self, mode: ProductMode) {
+        self.set_product_mode_raw(mode.raw());
     }
 
     /// Turns off the given language features, which are otherwise all enabled.
