@@ -853,6 +853,7 @@ fn analyzes_a_table_valued_function() {
     let catalog = Catalog {
         table_functions: vec![TvfDef {
             name: "my_tvf".to_string(),
+            arguments: vec![],
             columns: vec![
                 ColumnDef {
                     name: "id".to_string(),
@@ -876,6 +877,57 @@ fn analyzes_a_table_valued_function() {
     assert_eq!(columns[0].type_name(), "INT64");
     assert_eq!(columns[1].name(), "name");
     assert_eq!(columns[1].type_name(), "STRING");
+}
+
+#[test]
+fn analyzes_a_table_valued_function_with_a_scalar_argument() {
+    let mut module = Module::new().unwrap();
+
+    // A TVF taking one INT64 argument and returning a fixed one-column schema:
+    // the call type-checks the argument and resolves to the output column.
+    let catalog = Catalog {
+        table_functions: vec![TvfDef {
+            name: "my_tvf".to_string(),
+            arguments: vec![ColumnType::Int64],
+            columns: vec![ColumnDef {
+                name: "v".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        ..Default::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT * FROM my_tvf(5)", &catalog)
+        .unwrap_or_else(|e| panic!("analysis failed: {e:?}"));
+
+    assert_eq!(columns.len(), 1, "expected the TVF's one output column");
+    assert_eq!(columns[0].name(), "v");
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn table_valued_function_type_checks_its_argument() {
+    let mut module = Module::new().unwrap();
+
+    // The argument is declared INT64, so passing a STRING must fail to resolve.
+    let catalog = Catalog {
+        table_functions: vec![TvfDef {
+            name: "my_tvf".to_string(),
+            arguments: vec![ColumnType::Int64],
+            columns: vec![ColumnDef {
+                name: "v".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        ..Default::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT * FROM my_tvf('x')", &catalog);
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected an argument type error, got: {result:?}"
+    );
 }
 
 #[test]
