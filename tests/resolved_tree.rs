@@ -2061,3 +2061,35 @@ fn non_column_definition_nodes_have_no_column_definition_type() {
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.column_definition_type(), None);
 }
+
+#[test]
+fn insert_reports_its_target_columns() {
+    let mut module = Module::new().unwrap();
+
+    // The INSERT targets only `id`, a subset of the table's columns; the target
+    // list names exactly the inserted-into columns.
+    let root = module
+        .resolved_tree("INSERT INTO users (id) VALUES (1)", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedInsertStmt");
+    assert_eq!(
+        root.insert_columns(),
+        Some(&["id".to_string()][..]),
+        "the INSERT targets only the id column"
+    );
+}
+
+#[test]
+fn non_insert_nodes_have_no_target_columns() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.insert_columns(), None);
+}

@@ -133,9 +133,12 @@ const MID_COLUMN_DEFINITION_TYPE: i32 = 27;
 
 /// `ResolvedInsertStmt`: `InsertMode` is the conflict-handling mode, as a
 /// `ResolvedInsertStmtEnums::InsertMode` (1=OR ERROR, 2=OR IGNORE,
-/// 3=OR REPLACE, 4=OR UPDATE). A plain `INSERT` is `OR ERROR`.
+/// 3=OR REPLACE, 4=OR UPDATE); a plain `INSERT` is `OR ERROR`.
+/// `InsertColumnList` is the list of target `ResolvedColumn`s the statement
+/// writes into (the `(id)` in `INSERT INTO t (id) ...`).
 const SVC_RESOLVED_INSERT_STMT: i32 = 1121;
 const MID_INSERT_MODE: i32 = 26;
+const MID_INSERT_COLUMN_LIST: i32 = 23;
 const INSERT_MODE_OR_ERROR: i32 = 1;
 const INSERT_MODE_OR_IGNORE: i32 = 2;
 const INSERT_MODE_OR_REPLACE: i32 = 3;
@@ -523,6 +526,7 @@ pub struct ResolvedNode {
     column_definition_name: Option<String>,
     column_definition_type: Option<String>,
     insert_mode: Option<InsertMode>,
+    insert_columns: Option<Vec<String>>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -769,6 +773,14 @@ impl ResolvedNode {
     /// the `OR IGNORE` / `OR REPLACE` / `OR UPDATE` prefixes report the others.
     pub const fn insert_mode(&self) -> Option<InsertMode> {
         self.insert_mode
+    }
+
+    /// The names of the columns this node's INSERT writes into (the `(id)` in
+    /// `INSERT INTO t (id) ...`), or `None` if it is not a `ResolvedInsertStmt`.
+    /// This is the explicit target-column list, a subset of the table's columns,
+    /// distinct from the table scan's full column set.
+    pub fn insert_columns(&self) -> Option<&[String]> {
+        self.insert_columns.as_deref()
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -1059,6 +1071,11 @@ impl Module {
         } else {
             None
         };
+        let insert_columns = if kind == KIND_INSERT_STMT {
+            Some(self.node_insert_columns(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -1112,6 +1129,7 @@ impl Module {
             column_definition_name,
             column_definition_type,
             insert_mode,
+            insert_columns,
             parse_location,
             children,
         })
@@ -1310,6 +1328,17 @@ impl Module {
             node,
         )?;
         self.type_debug_string(type_handle)
+    }
+
+    /// Reads the target column names of a `ResolvedInsertStmt` (the columns the
+    /// statement writes into), mirroring [`node_scan_columns`](Self::node_scan_columns).
+    fn node_insert_columns(&mut self, node: u64) -> Result<Vec<String>, Error> {
+        let resp = self.invoke_handle(SVC_RESOLVED_INSERT_STMT, MID_INSERT_COLUMN_LIST, node)?;
+        check_error(&resp)?;
+        pb::read_handles_at_field(&resp, 1)
+            .into_iter()
+            .map(|column| self.rpc_string(SVC_RESOLVED_COLUMN, MID_COLUMN_NAME, column))
+            .collect()
     }
 
     /// Reads the conflict-handling mode of a `ResolvedInsertStmt`.
