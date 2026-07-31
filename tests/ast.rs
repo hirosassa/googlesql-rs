@@ -92,3 +92,36 @@ fn identifier_node_exposes_its_unquoted_name() {
     // A non-identifier node (the root statement) carries no identifier value.
     assert_eq!(root.identifier(), None, "non-identifier node has no name");
 }
+
+#[test]
+fn binary_expression_node_exposes_its_operator() {
+    use googlesql::BinaryOp;
+    let mut module = Module::new().unwrap();
+
+    // `NOT LIKE` shares the LIKE operator token but sets the negation flag,
+    // so the operator alone cannot distinguish it from a plain `LIKE`.
+    let parsed = module.parse_expression("a NOT LIKE b").unwrap();
+    let mut bins = Vec::new();
+    collect_kind(parsed.root(), "ASTBinaryExpression", &mut bins);
+    let op = bins[0]
+        .binary_operator()
+        .expect("binary expression exposes its operator");
+    assert_eq!(op.operator(), BinaryOp::Like);
+    assert!(op.is_negated(), "NOT LIKE must report negation");
+
+    // A plain arithmetic operator reports no negation.
+    let parsed = module.parse_expression("a + b").unwrap();
+    let root = parsed.root();
+    assert_eq!(root.kind(), "ASTBinaryExpression");
+    let op = root.binary_operator().unwrap();
+    assert_eq!(op.operator(), BinaryOp::Plus);
+    assert!(!op.is_negated());
+
+    // The operand nodes are not binary expressions and carry no operator.
+    assert!(
+        root.children()
+            .iter()
+            .all(|c| c.binary_operator().is_none()),
+        "operands are not binary expressions"
+    );
+}
