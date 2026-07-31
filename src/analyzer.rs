@@ -63,6 +63,7 @@ const MID_ADD_BUILTIN_FUNCTIONS_AND_TYPES: i32 = 3;
 const MID_ADD_FUNCTION: i32 = 10;
 const MID_ADD_TABLE_NAMED: i32 = 72;
 const MID_ADD_CATALOG_NAMED: i32 = 4;
+const MID_ADD_CONNECTION_NAMED: i32 = 6;
 const MID_ADD_CONSTANT_NAMED: i32 = 8;
 const MID_ADD_TABLE_VALUED_FUNCTION_NAMED: i32 = 73;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
@@ -75,6 +76,10 @@ const MID_FREE_SIMPLE_TABLE: i32 = 27;
 const SVC_SIMPLE_COLUMN: i32 = 1350;
 const MID_NEW_SIMPLE_COLUMN: i32 = 0;
 const MID_FREE_SIMPLE_COLUMN: i32 = 10;
+
+const SVC_SIMPLE_CONNECTION: i32 = 1352;
+const MID_NEW_SIMPLE_CONNECTION: i32 = 0;
+const MID_FREE_SIMPLE_CONNECTION: i32 = 4;
 
 const SVC_FUNCTION_ARGUMENT_TYPE: i32 = 637;
 const MID_NEW_FUNCTION_ARGUMENT_TYPE: i32 = 2;
@@ -519,11 +524,11 @@ pub struct ProcedureDef {
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
 /// [`constants`](Self::constants), [`parameters`](Self::parameters),
-/// [`table_functions`](Self::table_functions), and nested
-/// [`catalogs`](Self::catalogs) a query may reference, passed to the `*_in`
-/// analysis entry points. The table-only entry points (e.g.
-/// [`Module::analyze_output_columns`]) are equivalent to a `Catalog` with only
-/// tables.
+/// [`table_functions`](Self::table_functions), [`procedures`](Self::procedures),
+/// [`connections`](Self::connections), and nested [`catalogs`](Self::catalogs) a
+/// query may reference, passed to the `*_in` analysis entry points. The
+/// table-only entry points (e.g. [`Module::analyze_output_columns`]) are
+/// equivalent to a `Catalog` with only tables.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     /// User-defined tables.
@@ -545,6 +550,10 @@ pub struct Catalog {
     pub catalogs: Vec<NamedCatalog>,
     /// User-defined stored procedures, invoked by `CALL`.
     pub procedures: Vec<ProcedureDef>,
+    /// User-defined external connections, by name. Registering a connection lets
+    /// a statement that references it resolve, e.g.
+    /// `CREATE EXTERNAL TABLE ... WITH CONNECTION my_conn`.
+    pub connections: Vec<String>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -589,6 +598,7 @@ struct CatalogContents<'a> {
     table_functions: &'a [TvfDef],
     catalogs: &'a [NamedCatalog],
     procedures: &'a [ProcedureDef],
+    connections: &'a [String],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -603,6 +613,7 @@ impl<'a> CatalogContents<'a> {
             table_functions: &[],
             catalogs: &[],
             procedures: &[],
+            connections: &[],
         }
     }
 
@@ -616,6 +627,7 @@ impl<'a> CatalogContents<'a> {
             table_functions: catalog.table_functions.as_slice(),
             catalogs: catalog.catalogs.as_slice(),
             procedures: catalog.procedures.as_slice(),
+            connections: catalog.connections.as_slice(),
         }
     }
 }
@@ -1021,6 +1033,7 @@ impl Module {
             contents.table_functions,
         )?);
         self.add_procedures(catalog, type_factory, contents.procedures, &mut handles)?;
+        self.add_connections(catalog, contents.connections, &mut handles)?;
         for sub in contents.catalogs {
             let child = self.new_simple_catalog(&sub.name, type_factory)?;
             let child_handles = self.populate_catalog(
@@ -1470,6 +1483,52 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         pb::append_handle(&mut req, 3, procedure);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_PROCEDURE_NAMED, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each external connection into `catalog`, pushing the created
+    /// `SimpleConnection` handles onto `handles` so they outlive the analysis
+    /// (the catalog references each connection without owning it).
+    fn add_connections(
+        &mut self,
+        catalog: u64,
+        connections: &[String],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        for name in connections {
+            let connection = self.new_simple_connection(name)?;
+            self.register_connection(catalog, name, connection.ptr())?;
+            handles.push(connection);
+        }
+        Ok(())
+    }
+
+    /// Builds a named `SimpleConnection`, returning its handle for the caller to
+    /// keep alive across the analysis.
+    fn new_simple_connection(&mut self, name: &str) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        self.acquire_handle(
+            SVC_SIMPLE_CONNECTION,
+            MID_NEW_SIMPLE_CONNECTION,
+            &req,
+            SVC_SIMPLE_CONNECTION,
+            MID_FREE_SIMPLE_CONNECTION,
+        )
+    }
+
+    /// Registers `connection` under `name` in `catalog` (non-owning).
+    fn register_connection(
+        &mut self,
+        catalog: u64,
+        name: &str,
+        connection: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, connection);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_CONNECTION_NAMED, &req)?;
         check_error(&resp)
     }
 

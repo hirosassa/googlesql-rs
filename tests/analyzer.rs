@@ -367,6 +367,7 @@ fn resolves_a_registered_scalar_function() {
         table_functions: vec![],
         catalogs: vec![],
         procedures: vec![],
+        connections: vec![],
     };
 
     let columns = module
@@ -403,6 +404,7 @@ fn resolves_a_registered_aggregate_function() {
         table_functions: vec![],
         catalogs: vec![],
         procedures: vec![],
+        connections: vec![],
     };
 
     let columns = module
@@ -432,6 +434,7 @@ fn registered_function_type_checks_its_arguments() {
         table_functions: vec![],
         catalogs: vec![],
         procedures: vec![],
+        connections: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1303,5 +1306,40 @@ fn rejects_a_call_to_an_unknown_procedure() {
     assert!(
         matches!(result, Err(Error::GoogleSql(_))),
         "expected an unknown-procedure error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_create_external_table_with_a_registered_connection() {
+    let mut module = Module::new().unwrap();
+
+    // The CREATE EXTERNAL TABLE statement references connection "conn"; with it
+    // registered, the connection resolves and the statement analyzes.
+    let catalog = Catalog {
+        connections: vec!["conn".to_string()],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in(
+        "CREATE EXTERNAL TABLE t WITH CONNECTION conn OPTIONS(uris=['gs://b/f'], format='CSV')",
+        &catalog,
+    );
+    assert!(
+        result.is_ok(),
+        "expected the connection to resolve, got: {result:?}"
+    );
+}
+
+#[test]
+fn rejects_a_reference_to_an_unknown_connection() {
+    let mut module = Module::new().unwrap();
+
+    let result = module.analyze_statement_in(
+        "CREATE EXTERNAL TABLE t WITH CONNECTION conn OPTIONS(uris=['gs://b/f'], format='CSV')",
+        &Catalog::default(),
+    );
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a connection-not-found error, got: {result:?}"
     );
 }
