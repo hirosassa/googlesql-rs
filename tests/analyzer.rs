@@ -9,7 +9,7 @@
 )]
 
 use googlesql::{
-    Catalog, ColumnDef, ColumnType, Error, FunctionDef, Module, StructField, TableDef,
+    Catalog, ColumnDef, ColumnType, Error, FunctionDef, FunctionKind, Module, StructField, TableDef,
 };
 
 #[test]
@@ -358,11 +358,43 @@ fn resolves_a_registered_scalar_function() {
             name: "my_add".to_string(),
             arguments: vec![ColumnType::Int64, ColumnType::Int64],
             return_type: ColumnType::Int64,
+            kind: FunctionKind::Scalar,
         }],
     };
 
     let columns = module
         .analyze_output_columns_in("SELECT my_add(1, 2) AS s", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn resolves_a_registered_aggregate_function() {
+    let mut module = Module::new().unwrap();
+
+    // A user-defined aggregate function my_agg(INT64) -> INT64. Registering it
+    // with aggregate mode lets it be called with aggregate semantics over a
+    // table column; a scalar registration would reject the aggregate call.
+    let catalog = Catalog {
+        tables: vec![TableDef {
+            name: "t".to_string(),
+            columns: vec![ColumnDef {
+                name: "n".to_string(),
+                ty: ColumnType::Int64,
+            }],
+        }],
+        functions: vec![FunctionDef {
+            name: "my_agg".to_string(),
+            arguments: vec![ColumnType::Int64],
+            return_type: ColumnType::Int64,
+            kind: FunctionKind::Aggregate,
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT my_agg(n) AS s FROM t", &catalog)
         .unwrap();
 
     assert_eq!(columns.len(), 1);
@@ -381,6 +413,7 @@ fn registered_function_type_checks_its_arguments() {
             name: "needs_int".to_string(),
             arguments: vec![ColumnType::Int64],
             return_type: ColumnType::Bool,
+            kind: FunctionKind::Scalar,
         }],
     };
 
