@@ -1843,3 +1843,68 @@ fn rejects_an_edge_referencing_an_unknown_node_table() {
         "expected an unknown-node-table error, got: {result:?}"
     );
 }
+
+#[test]
+fn analyze_expression_returns_the_inferred_scalar_type() {
+    let mut module = Module::new().unwrap();
+
+    // `1 + 1` resolves via the builtin `$add`, so the expression's inferred
+    // type is INT64.
+    let type_name = module.analyze_expression("1 + 1", &[]).unwrap();
+
+    assert_eq!(type_name, "INT64");
+}
+
+#[test]
+fn analyze_expression_types_a_function_call() {
+    let mut module = Module::new().unwrap();
+
+    // CONCAT over string literals resolves to STRING.
+    let type_name = module.analyze_expression("CONCAT('a', 'b')", &[]).unwrap();
+
+    assert_eq!(type_name, "STRING");
+}
+
+#[test]
+fn analyze_expression_types_a_comparison_as_bool() {
+    let mut module = Module::new().unwrap();
+
+    let type_name = module.analyze_expression("1 = 2", &[]).unwrap();
+
+    assert_eq!(type_name, "BOOL");
+}
+
+#[test]
+fn analyze_expression_errors_on_unresolved_name() {
+    let mut module = Module::new().unwrap();
+
+    // `foo` is neither a catalog constant nor an in-scope column, so name
+    // resolution fails instead of silently producing a type.
+    let result = module.analyze_expression("foo + 1", &[]);
+
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a GoogleSql error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyze_expression_in_resolves_a_catalog_constant() {
+    let mut module = Module::new().unwrap();
+
+    // A named constant of type INT64; referencing it in an expression yields a
+    // type derived from the constant.
+    let catalog = Catalog {
+        constants: vec![ConstantDef {
+            name: "my_const".to_string(),
+            value: ConstantValue::Int64(42),
+        }],
+        ..Catalog::default()
+    };
+
+    let type_name = module
+        .analyze_expression_in("my_const * 2", &catalog)
+        .unwrap();
+
+    assert_eq!(type_name, "INT64");
+}
