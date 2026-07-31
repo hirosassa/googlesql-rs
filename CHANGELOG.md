@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-01
+
+### Added
+
+#### Parser
+
+- Parse whole scripts, including scripting constructs, via `Module::parse_script`,
+  and iterate their statements incrementally with `parse_script_statements`.
+- Parse a bare SQL expression (`parse_expression`) or a standalone SQL type
+  declaration (`parse_type`), not just full statements.
+- Read semantic detail off syntax nodes: an `ASTIdentifier`'s unquoted name, the
+  operator of an `ASTBinaryExpression` or `ASTUnaryExpression`, and the typed
+  value of a literal node.
+
+#### Analyzer — accepted statements and options
+
+- Analyze DML, DDL, and script statements, not only queries.
+- Analyze a standalone expression and report its inferred type
+  (`analyze_expression`), optionally against named in-scope columns.
+- Analyze every statement of a multi-statement script in one call.
+- Resolve a type name to its canonical `Type` via `AnalyzeType`.
+- Constrain analysis: restrict it to selected statement kinds, toggle individual
+  language features off, or enable only a chosen set from a minimal baseline.
+- Declare typed query parameters ahead of analysis, and infer the types of
+  undeclared positional parameters.
+- Select the product mode (internal ZetaSQL vs. external / BigQuery).
+
+#### Analyzer — catalog registration
+
+- Register `ARRAY`, `STRUCT`, `RANGE`, and `MAP` typed columns.
+- Register user-defined scalar functions, aggregate functions, and named
+  constants.
+- Register table-valued functions: fixed-output-schema, with scalar arguments,
+  and with relation arguments.
+- Register user-defined procedures (for `CALL`), external connections, and
+  nested sub-catalogs exposed as namespaces.
+- Register user-defined named types, enum types, and proto message types.
+- Register user-defined property graphs and their edge tables.
+
+#### Resolved tree
+
+- Expose DML/DDL structure through the resolved tree: `INSERT` conflict mode and
+  target columns, `CREATE TABLE` column types and existence mode, `MERGE`
+  `WHEN`-clause match and action types, and the `CreateMode` of `CREATE VIEW`,
+  `CREATE TABLE AS SELECT`, and other `CREATE` forms.
+- Read the value of resolved literal nodes: narrow and complex scalars, and
+  composite `ARRAY`, `STRUCT`, `RANGE`, and `JSON` values.
+
+### Changed
+
+- Reuse a persistent wasm-side request region across RPCs, reducing per-call
+  overhead on the hot parse path.
+
+## [0.1.0] - 2026-07-30
+
 ### Added
 
 - Parse SQL into a typed syntax tree (`Module::parse_statement` → `ParsedStatement` / `AstNode`).
