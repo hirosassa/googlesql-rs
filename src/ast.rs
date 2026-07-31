@@ -63,7 +63,7 @@ impl Module {
         let byte_range = self.node_byte_range(node_ptr)?;
 
         let num_children = self.node_num_children(node_ptr)?;
-        let mut children = Vec::new();
+        let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
         for i in 0..num_children {
             let child_ptr = self.node_child(node_ptr, i)?;
             if child_ptr != 0 {

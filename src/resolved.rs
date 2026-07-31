@@ -991,8 +991,9 @@ impl Module {
         } else {
             None
         };
-        let mut children = Vec::new();
-        for child in self.child_nodes(node)? {
+        let child_ptrs = self.child_nodes(node)?;
+        let mut children = Vec::with_capacity(child_ptrs.len());
+        for child in child_ptrs {
             if child != 0 {
                 children.push(self.build_resolved_node(child)?);
             }

@@ -26,7 +26,6 @@ const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 const SVC_LANGUAGE_OPTIONS: i32 = 678;
 const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
-const MID_FREE_LANGUAGE_OPTIONS: i32 = 29;
 
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
@@ -90,6 +89,14 @@ pub struct Module {
     /// Cache of named exports (e.g. `wasmify_get_type_name`), keyed by name, for
     /// the same reason as [`Module::invoke_cache`].
     export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
+    /// Cached maximum-feature `LanguageOptions` handle, built on first use by
+    /// [`Module::max_language_options`] and reused for the `Module`'s lifetime.
+    ///
+    /// The handle is immutable configuration every parse and analyze call wires
+    /// into its options, so building it once removes the two-RPC reconstruction
+    /// each call otherwise paid. It is intentionally not registered for deferred
+    /// free: the wasm-side allocation is reclaimed when the `Store` is dropped.
+    cached_language_options: Option<u64>,
 }
 
 /// Identifies the export a [`Module::call_typed`] call targets, used only to
@@ -235,6 +242,7 @@ impl Module {
             pending_frees: Arc::new(Mutex::new(Vec::new())),
             invoke_cache: HashMap::new(),
             export_cache: HashMap::new(),
+            cached_language_options: None,
         })
     }
 
@@ -311,29 +319,31 @@ impl Module {
         }
     }
 
-    /// Acquires a `LanguageOptions` handle with the maximum released language
-    /// feature set enabled.
+    /// Returns a cached `LanguageOptions` handle with the maximum released
+    /// language feature set enabled, building it on first use.
     ///
     /// GoogleSQL gates optional syntax (e.g. the `QUALIFY` clause) behind
     /// language features that default `LanguageOptions` leaves off. The parser
     /// and analyzer both wire the returned handle into their options so those
-    /// features are accepted. The handle is an RAII [`Handle`] freed by the
-    /// enclosing [`with_frees`](Module::with_frees).
-    pub(crate) fn acquire_max_language_options(&mut self) -> Result<Handle, Error> {
-        let language = self.acquire_handle(
-            SVC_LANGUAGE_OPTIONS,
-            MID_NEW_LANGUAGE_OPTIONS,
-            &[],
-            SVC_LANGUAGE_OPTIONS,
-            MID_FREE_LANGUAGE_OPTIONS,
-        )?;
+    /// features are accepted. The configuration is immutable and identical for
+    /// every call, so the handle is built once and cached for the `Module`'s
+    /// lifetime rather than reconstructed (two RPCs) per parse/analyze. It is
+    /// deliberately not registered for deferred free: the parser/analyzer option
+    /// setters copy it rather than adopt it, and its wasm-side allocation is
+    /// reclaimed when the `Store` is dropped with the instance.
+    pub(crate) fn max_language_options(&mut self) -> Result<u64, Error> {
+        if let Some(ptr) = self.cached_language_options {
+            return Ok(ptr);
+        }
+        let ptr = self.new_handle(SVC_LANGUAGE_OPTIONS, MID_NEW_LANGUAGE_OPTIONS, &[])?;
         let resp = self.invoke(
             SVC_LANGUAGE_OPTIONS,
             MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES,
-            &pb::handle_arg(language.ptr()),
+            &pb::handle_arg(ptr),
         )?;
         crate::error::check_error(&resp)?;
-        Ok(language)
+        self.cached_language_options = Some(ptr);
+        Ok(ptr)
     }
 
     /// Runs every free enqueued by a dropped [`Handle`], returning the first
@@ -635,6 +645,36 @@ mod tests {
                 .len(),
             0,
             "flush must drain the queue and run every free"
+        );
+    }
+
+    /// The maximum-feature `LanguageOptions` handle is built once and cached:
+    /// the cache starts empty, the first call populates it with a non-null
+    /// handle, and a second call returns that same handle without rebuilding.
+    #[test]
+    fn max_language_options_is_cached() {
+        let mut module = super::Module::new().expect("instantiate module");
+        assert_eq!(
+            module.cached_language_options, None,
+            "cache must start empty before any call"
+        );
+
+        let first = module
+            .max_language_options()
+            .expect("build max language options");
+        assert_ne!(first, 0, "language options handle must be non-null");
+        assert_eq!(
+            module.cached_language_options,
+            Some(first),
+            "the first call must populate the cache"
+        );
+
+        let second = module
+            .max_language_options()
+            .expect("reuse max language options");
+        assert_eq!(
+            first, second,
+            "the second call must return the cached handle, not a fresh one"
         );
     }
 

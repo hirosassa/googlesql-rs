@@ -114,8 +114,8 @@ impl Module {
             )?;
             // Enable the maximum language feature set so gated syntax such as the
             // `QUALIFY` clause is accepted.
-            let language = module.acquire_max_language_options()?;
-            module.set_parser_language_options(options.ptr(), language.ptr())?;
+            let language = module.max_language_options()?;
+            module.set_parser_language_options(options.ptr(), language)?;
             module.parse_with_options(sql, options.ptr())
         })
     }
@@ -146,8 +146,8 @@ impl Module {
             )?;
             // Enable the maximum language feature set so gated syntax such as the
             // `QUALIFY` clause is accepted for every statement in the script.
-            let language = module.acquire_max_language_options()?;
-            module.set_parser_language_options(options.ptr(), language.ptr())?;
+            let language = module.max_language_options()?;
+            module.set_parser_language_options(options.ptr(), language)?;
 
             let mut resume_req = Vec::new();
             pb::append_string(&mut resume_req, 1, sql);
