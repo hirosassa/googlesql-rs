@@ -69,6 +69,7 @@ const MID_ADD_CONNECTION_NAMED: i32 = 6;
 const MID_ADD_CONSTANT_NAMED: i32 = 8;
 const MID_ADD_TYPE_NAMED: i32 = 75;
 const MID_ADD_TABLE_VALUED_FUNCTION_NAMED: i32 = 73;
+const MID_ADD_PROPERTY_GRAPH_NAMED: i32 = 68;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
 
 const SVC_SIMPLE_TABLE: i32 = 1380;
@@ -141,6 +142,25 @@ const MID_FREE_TVF_RELATION: i32 = 10;
 const SVC_FIXED_OUTPUT_SCHEMA_TVF: i32 = 632;
 const MID_NEW_FIXED_OUTPUT_SCHEMA_TVF: i32 = 2;
 const MID_FREE_FIXED_OUTPUT_SCHEMA_TVF: i32 = 5;
+
+const SVC_SIMPLE_PROPERTY_GRAPH: i32 = 1375;
+const MID_NEW_SIMPLE_PROPERTY_GRAPH: i32 = 0;
+const MID_ADD_GRAPH_LABEL: i32 = 3;
+const MID_ADD_GRAPH_NODE_TABLE: i32 = 4;
+const MID_ADD_GRAPH_PROPERTY_DECLARATION: i32 = 5;
+const MID_FREE_SIMPLE_PROPERTY_GRAPH: i32 = 14;
+
+const SVC_GRAPH_NODE_TABLE: i32 = 1366;
+const MID_NEW_GRAPH_NODE_TABLE: i32 = 0;
+
+const SVC_GRAPH_ELEMENT_LABEL: i32 = 1363;
+const MID_NEW_GRAPH_ELEMENT_LABEL: i32 = 0;
+
+const SVC_GRAPH_PROPERTY_DECLARATION: i32 = 1369;
+const MID_NEW_GRAPH_PROPERTY_DECLARATION: i32 = 0;
+
+const SVC_GRAPH_PROPERTY_DEFINITION: i32 = 1371;
+const MID_NEW_GRAPH_PROPERTY_DEFINITION: i32 = 0;
 
 /// Field numbers of a `TVFRelation::Column` (`TVFSchemaColumn`) submessage: the
 /// column name and its type handle.
@@ -602,6 +622,70 @@ pub struct NamedType {
     pub ty: ColumnType,
 }
 
+/// A user-defined property graph registered into the catalog before analysis.
+///
+/// Registering it lets a graph query resolve against it, e.g.
+/// `GRAPH people MATCH (n:Person) RETURN n.name`. A property graph is a set of
+/// node (vertex) tables, each backed by an input table schema and exposing
+/// typed properties grouped under labels.
+#[derive(Debug, Clone)]
+pub struct PropertyGraphDef {
+    /// The graph name, as referenced by `GRAPH <name>`.
+    pub name: String,
+    /// The node (vertex) tables that make up the graph.
+    pub node_tables: Vec<GraphNodeTableDef>,
+}
+
+/// A node (vertex) table within a [`PropertyGraphDef`].
+///
+/// Backed by an inline input schema ([`columns`](Self::columns)); each node's
+/// identity is its [`key_columns`](Self::key_columns), and its properties are
+/// exposed through [`labels`](Self::labels).
+#[derive(Debug, Clone)]
+pub struct GraphNodeTableDef {
+    /// The element table name, as referenced by a graph pattern.
+    pub name: String,
+    /// The input table schema backing the node table; property value
+    /// expressions ([`GraphPropertyDef::value_sql`]) are evaluated over these
+    /// columns.
+    pub columns: Vec<ColumnDef>,
+    /// Indices into [`columns`](Self::columns) forming each node's key.
+    pub key_columns: Vec<u32>,
+    /// The labels exposed by the node table, each declaring a set of properties.
+    ///
+    /// A property name must be declared at most once across the node table's
+    /// labels; GoogleSQL rejects a graph that declares the same property twice.
+    pub labels: Vec<GraphLabelDef>,
+}
+
+/// A label exposed by a [`GraphNodeTableDef`], grouping a set of properties.
+///
+/// A graph pattern selects elements by label, e.g. the `Person` in
+/// `MATCH (n:Person)`.
+#[derive(Debug, Clone)]
+pub struct GraphLabelDef {
+    /// The label name, as used in a graph pattern (`(n:Person)`).
+    pub name: String,
+    /// The properties elements carrying this label expose.
+    pub properties: Vec<GraphPropertyDef>,
+}
+
+/// A property exposed under a [`GraphLabelDef`].
+///
+/// A property has a [`name`](Self::name) and [`ty`](Self::ty); its value is the
+/// SQL expression [`value_sql`](Self::value_sql) evaluated over the owning node
+/// table's input [`columns`](GraphNodeTableDef::columns) — e.g. a property
+/// `name STRING` with `value_sql: "full_name"`.
+#[derive(Debug, Clone)]
+pub struct GraphPropertyDef {
+    /// The property name, as accessed by `element.name`.
+    pub name: String,
+    /// The property type.
+    pub ty: ColumnType,
+    /// The SQL expression, over the node table's input columns, giving the value.
+    pub value_sql: String,
+}
+
 /// The declarations made visible to the analyzer for a query.
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
@@ -651,6 +735,9 @@ pub struct Catalog {
     ///
     /// Only honored on the top-level catalog, like [`parameters`](Self::parameters).
     pub proto_files: Vec<Vec<u8>>,
+    /// User-defined property graphs, resolvable by a graph query (e.g.
+    /// `GRAPH people MATCH (n:Person) RETURN n.name`).
+    pub property_graphs: Vec<PropertyGraphDef>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -699,6 +786,7 @@ struct CatalogContents<'a> {
     types: &'a [NamedType],
     enums: &'a [EnumDef],
     proto_files: &'a [Vec<u8>],
+    property_graphs: &'a [PropertyGraphDef],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -717,6 +805,7 @@ impl<'a> CatalogContents<'a> {
             types: &[],
             enums: &[],
             proto_files: &[],
+            property_graphs: &[],
         }
     }
 
@@ -734,6 +823,7 @@ impl<'a> CatalogContents<'a> {
             types: catalog.types.as_slice(),
             enums: catalog.enums.as_slice(),
             proto_files: catalog.proto_files.as_slice(),
+            property_graphs: catalog.property_graphs.as_slice(),
         }
     }
 }
@@ -1178,6 +1268,12 @@ impl Module {
         self.add_connections(catalog, contents.connections, &mut handles)?;
         self.add_types(catalog, type_factory, contents.types)?;
         self.add_enums(catalog, type_factory, contents.enums, &mut handles)?;
+        self.add_property_graphs(
+            catalog,
+            type_factory,
+            contents.property_graphs,
+            &mut handles,
+        )?;
         for sub in contents.catalogs {
             let child = self.new_simple_catalog(&sub.name, type_factory)?;
             let child_handles = self.populate_catalog(
@@ -1882,6 +1978,282 @@ impl Module {
             return Err(Error::Protocol("MakeProtoType returned null".into()));
         }
         Ok(ptr)
+    }
+
+    /// Registers each property graph into `catalog`. Each graph's handle (and
+    /// the input `SimpleTable` handles backing its node tables) is pushed onto
+    /// `handles` so it outlives the analysis: the resolved output points into
+    /// them.
+    fn add_property_graphs(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        graphs: &[PropertyGraphDef],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        for graph in graphs {
+            self.add_property_graph(catalog, type_factory, graph, handles)?;
+        }
+        Ok(())
+    }
+
+    /// Assembles a `SimplePropertyGraph` from `graph` — its node tables, the
+    /// labels they expose, and the property declarations/definitions backing
+    /// those labels — and registers it into `catalog` under its name.
+    ///
+    /// Each `Add*` on the graph transfers ownership, so the graph owns its
+    /// labels, node tables, and property declarations (and a node table owns its
+    /// property definitions); freeing the graph reclaims them all. The catalog
+    /// only references the graph (`AddPropertyGraph2` is non-owning), so the
+    /// graph handle — and each node table's input `SimpleTable`, which the node
+    /// table references rather than owns — are kept alive on `handles` until the
+    /// analysis completes.
+    fn add_property_graph(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        graph: &PropertyGraphDef,
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let graph_handle = self.new_property_graph(&graph.name)?;
+        for node in &graph.node_tables {
+            self.add_graph_node_table(
+                graph_handle.ptr(),
+                type_factory,
+                &graph.name,
+                node,
+                handles,
+            )?;
+        }
+        self.register_property_graph(catalog, &graph.name, graph_handle.ptr())?;
+        handles.push(graph_handle);
+        Ok(())
+    }
+
+    /// Builds an empty `SimplePropertyGraph` whose name path is the single
+    /// element `name`, for the caller to populate and keep alive.
+    fn new_property_graph(&mut self, name: &str) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name); // single-element name path
+        self.acquire_handle(
+            SVC_SIMPLE_PROPERTY_GRAPH,
+            MID_NEW_SIMPLE_PROPERTY_GRAPH,
+            &req,
+            SVC_SIMPLE_PROPERTY_GRAPH,
+            MID_FREE_SIMPLE_PROPERTY_GRAPH,
+        )
+    }
+
+    /// Builds one node table into `graph`: its input `SimpleTable`, the property
+    /// declarations and definitions for each label's properties, the labels, and
+    /// the node table itself. The input table handle is pushed onto `handles`
+    /// (the node table references it non-owningly, so it must outlive the
+    /// analysis); every other object is transferred into and owned by `graph`.
+    fn add_graph_node_table(
+        &mut self,
+        graph: u64,
+        type_factory: u64,
+        graph_name: &str,
+        node: &GraphNodeTableDef,
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let input = self.add_input_table(type_factory, &node.name, &node.columns)?;
+
+        let mut label_ptrs = Vec::with_capacity(node.labels.len());
+        let mut definition_ptrs =
+            Vec::with_capacity(node.labels.iter().map(|label| label.properties.len()).sum());
+        for label in &node.labels {
+            let mut declaration_ptrs = Vec::with_capacity(label.properties.len());
+            for property in &label.properties {
+                let property_type = self.build_column_type(type_factory, &property.ty)?;
+                let declaration =
+                    self.new_graph_property_declaration(&property.name, graph_name, property_type)?;
+                self.register_property_declaration(graph, declaration)?;
+                let definition =
+                    self.new_graph_property_definition(declaration, &property.value_sql)?;
+                declaration_ptrs.push(declaration);
+                definition_ptrs.push(definition);
+            }
+            let label_ptr =
+                self.new_graph_element_label(&label.name, graph_name, &declaration_ptrs)?;
+            self.register_graph_label(graph, label_ptr)?;
+            label_ptrs.push(label_ptr);
+        }
+
+        let node_ptr = self.new_graph_node_table(
+            &node.name,
+            graph_name,
+            input.ptr(),
+            &node.key_columns,
+            &label_ptrs,
+            &definition_ptrs,
+        )?;
+        self.register_graph_node_table(graph, node_ptr)?;
+
+        handles.push(input);
+        Ok(())
+    }
+
+    /// Builds a standalone `SimpleTable` named `name` with `columns` to back a
+    /// node table's input schema. Unlike [`add_table`](Self::add_table) it is not
+    /// registered in the catalog — it exists only as the node table's data
+    /// source — so the caller keeps its handle alive across the analysis.
+    fn add_input_table(
+        &mut self,
+        type_factory: u64,
+        name: &str,
+        columns: &[ColumnDef],
+    ) -> Result<Handle, Error> {
+        let mut table_req = Vec::new();
+        pb::append_string(&mut table_req, 1, name);
+        pb::append_uint64(&mut table_req, 2, 0); // serialization id (unused)
+        let handle = self.acquire_handle(
+            SVC_SIMPLE_TABLE,
+            MID_NEW_SIMPLE_TABLE,
+            &table_req,
+            SVC_SIMPLE_TABLE,
+            MID_FREE_SIMPLE_TABLE,
+        )?;
+        self.add_columns(handle.ptr(), type_factory, name, columns)?;
+        Ok(handle)
+    }
+
+    /// Builds a `SimpleGraphPropertyDeclaration` named `property` of type
+    /// `property_type`; the returned raw handle is transferred into the graph by
+    /// [`register_property_declaration`](Self::register_property_declaration).
+    fn new_graph_property_declaration(
+        &mut self,
+        property: &str,
+        graph_name: &str,
+        property_type: u64,
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, property);
+        pb::append_string(&mut req, 2, graph_name); // single-element graph name path
+        pb::append_handle(&mut req, 3, property_type);
+        self.new_handle(
+            SVC_GRAPH_PROPERTY_DECLARATION,
+            MID_NEW_GRAPH_PROPERTY_DECLARATION,
+            &req,
+        )
+    }
+
+    /// Adds `declaration` to `graph` (`AddPropertyDeclaration`, transferring
+    /// ownership).
+    fn register_property_declaration(&mut self, graph: u64, declaration: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, graph);
+        pb::append_handle(&mut req, 2, declaration);
+        let resp = self.invoke(
+            SVC_SIMPLE_PROPERTY_GRAPH,
+            MID_ADD_GRAPH_PROPERTY_DECLARATION,
+            &req,
+        )?;
+        check_error(&resp)
+    }
+
+    /// Builds a `SimpleGraphPropertyDefinition` binding `declaration` to the SQL
+    /// expression `value_sql`, evaluated over the node table's input columns. The
+    /// returned raw handle is transferred into a node table's property
+    /// definitions.
+    fn new_graph_property_definition(
+        &mut self,
+        declaration: u64,
+        value_sql: &str,
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, declaration);
+        pb::append_string(&mut req, 2, value_sql);
+        self.new_handle(
+            SVC_GRAPH_PROPERTY_DEFINITION,
+            MID_NEW_GRAPH_PROPERTY_DEFINITION,
+            &req,
+        )
+    }
+
+    /// Builds a `SimpleGraphElementLabel` named `label` exposing the properties
+    /// declared by `declarations`; the returned raw handle is transferred into
+    /// the graph by [`register_graph_label`](Self::register_graph_label).
+    fn new_graph_element_label(
+        &mut self,
+        label: &str,
+        graph_name: &str,
+        declarations: &[u64],
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, label);
+        pb::append_string(&mut req, 2, graph_name); // single-element graph name path
+        for &declaration in declarations {
+            pb::append_handle(&mut req, 3, declaration);
+        }
+        self.new_handle(SVC_GRAPH_ELEMENT_LABEL, MID_NEW_GRAPH_ELEMENT_LABEL, &req)
+    }
+
+    /// Adds `label` to `graph` (`AddLabel`, transferring ownership).
+    fn register_graph_label(&mut self, graph: u64, label: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, graph);
+        pb::append_handle(&mut req, 2, label);
+        let resp = self.invoke(SVC_SIMPLE_PROPERTY_GRAPH, MID_ADD_GRAPH_LABEL, &req)?;
+        check_error(&resp)
+    }
+
+    /// Builds a `SimpleGraphNodeTable` over the `input` table, keyed by
+    /// `key_columns` (indices into the input schema), exposing `labels` and
+    /// defining `definitions`. The returned raw handle is transferred into the
+    /// graph by [`register_graph_node_table`](Self::register_graph_node_table).
+    fn new_graph_node_table(
+        &mut self,
+        name: &str,
+        graph_name: &str,
+        input: u64,
+        key_columns: &[u32],
+        labels: &[u64],
+        definitions: &[u64],
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_string(&mut req, 2, graph_name); // single-element graph name path
+        pb::append_handle(&mut req, 3, input);
+        for &key in key_columns {
+            let index = i32::try_from(key).map_err(|_| {
+                Error::Protocol("graph node table key column index out of range".into())
+            })?;
+            pb::append_int32(&mut req, 4, index);
+        }
+        for &label in labels {
+            pb::append_handle(&mut req, 5, label);
+        }
+        for &definition in definitions {
+            pb::append_handle(&mut req, 6, definition);
+        }
+        // Fields 7 (dynamic label) and 8 (dynamic properties) are left absent.
+        self.new_handle(SVC_GRAPH_NODE_TABLE, MID_NEW_GRAPH_NODE_TABLE, &req)
+    }
+
+    /// Adds `node_table` to `graph` (`AddNodeTable`, transferring ownership).
+    fn register_graph_node_table(&mut self, graph: u64, node_table: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, graph);
+        pb::append_handle(&mut req, 2, node_table);
+        let resp = self.invoke(SVC_SIMPLE_PROPERTY_GRAPH, MID_ADD_GRAPH_NODE_TABLE, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers `graph` into `catalog` under `name` (`AddPropertyGraph2`,
+    /// non-owning: the catalog references the graph without freeing it).
+    fn register_property_graph(
+        &mut self,
+        catalog: u64,
+        name: &str,
+        graph: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, graph);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_PROPERTY_GRAPH_NAMED, &req)?;
+        check_error(&resp)
     }
 
     /// Registers each table-valued function into `catalog`, returning the created

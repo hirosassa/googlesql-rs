@@ -10,8 +10,9 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, Error,
-    FunctionDef, FunctionKind, LanguageFeature, Module, NamedCatalog, NamedType, ProcedureDef,
-    QueryParameter, StatementKind, StructField, TableDef, TvfArgument, TvfDef,
+    FunctionDef, FunctionKind, GraphLabelDef, GraphNodeTableDef, GraphPropertyDef, LanguageFeature,
+    Module, NamedCatalog, NamedType, ProcedureDef, PropertyGraphDef, QueryParameter, StatementKind,
+    StructField, TableDef, TvfArgument, TvfDef,
 };
 
 #[test]
@@ -371,6 +372,7 @@ fn resolves_a_registered_scalar_function() {
         types: vec![],
         enums: vec![],
         proto_files: vec![],
+        property_graphs: vec![],
     };
 
     let columns = module
@@ -411,6 +413,7 @@ fn resolves_a_registered_aggregate_function() {
         types: vec![],
         enums: vec![],
         proto_files: vec![],
+        property_graphs: vec![],
     };
 
     let columns = module
@@ -444,6 +447,7 @@ fn registered_function_type_checks_its_arguments() {
         types: vec![],
         enums: vec![],
         proto_files: vec![],
+        property_graphs: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1602,5 +1606,98 @@ fn rejects_a_proto_type_without_descriptors() {
     assert!(
         result.is_err(),
         "expected resolution to fail without descriptors, got: {result:?}"
+    );
+}
+
+#[test]
+fn resolves_a_graph_query_over_a_property_graph() {
+    let mut module = Module::new().unwrap();
+
+    // Register a property graph "people" with a single node table "Person"
+    // backed by an (id, name) input table and exposing a "Person" label with an
+    // "id" and a "name" property. A graph query then resolves against it and a
+    // property access `n.name` types as the property's declared type.
+    let catalog = Catalog {
+        property_graphs: vec![PropertyGraphDef {
+            name: "people".to_string(),
+            node_tables: vec![GraphNodeTableDef {
+                name: "Person".to_string(),
+                columns: vec![
+                    ColumnDef {
+                        name: "id".to_string(),
+                        ty: ColumnType::Int64,
+                    },
+                    ColumnDef {
+                        name: "name".to_string(),
+                        ty: ColumnType::String,
+                    },
+                ],
+                key_columns: vec![0],
+                labels: vec![GraphLabelDef {
+                    name: "Person".to_string(),
+                    properties: vec![
+                        GraphPropertyDef {
+                            name: "id".to_string(),
+                            ty: ColumnType::Int64,
+                            value_sql: "id".to_string(),
+                        },
+                        GraphPropertyDef {
+                            name: "name".to_string(),
+                            ty: ColumnType::String,
+                            value_sql: "name".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in(
+            "GRAPH people MATCH (n:Person) RETURN n.name AS name",
+            &catalog,
+        )
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "STRING");
+}
+
+#[test]
+fn rejects_a_graph_query_against_an_unknown_label() {
+    let mut module = Module::new().unwrap();
+
+    // The graph exposes only the "Person" label, so a pattern matching a label
+    // that was never registered fails to resolve — proving labels are wired into
+    // the graph rather than accepted unconditionally.
+    let catalog = Catalog {
+        property_graphs: vec![PropertyGraphDef {
+            name: "people".to_string(),
+            node_tables: vec![GraphNodeTableDef {
+                name: "Person".to_string(),
+                columns: vec![ColumnDef {
+                    name: "id".to_string(),
+                    ty: ColumnType::Int64,
+                }],
+                key_columns: vec![0],
+                labels: vec![GraphLabelDef {
+                    name: "Person".to_string(),
+                    properties: vec![GraphPropertyDef {
+                        name: "id".to_string(),
+                        ty: ColumnType::Int64,
+                        value_sql: "id".to_string(),
+                    }],
+                }],
+            }],
+        }],
+        ..Catalog::default()
+    };
+
+    let result =
+        module.analyze_statement_in("GRAPH people MATCH (n:Unknown) RETURN n.id AS id", &catalog);
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected an unknown-label error, got: {result:?}"
     );
 }

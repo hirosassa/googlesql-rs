@@ -60,8 +60,9 @@ mod runtime;
 
 pub use analyzer::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, FunctionDef,
-    FunctionKind, LanguageFeature, NamedCatalog, NamedType, ProcedureDef, QueryParameter,
-    StatementKind, StructField, TableDef, TvfArgument, TvfDef,
+    FunctionKind, GraphLabelDef, GraphNodeTableDef, GraphPropertyDef, LanguageFeature,
+    NamedCatalog, NamedType, ProcedureDef, PropertyGraphDef, QueryParameter, StatementKind,
+    StructField, TableDef, TvfArgument, TvfDef,
 };
 pub use ast::{AstNode, BinaryOp, BinaryOperator, Literal, UnaryOp};
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
