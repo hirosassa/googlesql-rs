@@ -32,9 +32,24 @@ const MID_BINARY_OP: i32 = 5;
 const SVC_AST_UNARY_EXPRESSION: i32 = 514;
 const MID_UNARY_OP: i32 = 3;
 
+const SVC_AST_PRINTABLE_LEAF: i32 = 397;
+const MID_LEAF_IMAGE: i32 = 1;
+const SVC_AST_BOOLEAN_LITERAL: i32 = 74;
+const MID_BOOLEAN_VALUE: i32 = 1;
+const SVC_AST_STRING_LITERAL: i32 = 475;
+const MID_STRING_VALUE: i32 = 2;
+const SVC_AST_BYTES_LITERAL: i32 = 83;
+const MID_BYTES_VALUE: i32 = 0;
+
 const KIND_IDENTIFIER: &str = "ASTIdentifier";
 const KIND_BINARY_EXPRESSION: &str = "ASTBinaryExpression";
 const KIND_UNARY_EXPRESSION: &str = "ASTUnaryExpression";
+const KIND_INT_LITERAL: &str = "ASTIntLiteral";
+const KIND_FLOAT_LITERAL: &str = "ASTFloatLiteral";
+const KIND_BOOLEAN_LITERAL: &str = "ASTBooleanLiteral";
+const KIND_STRING_LITERAL: &str = "ASTStringLiteral";
+const KIND_BYTES_LITERAL: &str = "ASTBytesLiteral";
+const KIND_NULL_LITERAL: &str = "ASTNullLiteral";
 
 const EXPORT_TYPE_NAME: &str = "wasmify_get_type_name";
 const TYPE_NAME_PREFIX: &str = "googlesql::";
@@ -188,6 +203,33 @@ impl UnaryOp {
     }
 }
 
+/// The typed value of a literal AST node.
+///
+/// For `INT64`/`FLOAT64` literals the payload is the source image (its digits as
+/// written, e.g. `0x2A` stays hex), since the parser does not evaluate them. For
+/// `STRING`/`BYTES` it is the decoded value — quotes stripped and escapes
+/// resolved — which the raw [`text`](AstNode::text) cannot give.
+///
+/// Marked `#[non_exhaustive]`: `NUMERIC`, `BIGNUMERIC`, and `JSON` literals wrap
+/// a child string literal (whose own [`literal`](AstNode::literal) yields the
+/// value) and are not classified here yet; a variant may be added later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Literal {
+    /// An `INT64` literal, as its source image (e.g. `42`, `0x2A`).
+    Int(String),
+    /// A `FLOAT64` literal, as its source image (e.g. `3.5`, `1e10`).
+    Float(String),
+    /// A `BOOL` literal.
+    Bool(bool),
+    /// A `STRING` literal's decoded value (unquoted, unescaped).
+    String(String),
+    /// A `BYTES` literal's decoded value (unquoted, unescaped).
+    Bytes(Vec<u8>),
+    /// The `NULL` literal.
+    Null,
+}
+
 /// A single node in the AST.
 #[derive(Debug, Clone)]
 pub struct AstNode {
@@ -196,6 +238,7 @@ pub struct AstNode {
     identifier: Option<String>,
     binary_operator: Option<BinaryOperator>,
     unary_operator: Option<UnaryOp>,
+    literal: Option<Literal>,
     children: Vec<Self>,
 }
 
@@ -238,6 +281,14 @@ impl AstNode {
         self.unary_operator
     }
 
+    /// The typed value of a literal node (`INT64`, `FLOAT64`, `BOOL`, `STRING`,
+    /// `BYTES`, or `NULL`).
+    ///
+    /// `None` for every non-literal node kind. See [`Literal`].
+    pub const fn literal(&self) -> Option<&Literal> {
+        self.literal.as_ref()
+    }
+
     /// Extracts the source text for this node from the original SQL string.
     pub fn text<'a>(&self, sql: &'a str) -> Option<&'a str> {
         let range = self.byte_range.clone()?;
@@ -265,6 +316,7 @@ impl Module {
         } else {
             None
         };
+        let literal = self.node_literal(&kind, node_ptr)?;
 
         let num_children = self.node_num_children(node_ptr)?;
         let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
@@ -281,6 +333,7 @@ impl Module {
             identifier,
             binary_operator,
             unary_operator,
+            literal,
             children,
         })
     }
@@ -317,6 +370,51 @@ impl Module {
         let raw = pb::read_int32_at_field(&resp, 1)
             .ok_or_else(|| Error::Protocol("unary operator not found".into()))?;
         UnaryOp::from_wire(raw)
+    }
+
+    /// Returns the typed value of a literal node, or `None` for a non-literal kind.
+    fn node_literal(&mut self, kind: &str, node_ptr: u64) -> Result<Option<Literal>, Error> {
+        let literal = match kind {
+            KIND_INT_LITERAL => Literal::Int(self.node_leaf_image(node_ptr)?),
+            KIND_FLOAT_LITERAL => Literal::Float(self.node_leaf_image(node_ptr)?),
+            KIND_BOOLEAN_LITERAL => Literal::Bool(self.node_boolean_value(node_ptr)?),
+            KIND_STRING_LITERAL => Literal::String(self.node_string_value(node_ptr)?),
+            KIND_BYTES_LITERAL => Literal::Bytes(self.node_bytes_value(node_ptr)?),
+            KIND_NULL_LITERAL => Literal::Null,
+            _ => return Ok(None),
+        };
+        Ok(Some(literal))
+    }
+
+    /// Returns the source image of an `ASTPrintableLeaf` node (e.g. an int or float literal).
+    fn node_leaf_image(&mut self, node_ptr: u64) -> Result<String, Error> {
+        let resp = self.invoke_handle(SVC_AST_PRINTABLE_LEAF, MID_LEAF_IMAGE, node_ptr)?;
+        check_error(&resp)?;
+        pb::read_string_at_field(&resp, 1)
+            .ok_or_else(|| Error::Protocol("literal image not found".into()))
+    }
+
+    /// Returns the boolean value of an `ASTBooleanLiteral` node.
+    fn node_boolean_value(&mut self, node_ptr: u64) -> Result<bool, Error> {
+        let resp = self.invoke_handle(SVC_AST_BOOLEAN_LITERAL, MID_BOOLEAN_VALUE, node_ptr)?;
+        check_error(&resp)?;
+        Ok(pb::read_bool_at_field(&resp, 1))
+    }
+
+    /// Returns the decoded value of an `ASTStringLiteral` node (unquoted, unescaped).
+    fn node_string_value(&mut self, node_ptr: u64) -> Result<String, Error> {
+        let resp = self.invoke_handle(SVC_AST_STRING_LITERAL, MID_STRING_VALUE, node_ptr)?;
+        check_error(&resp)?;
+        pb::read_string_at_field(&resp, 1)
+            .ok_or_else(|| Error::Protocol("string literal value not found".into()))
+    }
+
+    /// Returns the decoded value of an `ASTBytesLiteral` node (unquoted, unescaped).
+    fn node_bytes_value(&mut self, node_ptr: u64) -> Result<Vec<u8>, Error> {
+        let resp = self.invoke_handle(SVC_AST_BYTES_LITERAL, MID_BYTES_VALUE, node_ptr)?;
+        check_error(&resp)?;
+        pb::read_bytes_at_field(&resp, 1)
+            .ok_or_else(|| Error::Protocol("bytes literal value not found".into()))
     }
 
     /// Returns the type name of the node (with the `googlesql::` prefix stripped).
