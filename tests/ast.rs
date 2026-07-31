@@ -125,3 +125,22 @@ fn binary_expression_node_exposes_its_operator() {
         "operands are not binary expressions"
     );
 }
+
+#[test]
+fn unary_expression_node_exposes_its_operator() {
+    use googlesql::UnaryOp;
+    let mut module = Module::new().unwrap();
+
+    let parsed = module.parse_expression("NOT x").unwrap();
+    let root = parsed.root();
+    assert_eq!(root.kind(), "ASTUnaryExpression");
+    assert_eq!(root.unary_operator(), Some(UnaryOp::Not));
+
+    // `~` is bitwise NOT, distinct from logical `NOT`.
+    let parsed = module.parse_expression("~x").unwrap();
+    assert_eq!(parsed.root().unary_operator(), Some(UnaryOp::BitwiseNot));
+
+    // A binary expression is not unary and carries no unary operator.
+    let parsed = module.parse_expression("a + b").unwrap();
+    assert_eq!(parsed.root().unary_operator(), None);
+}
