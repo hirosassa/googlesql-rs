@@ -27,7 +27,8 @@
 //!
 //! - **Parse** SQL into an untyped syntax tree — [`Module::parse_statement`]
 //!   returns a [`ParsedStatement`] whose [`root`](ParsedStatement::root) is an
-//!   [`AstNode`] you can walk.
+//!   [`AstNode`] you can walk. [`Module::parse_expression`] does the same for a
+//!   bare expression fragment (e.g. `a + 1`).
 //! - **Format** SQL — [`Module::format_sql`] canonicalizes and pretty-prints a
 //!   statement.
 //! - **Analyze** SQL against a catalog of [`TableDef`]s — check that a statement
@@ -57,7 +58,7 @@ mod runtime;
 pub use analyzer::{ColumnDef, ColumnType, TableDef};
 pub use ast::AstNode;
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
-pub use parser::{ParsedStatement, ParsedStatements};
+pub use parser::{ParsedExpression, ParsedStatement, ParsedStatements};
 pub use resolved::{
     CastInfo, ColumnReference, JoinType, LimitOffset, LiteralValue, OutputColumn, ResolvedNode,
     SetOperation, SubqueryKind, TableRef,
