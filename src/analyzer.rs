@@ -57,6 +57,7 @@ const MID_MAKE_STRUCT_TYPE: i32 = 33;
 const MID_MAKE_RANGE_TYPE: i32 = 26;
 const MID_MAKE_MAP_TYPE: i32 = 20;
 const MID_MAKE_ENUM_TYPE: i32 = 16;
+const MID_MAKE_PROTO_TYPE: i32 = 22;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -87,6 +88,7 @@ const SVC_DESCRIPTOR_POOL: i32 = 2;
 const MID_NEW_DESCRIPTOR_POOL: i32 = 0;
 const MID_BUILD_FILE: i32 = 5;
 const MID_FIND_ENUM_TYPE_BY_NAME: i32 = 12;
+const MID_FIND_MESSAGE_TYPE_BY_NAME: i32 = 20;
 const MID_FREE_DESCRIPTOR_POOL: i32 = 27;
 
 const SVC_FILE_DESCRIPTOR_PROTO: i32 = 7;
@@ -249,6 +251,11 @@ pub enum ColumnType {
     /// A map from a key type to a value type (`MAP<K, V>`). The key type must
     /// support grouping; the value type is unrestricted.
     Map(Box<Self>, Box<Self>),
+    /// A protobuf message type, by its full name (e.g. `my.package.Person`). The
+    /// message must be declared in one of the catalog's
+    /// [`proto_files`](Catalog::proto_files); it is looked up in the descriptor
+    /// pool built from them.
+    Proto(String),
 }
 
 /// A named field of a [`ColumnType::Struct`].
@@ -279,7 +286,11 @@ impl ColumnType {
             Self::Json => MID_GET_JSON,
             Self::Interval => MID_GET_INTERVAL,
             Self::Geography => MID_GET_GEOGRAPHY,
-            Self::Array(_) | Self::Struct(_) | Self::Range(_) | Self::Map(_, _) => return None,
+            Self::Array(_)
+            | Self::Struct(_)
+            | Self::Range(_)
+            | Self::Map(_, _)
+            | Self::Proto(_) => return None,
         })
     }
 }
@@ -632,6 +643,14 @@ pub struct Catalog {
     /// User-defined enum types, usable wherever a type name is expected (e.g.
     /// `CAST(x AS Color)`).
     pub enums: Vec<EnumDef>,
+    /// Serialized `FileDescriptorProto`s describing protobuf message and enum
+    /// types. Each entry is the wire encoding of a single `FileDescriptorProto`
+    /// (e.g. from `protoc --descriptor_set_out` or a protobuf library); they are
+    /// built into a shared descriptor pool so a [`ColumnType::Proto`] can resolve
+    /// its message by full name.
+    ///
+    /// Only honored on the top-level catalog, like [`parameters`](Self::parameters).
+    pub proto_files: Vec<Vec<u8>>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -679,6 +698,7 @@ struct CatalogContents<'a> {
     connections: &'a [String],
     types: &'a [NamedType],
     enums: &'a [EnumDef],
+    proto_files: &'a [Vec<u8>],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -696,6 +716,7 @@ impl<'a> CatalogContents<'a> {
             connections: &[],
             types: &[],
             enums: &[],
+            proto_files: &[],
         }
     }
 
@@ -712,6 +733,7 @@ impl<'a> CatalogContents<'a> {
             connections: catalog.connections.as_slice(),
             types: catalog.types.as_slice(),
             enums: catalog.enums.as_slice(),
+            proto_files: catalog.proto_files.as_slice(),
         }
     }
 }
@@ -1112,11 +1134,19 @@ impl Module {
         // Bound (not `_`) so these handles stay alive across `analyze` and enqueue
         // their frees only after it returns: dropping them earlier would order
         // their frees ahead of the AnalyzerOutput that references them.
-        let _handles = self.populate_catalog(catalog, type_factory, contents)?;
+        //
+        // The descriptor pool is built first so proto type resolution during
+        // catalog population can find its messages; proto descriptors are a
+        // top-level setting, like query parameters below.
+        let mut handles = Vec::new();
+        self.setup_descriptor_pool(contents.proto_files, &mut handles)?;
+        handles.extend(self.populate_catalog(catalog, type_factory, contents)?);
         // Query parameters are an analysis-wide `AnalyzerOptions` setting rather
         // than a catalog declaration, so only the top-level contents supply them.
         self.add_query_parameters(options, type_factory, contents.parameters)?;
-        self.analyze(sql, options, catalog, type_factory, extract)
+        let result = self.analyze(sql, options, catalog, type_factory, extract);
+        drop(handles);
+        result
     }
 
     /// Registers every declaration in `contents` into `catalog`, recursing into
@@ -1274,6 +1304,15 @@ impl Module {
                 let key_type = self.build_column_type(type_factory, key)?;
                 let value_type = self.build_column_type(type_factory, value)?;
                 self.make_map_type(type_factory, key_type, value_type)
+            }
+            ColumnType::Proto(name) => {
+                let pool = self.descriptor_pool.ok_or_else(|| {
+                    Error::Protocol(format!(
+                        "proto type {name} requires the catalog to declare proto_files"
+                    ))
+                })?;
+                let message = self.find_message_type(pool, name)?;
+                self.make_proto_type(type_factory, message)
             }
             scalar => {
                 let mid = scalar.scalar_type_factory_mid().ok_or_else(|| {
@@ -1712,11 +1751,51 @@ impl Module {
         Ok(())
     }
 
-    /// Wire-encodes `def` as a single-enum `FileDescriptorProto`, parses it into
-    /// `pool`, and builds it so the enum becomes findable by name. Returns the
-    /// source `FileDescriptorProto` handle for the caller to keep alive.
+    /// Wire-encodes `def` as a single-enum `FileDescriptorProto` and builds it
+    /// into `pool` so the enum becomes findable by name. Returns the source
+    /// `FileDescriptorProto` handle for the caller to keep alive.
     fn build_enum_file(&mut self, pool: u64, def: &EnumDef, index: usize) -> Result<Handle, Error> {
         let bytes = encode_enum_fdp(def, index);
+        self.build_file_into_pool(pool, &bytes)
+    }
+
+    /// Builds `proto_files` (each a serialized `FileDescriptorProto`) into a
+    /// fresh `DescriptorPool` and records it as the pool in effect for proto type
+    /// resolution, or clears that pool when there are no descriptors.
+    ///
+    /// The pool and source protos are pushed onto `handles` so they outlive the
+    /// analysis: a resolved [`ColumnType::Proto`] points into the pool's
+    /// descriptors, so freeing it early would leave those references dangling.
+    fn setup_descriptor_pool(
+        &mut self,
+        proto_files: &[Vec<u8>],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        self.descriptor_pool = None;
+        if proto_files.is_empty() {
+            return Ok(());
+        }
+        let pool = self.acquire_handle(
+            SVC_DESCRIPTOR_POOL,
+            MID_NEW_DESCRIPTOR_POOL,
+            &[],
+            SVC_DESCRIPTOR_POOL,
+            MID_FREE_DESCRIPTOR_POOL,
+        )?;
+        for bytes in proto_files {
+            let fdp = self.build_file_into_pool(pool.ptr(), bytes)?;
+            handles.push(fdp);
+        }
+        self.descriptor_pool = Some(pool.ptr());
+        handles.push(pool);
+        Ok(())
+    }
+
+    /// Creates a `FileDescriptorProto`, parses the serialized `bytes` into it via
+    /// the `MessageLite` base (rather than field-by-field setter calls), and
+    /// builds it into `pool` so its descriptors become resolvable. Returns the
+    /// proto handle for the caller to keep alive.
+    fn build_file_into_pool(&mut self, pool: u64, bytes: &[u8]) -> Result<Handle, Error> {
         let fdp = self.acquire_handle(
             SVC_FILE_DESCRIPTOR_PROTO,
             MID_NEW_FILE_DESCRIPTOR_PROTO,
@@ -1724,19 +1803,16 @@ impl Module {
             SVC_FILE_DESCRIPTOR_PROTO,
             MID_FREE_FILE_DESCRIPTOR_PROTO,
         )?;
-        // Populate the proto from serialized bytes via the `MessageLite` base
-        // rather than field-by-field setter calls.
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, fdp.ptr());
-        pb::append_submessage(&mut req, 2, &bytes);
+        pb::append_submessage(&mut req, 2, bytes);
         let resp = self.invoke(SVC_MESSAGE_LITE, MID_PARSE_FROM_STRING, &req)?;
         check_error(&resp)?;
         if !pb::read_bool_at_field(&resp, 1) {
             return Err(Error::Protocol(
-                "ParseFromString rejected the enum descriptor".into(),
+                "ParseFromString rejected the descriptor".into(),
             ));
         }
-        // Build the file into the pool so its descriptors become resolvable.
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, pool);
         pb::append_handle(&mut req, 2, fdp.ptr());
@@ -1774,6 +1850,36 @@ impl Module {
         let ptr = pb::read_handle_at_field(&resp, 2);
         if ptr == 0 {
             return Err(Error::Protocol("MakeEnumType returned null".into()));
+        }
+        Ok(ptr)
+    }
+
+    /// Looks up a protobuf message `Descriptor` by its full name in `pool`.
+    fn find_message_type(&mut self, pool: u64, name: &str) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, pool);
+        pb::append_string(&mut req, 2, name);
+        let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_FIND_MESSAGE_TYPE_BY_NAME, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 1);
+        if ptr == 0 {
+            return Err(Error::Protocol(format!("proto type {name} not found")));
+        }
+        Ok(ptr)
+    }
+
+    /// Builds the `ProtoType` for `message`. The resulting type is owned by the
+    /// `type_factory`, so the caller retains no handle for it. The handle is read
+    /// from response field 2 (field 1 carries the abstract type-node variant).
+    fn make_proto_type(&mut self, type_factory: u64, message: u64) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        pb::append_handle(&mut req, 2, message);
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_PROTO_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 2);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeProtoType returned null".into()));
         }
         Ok(ptr)
     }

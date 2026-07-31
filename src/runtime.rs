@@ -129,6 +129,18 @@ pub struct Module {
     /// and [`Module::enable_only_language_features`](crate::Module::enable_only_language_features),
     /// and applied when [`Module::language_options`] (re)builds its handle.
     language_feature_mode: LanguageFeatureMode,
+    /// The `DescriptorPool` handle in effect for the current analysis, or `None`
+    /// when no proto descriptors are registered.
+    ///
+    /// Proto type resolution needs the pool built from a catalog's `proto_files`
+    /// available deep in the type-building recursion (`build_column_type`), far
+    /// from where the pool is created. Rather than thread it through every
+    /// type-building signature, the analysis pipeline sets it for the duration of
+    /// a single populate-and-analyze and clears it at each entry. The pool's own
+    /// lifetime is owned by an RAII `Handle` kept alive across the analysis; this
+    /// field only borrows its pointer, so it must never be read outside that
+    /// window.
+    pub(crate) descriptor_pool: Option<u64>,
     /// Reusable request-encoding buffer for hot-path RPCs.
     ///
     /// The AST and resolved-tree walks issue thousands of small RPCs, most of
@@ -293,6 +305,7 @@ impl Module {
             invoke_cache: HashMap::new(),
             export_cache: HashMap::new(),
             cached_language_options: None,
+            descriptor_pool: None,
             supported_statement_kinds: Vec::new(),
             language_feature_mode: LanguageFeatureMode::Maximum(Vec::new()),
             scratch: Vec::new(),
