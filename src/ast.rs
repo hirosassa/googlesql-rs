@@ -29,8 +29,12 @@ const SVC_AST_BINARY_EXPRESSION: i32 = 72;
 const MID_BINARY_IS_NOT: i32 = 3;
 const MID_BINARY_OP: i32 = 5;
 
+const SVC_AST_UNARY_EXPRESSION: i32 = 514;
+const MID_UNARY_OP: i32 = 3;
+
 const KIND_IDENTIFIER: &str = "ASTIdentifier";
 const KIND_BINARY_EXPRESSION: &str = "ASTBinaryExpression";
+const KIND_UNARY_EXPRESSION: &str = "ASTUnaryExpression";
 
 const EXPORT_TYPE_NAME: &str = "wasmify_get_type_name";
 const TYPE_NAME_PREFIX: &str = "googlesql::";
@@ -141,6 +145,49 @@ impl BinaryOp {
     }
 }
 
+/// The operator of an `ASTUnaryExpression` node (e.g. `NOT x`, `-x`, `~x`).
+///
+/// Unlike [`BinaryOp`], a unary operator carries no separate negation flag:
+/// `IS NOT UNKNOWN` is its own variant rather than a negated `IS UNKNOWN`.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL may add operators (its grammar
+/// grows over time); adding a variant later must not break callers that match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnaryOp {
+    /// Logical `NOT`.
+    Not,
+    /// Bitwise `~`.
+    BitwiseNot,
+    /// Unary `-` (negation).
+    Minus,
+    /// Unary `+`.
+    Plus,
+    /// `IS UNKNOWN`.
+    IsUnknown,
+    /// `IS NOT UNKNOWN`.
+    IsNotUnknown,
+}
+
+impl UnaryOp {
+    /// Maps a GoogleSQL `ASTUnaryExpression::Op` wire value to a variant.
+    ///
+    /// Errors on an unknown value (including the `NotSet` sentinel `1`) rather
+    /// than defaulting, so a genuine unary expression never reports a wrong
+    /// operator silently.
+    fn from_wire(raw: i32) -> Result<Self, Error> {
+        Ok(match raw {
+            2 => Self::Not,
+            3 => Self::BitwiseNot,
+            4 => Self::Minus,
+            5 => Self::Plus,
+            6 => Self::IsUnknown,
+            7 => Self::IsNotUnknown,
+            other => return Err(Error::Protocol(format!("unknown unary operator {other}"))),
+        })
+    }
+}
+
 /// A single node in the AST.
 #[derive(Debug, Clone)]
 pub struct AstNode {
@@ -148,6 +195,7 @@ pub struct AstNode {
     byte_range: Option<Range<usize>>,
     identifier: Option<String>,
     binary_operator: Option<BinaryOperator>,
+    unary_operator: Option<UnaryOp>,
     children: Vec<Self>,
 }
 
@@ -183,6 +231,13 @@ impl AstNode {
         self.binary_operator
     }
 
+    /// The operator of an `ASTUnaryExpression` node (e.g. `NOT x`, `-x`, `~x`).
+    ///
+    /// `None` for every other node kind. See [`UnaryOp`].
+    pub const fn unary_operator(&self) -> Option<UnaryOp> {
+        self.unary_operator
+    }
+
     /// Extracts the source text for this node from the original SQL string.
     pub fn text<'a>(&self, sql: &'a str) -> Option<&'a str> {
         let range = self.byte_range.clone()?;
@@ -205,6 +260,11 @@ impl Module {
         } else {
             None
         };
+        let unary_operator = if kind == KIND_UNARY_EXPRESSION {
+            Some(self.node_unary_operator(node_ptr)?)
+        } else {
+            None
+        };
 
         let num_children = self.node_num_children(node_ptr)?;
         let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
@@ -220,6 +280,7 @@ impl Module {
             byte_range,
             identifier,
             binary_operator,
+            unary_operator,
             children,
         })
     }
@@ -247,6 +308,15 @@ impl Module {
         let negated = pb::read_bool_at_field(&not_resp, 1);
 
         Ok(BinaryOperator { operator, negated })
+    }
+
+    /// Returns the operator of an `ASTUnaryExpression` node.
+    fn node_unary_operator(&mut self, node_ptr: u64) -> Result<UnaryOp, Error> {
+        let resp = self.invoke_handle(SVC_AST_UNARY_EXPRESSION, MID_UNARY_OP, node_ptr)?;
+        check_error(&resp)?;
+        let raw = pb::read_int32_at_field(&resp, 1)
+            .ok_or_else(|| Error::Protocol("unary operator not found".into()))?;
+        UnaryOp::from_wire(raw)
     }
 
     /// Returns the type name of the node (with the `googlesql::` prefix stripped).
