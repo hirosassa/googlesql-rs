@@ -28,8 +28,10 @@
 //! - **Parse** SQL into an untyped syntax tree — [`Module::parse_statement`]
 //!   returns a [`ParsedStatement`] whose [`root`](ParsedStatement::root) is an
 //!   [`AstNode`] you can walk. [`Module::parse_expression`] does the same for a
-//!   bare expression fragment (e.g. `a + 1`), and [`Module::parse_type`] for a
-//!   type declaration (e.g. `ARRAY<INT64>`).
+//!   bare expression fragment (e.g. `a + 1`), [`Module::parse_type`] for a
+//!   type declaration (e.g. `ARRAY<INT64>`), and [`Module::parse_script`] for a
+//!   full script with scripting constructs (`DECLARE`, `IF`, `WHILE`, `BEGIN
+//!   ... END`).
 //! - **Format** SQL — [`Module::format_sql`] canonicalizes and pretty-prints a
 //!   statement.
 //! - **Analyze** SQL against a catalog of [`TableDef`]s — check that a statement
@@ -59,7 +61,7 @@ mod runtime;
 pub use analyzer::{ColumnDef, ColumnType, TableDef};
 pub use ast::AstNode;
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
-pub use parser::{ParsedExpression, ParsedStatement, ParsedStatements, ParsedType};
+pub use parser::{ParsedExpression, ParsedScript, ParsedStatement, ParsedStatements, ParsedType};
 pub use resolved::{
     CastInfo, ColumnReference, CreateMode, InsertMode, JoinType, LimitOffset, LiteralValue,
     MergeAction, MergeMatch, OutputColumn, ResolvedNode, SetOperation, SubqueryKind, TableRef,
