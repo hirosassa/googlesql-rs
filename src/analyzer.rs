@@ -84,6 +84,8 @@ const MID_FREE_FUNCTION: i32 = 55;
 
 /// `FunctionEnums::Mode::SCALAR` — a plain scalar function.
 const FUNCTION_MODE_SCALAR: i32 = 2;
+/// `FunctionEnums::Mode::AGGREGATE` — an aggregate function (e.g. `SUM`).
+const FUNCTION_MODE_AGGREGATE: i32 = 3;
 /// `num_occurrences` for a required argument in a signature (exactly one).
 const ARGUMENT_REQUIRED_OCCURRENCES: i32 = 1;
 /// Group name assigned to functions registered through [`Catalog::functions`].
@@ -193,7 +195,8 @@ pub struct TableDef {
     pub columns: Vec<ColumnDef>,
 }
 
-/// A user-defined scalar function registered into the catalog before analysis.
+/// A user-defined function (scalar or aggregate) registered into the catalog
+/// before analysis.
 ///
 /// Registering it lets a call such as `my_add(1, 2)` resolve, type-checked
 /// against the declared argument types and yielding the declared return type.
@@ -205,6 +208,33 @@ pub struct FunctionDef {
     pub arguments: Vec<ColumnType>,
     /// The type the function returns.
     pub return_type: ColumnType,
+    /// Whether the function is scalar or aggregate; controls how calls to it may
+    /// be written (an aggregate must be called with aggregate semantics).
+    pub kind: FunctionKind,
+}
+
+/// How a registered [`FunctionDef`] is invoked in SQL.
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL supports more modes (e.g.
+/// analytic/window functions) than are modeled here yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum FunctionKind {
+    /// A plain scalar function, called once per row (e.g. `LOWER(x)`).
+    #[default]
+    Scalar,
+    /// An aggregate function, called over a group of rows (e.g. `SUM(x)`).
+    Aggregate,
+}
+
+impl FunctionKind {
+    /// The `FunctionEnums::Mode` wire value passed to `NewFunction`.
+    const fn mode(self) -> i32 {
+        match self {
+            Self::Scalar => FUNCTION_MODE_SCALAR,
+            Self::Aggregate => FUNCTION_MODE_AGGREGATE,
+        }
+    }
 }
 
 /// The user-defined catalog entries made visible to the analyzer.
@@ -217,7 +247,7 @@ pub struct FunctionDef {
 pub struct Catalog {
     /// User-defined tables.
     pub tables: Vec<TableDef>,
-    /// User-defined scalar functions.
+    /// User-defined functions.
     pub functions: Vec<FunctionDef>,
 }
 
@@ -767,7 +797,7 @@ impl Module {
         Ok(handles)
     }
 
-    /// Builds a scalar `Function` from `function` and registers it into `catalog`.
+    /// Builds a `Function` from `function` and registers it into `catalog`.
     /// Every acquired handle is pushed onto `handles` so it outlives the analysis.
     fn add_function(
         &mut self,
@@ -788,7 +818,7 @@ impl Module {
         }
 
         let signature = self.new_function_signature(result_arg.ptr(), &argument_ptrs)?;
-        let handle = self.new_function(&function.name, signature.ptr())?;
+        let handle = self.new_function(&function.name, function.kind.mode(), signature.ptr())?;
         self.register_function(catalog, handle.ptr())?;
 
         handles.push(result_arg);
@@ -832,12 +862,13 @@ impl Module {
         )
     }
 
-    /// Builds a scalar `Function` named `name` carrying a single `signature`.
-    fn new_function(&mut self, name: &str, signature: u64) -> Result<Handle, Error> {
+    /// Builds a `Function` named `name` with the given `mode`, carrying a single
+    /// `signature`.
+    fn new_function(&mut self, name: &str, mode: i32, signature: u64) -> Result<Handle, Error> {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, name);
         pb::append_string(&mut req, 2, USER_FUNCTION_GROUP);
-        pb::append_int32(&mut req, 3, FUNCTION_MODE_SCALAR);
+        pb::append_int32(&mut req, 3, mode);
         pb::append_handle(&mut req, 4, signature);
         self.acquire_handle(
             SVC_FUNCTION,
