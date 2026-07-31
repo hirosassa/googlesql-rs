@@ -9,8 +9,8 @@
 )]
 
 use googlesql::{
-    ColumnDef, ColumnType, Error, JoinType, LiteralValue, Module, ResolvedNode, SetOperation,
-    SubqueryKind, TableDef,
+    ColumnDef, ColumnType, Error, InsertMode, JoinType, LiteralValue, Module, ResolvedNode,
+    SetOperation, SubqueryKind, TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -1949,4 +1949,76 @@ fn non_column_definition_nodes_have_no_column_definition_name() {
     // The statement root does not declare a column.
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.column_definition_name(), None);
+}
+
+#[test]
+fn plain_insert_reports_the_error_mode() {
+    let mut module = Module::new().unwrap();
+
+    // A bare INSERT treats a row conflict as an error.
+    let root = module
+        .resolved_tree("INSERT INTO users (id) VALUES (1)", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedInsertStmt");
+    assert_eq!(root.insert_mode(), Some(InsertMode::Error));
+}
+
+#[test]
+fn insert_or_ignore_reports_the_ignore_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "INSERT OR IGNORE INTO users (id) VALUES (1)",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.insert_mode(), Some(InsertMode::Ignore));
+}
+
+#[test]
+fn insert_or_replace_reports_the_replace_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "INSERT OR REPLACE INTO users (id) VALUES (1)",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.insert_mode(), Some(InsertMode::Replace));
+}
+
+#[test]
+fn insert_or_update_reports_the_update_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree(
+            "INSERT OR UPDATE INTO users (id) VALUES (1)",
+            &[users_table()],
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.insert_mode(), Some(InsertMode::Update));
+}
+
+#[test]
+fn non_insert_nodes_have_no_insert_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.insert_mode(), None);
 }

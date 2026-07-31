@@ -61,7 +61,7 @@ pub use ast::AstNode;
 pub use error::{Error, ErrorLocation, SqlError, SqlErrorKind};
 pub use parser::{ParsedExpression, ParsedStatement, ParsedStatements, ParsedType};
 pub use resolved::{
-    CastInfo, ColumnReference, JoinType, LimitOffset, LiteralValue, OutputColumn, ResolvedNode,
-    SetOperation, SubqueryKind, TableRef,
+    CastInfo, ColumnReference, InsertMode, JoinType, LimitOffset, LiteralValue, OutputColumn,
+    ResolvedNode, SetOperation, SubqueryKind, TableRef,
 };
 pub use runtime::Module;
