@@ -40,6 +40,7 @@ const KIND_ARRAY_SCAN: &str = "ResolvedArrayScan";
 const KIND_PROJECT_SCAN: &str = "ResolvedProjectScan";
 const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
 const KIND_COLUMN_DEFINITION: &str = "ResolvedColumnDefinition";
+const KIND_INSERT_STMT: &str = "ResolvedInsertStmt";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
 /// values [`LiteralValue`] models.
@@ -127,6 +128,16 @@ const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
 /// `CREATE TABLE t (a INT64)`), returned as a string.
 const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 844;
 const MID_COLUMN_DEFINITION_NAME: i32 = 14;
+
+/// `ResolvedInsertStmt`: `InsertMode` is the conflict-handling mode, as a
+/// `ResolvedInsertStmtEnums::InsertMode` (1=OR ERROR, 2=OR IGNORE,
+/// 3=OR REPLACE, 4=OR UPDATE). A plain `INSERT` is `OR ERROR`.
+const SVC_RESOLVED_INSERT_STMT: i32 = 1121;
+const MID_INSERT_MODE: i32 = 26;
+const INSERT_MODE_OR_ERROR: i32 = 1;
+const INSERT_MODE_OR_IGNORE: i32 = 2;
+const INSERT_MODE_OR_REPLACE: i32 = 3;
+const INSERT_MODE_OR_UPDATE: i32 = 4;
 
 /// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
 /// (each a literal or parameter, or a null handle when the clause is absent).
@@ -402,6 +413,24 @@ pub enum SetOperation {
     ExceptDistinct,
 }
 
+/// The conflict-handling mode of a `ResolvedInsertStmt`.
+///
+/// A plain `INSERT` is [`Error`](Self::Error); the `OR IGNORE` / `OR REPLACE`
+/// / `OR UPDATE` prefixes select the other modes. Marked `#[non_exhaustive]`
+/// for parity with [`SetOperation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InsertMode {
+    /// A plain `INSERT` (`OR ERROR`): a row conflict is an error.
+    Error,
+    /// `INSERT OR IGNORE`: conflicting rows are skipped.
+    Ignore,
+    /// `INSERT OR REPLACE`: conflicting rows are replaced.
+    Replace,
+    /// `INSERT OR UPDATE`: conflicting rows are updated.
+    Update,
+}
+
 /// The kind of a `ResolvedSubqueryExpr`.
 ///
 /// Marked `#[non_exhaustive]` because GoogleSQL also defines `LIKE ANY`/`LIKE
@@ -490,6 +519,7 @@ pub struct ResolvedNode {
     project_columns: Option<Vec<String>>,
     computed_column_name: Option<String>,
     column_definition_name: Option<String>,
+    insert_mode: Option<InsertMode>,
     parse_location: Option<Range<usize>>,
     children: Vec<Self>,
 }
@@ -720,6 +750,13 @@ impl ResolvedNode {
     /// node per declared column.
     pub fn column_definition_name(&self) -> Option<&str> {
         self.column_definition_name.as_deref()
+    }
+
+    /// The conflict-handling mode of this node, or `None` if it is not a
+    /// `ResolvedInsertStmt`. A plain `INSERT` reports [`InsertMode::Error`];
+    /// the `OR IGNORE` / `OR REPLACE` / `OR UPDATE` prefixes report the others.
+    pub const fn insert_mode(&self) -> Option<InsertMode> {
+        self.insert_mode
     }
 
     /// The byte range this node spans within the analyzed SQL, or `None` if the
@@ -1000,6 +1037,11 @@ impl Module {
         } else {
             None
         };
+        let insert_mode = if kind == KIND_INSERT_STMT {
+            Some(self.node_insert_mode(node)?)
+        } else {
+            None
+        };
         // A location can attach to any resolved node, so this is not gated on kind.
         let parse_location = self.node_parse_location(node)?;
         let cast = if kind == KIND_CAST {
@@ -1051,6 +1093,7 @@ impl Module {
             project_columns,
             computed_column_name,
             column_definition_name,
+            insert_mode,
             parse_location,
             children,
         })
@@ -1237,6 +1280,23 @@ impl Module {
             Some(OP_TYPE_EXCEPT_ALL) => Ok(SetOperation::ExceptAll),
             Some(OP_TYPE_EXCEPT_DISTINCT) => Ok(SetOperation::ExceptDistinct),
             other => Err(Error::Protocol(format!("unknown set operation: {other:?}"))),
+        }
+    }
+
+    /// Reads the conflict-handling mode of a `ResolvedInsertStmt`.
+    ///
+    /// `insert_mode()` is a `ResolvedInsertStmtEnums::InsertMode`. An
+    /// unrecognized or missing value is surfaced as an error rather than mapped
+    /// to a default.
+    fn node_insert_mode(&mut self, node: u64) -> Result<InsertMode, Error> {
+        let resp = self.invoke_handle(SVC_RESOLVED_INSERT_STMT, MID_INSERT_MODE, node)?;
+        check_error(&resp)?;
+        match pb::read_int32_at_field(&resp, 1) {
+            Some(INSERT_MODE_OR_ERROR) => Ok(InsertMode::Error),
+            Some(INSERT_MODE_OR_IGNORE) => Ok(InsertMode::Ignore),
+            Some(INSERT_MODE_OR_REPLACE) => Ok(InsertMode::Replace),
+            Some(INSERT_MODE_OR_UPDATE) => Ok(InsertMode::Update),
+            other => Err(Error::Protocol(format!("unknown insert mode: {other:?}"))),
         }
     }
 
