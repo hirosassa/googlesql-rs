@@ -1171,107 +1171,67 @@ impl Module {
         self.build_resolved_node(statement).map(Some)
     }
 
+    /// Reads a kind-gated node attribute: runs `read` and wraps its result in
+    /// `Some` when `cond` holds, otherwise yields `None` without an RPC round
+    /// trip. Keeps [`build_resolved_node`](Self::build_resolved_node) free of
+    /// the repeated `if cond { Some(..?) } else { None }` boilerplate.
+    fn read_if<T>(
+        &mut self,
+        cond: bool,
+        read: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
+        if cond {
+            Ok(Some(read(self)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Recursively copies `node`'s kind, resolved type, and children into an
     /// owned tree.
     fn build_resolved_node(&mut self, node: u64) -> Result<ResolvedNode, Error> {
         let kind = self.node_kind(node)?;
         let type_name = self.node_type_name(node)?;
-        let column_ref = if kind == KIND_COLUMN_REF {
-            Some(self.node_column_ref(node)?)
-        } else {
-            None
-        };
+        let is_function_call = kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL;
+
+        let column_ref = self.read_if(kind == KIND_COLUMN_REF, |s| s.node_column_ref(node))?;
         let literal_value = if kind == KIND_LITERAL {
             self.node_literal_value(node)?
         } else {
             None
         };
-        let has_explicit_type = if kind == KIND_LITERAL {
-            Some(self.node_has_explicit_type(node)?)
-        } else {
-            None
-        };
-        let is_function_call = kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL;
-        let function_name = if is_function_call {
-            Some(self.node_function_name(node)?)
-        } else {
-            None
-        };
-        let argument_count = if is_function_call {
-            Some(self.node_argument_count(node)?)
-        } else {
-            None
-        };
-        let table_name = if kind == KIND_TABLE_SCAN {
-            Some(self.node_table_name(node)?)
-        } else {
-            None
-        };
-        let scan_columns = if kind == KIND_TABLE_SCAN {
-            Some(self.node_scan_columns(node)?)
-        } else {
-            None
-        };
-        let alias = if kind == KIND_TABLE_SCAN {
-            Some(self.node_alias(node)?)
-        } else {
-            None
-        };
-        let column_index_list = if kind == KIND_TABLE_SCAN {
-            Some(self.node_column_index_list(node)?)
-        } else {
-            None
-        };
-        let distinct = if kind == KIND_AGGREGATE_FUNCTION_CALL {
-            Some(self.node_distinct(node)?)
-        } else {
-            None
-        };
-        let join_type = if kind == KIND_JOIN_SCAN {
-            Some(self.node_join_type(node)?)
-        } else {
-            None
-        };
-        let has_using = if kind == KIND_JOIN_SCAN {
-            Some(self.node_has_using(node)?)
-        } else {
-            None
-        };
-        let is_descending = if kind == KIND_ORDER_BY_ITEM {
-            Some(self.node_is_descending(node)?)
-        } else {
-            None
-        };
-        let is_correlated = if kind == KIND_COLUMN_REF {
-            Some(self.node_is_correlated(node)?)
-        } else {
-            None
-        };
-        let set_operation = if kind == KIND_SET_OPERATION_SCAN {
-            Some(self.node_set_operation(node)?)
-        } else {
-            None
-        };
-        let subquery_kind = if kind == KIND_SUBQUERY_EXPR {
-            Some(self.node_subquery_kind(node)?)
-        } else {
-            None
-        };
-        let group_by_columns = if kind == KIND_AGGREGATE_SCAN {
-            Some(self.node_group_by_columns(node)?)
-        } else {
-            None
-        };
-        let aggregate_columns = if kind == KIND_AGGREGATE_SCAN {
-            Some(self.node_aggregate_columns(node)?)
-        } else {
-            None
-        };
-        let limit_offset = if kind == KIND_LIMIT_OFFSET_SCAN {
-            Some(self.node_limit_offset(node)?)
-        } else {
-            None
-        };
+        let has_explicit_type =
+            self.read_if(kind == KIND_LITERAL, |s| s.node_has_explicit_type(node))?;
+        let function_name = self.read_if(is_function_call, |s| s.node_function_name(node))?;
+        let argument_count = self.read_if(is_function_call, |s| s.node_argument_count(node))?;
+        let table_name = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_table_name(node))?;
+        let scan_columns = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_scan_columns(node))?;
+        let alias = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_alias(node))?;
+        let column_index_list =
+            self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_column_index_list(node))?;
+        let distinct = self.read_if(kind == KIND_AGGREGATE_FUNCTION_CALL, |s| {
+            s.node_distinct(node)
+        })?;
+        let join_type = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_join_type(node))?;
+        let has_using = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_has_using(node))?;
+        let is_descending =
+            self.read_if(kind == KIND_ORDER_BY_ITEM, |s| s.node_is_descending(node))?;
+        let is_correlated =
+            self.read_if(kind == KIND_COLUMN_REF, |s| s.node_is_correlated(node))?;
+        let set_operation = self.read_if(kind == KIND_SET_OPERATION_SCAN, |s| {
+            s.node_set_operation(node)
+        })?;
+        let subquery_kind =
+            self.read_if(kind == KIND_SUBQUERY_EXPR, |s| s.node_subquery_kind(node))?;
+        let group_by_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
+            s.node_group_by_columns(node)
+        })?;
+        let aggregate_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
+            s.node_aggregate_columns(node)
+        })?;
+        let limit_offset = self.read_if(kind == KIND_LIMIT_OFFSET_SCAN, |s| {
+            s.node_limit_offset(node)
+        })?;
         let with_query_name = if kind == KIND_WITH_ENTRY {
             Some(self.rpc_string(SVC_RESOLVED_WITH_ENTRY, MID_WITH_QUERY_NAME, node)?)
         } else if kind == KIND_WITH_REF_SCAN {
@@ -1283,65 +1243,33 @@ impl Module {
         } else {
             None
         };
-        let is_value_table = if kind == KIND_QUERY_STMT {
-            Some(self.node_is_value_table(node)?)
-        } else {
-            None
-        };
-        let struct_field_index = if kind == KIND_GET_STRUCT_FIELD {
-            Some(self.rpc_int32(SVC_RESOLVED_GET_STRUCT_FIELD, MID_FIELD_IDX, node)?)
-        } else {
-            None
-        };
-        let array_element_name = if kind == KIND_ARRAY_SCAN {
-            Some(self.node_array_element_name(node)?)
-        } else {
-            None
-        };
-        let is_outer = if kind == KIND_ARRAY_SCAN {
-            Some(self.node_is_outer(node)?)
-        } else {
-            None
-        };
-        let project_columns = if kind == KIND_PROJECT_SCAN {
-            Some(self.node_scan_columns(node)?)
-        } else {
-            None
-        };
-        let computed_column_name = if kind == KIND_COMPUTED_COLUMN {
-            Some(self.node_computed_column_name(node)?)
-        } else {
-            None
-        };
-        let column_definition_name = if kind == KIND_COLUMN_DEFINITION {
-            Some(self.rpc_string(
+        let is_value_table =
+            self.read_if(kind == KIND_QUERY_STMT, |s| s.node_is_value_table(node))?;
+        let struct_field_index = self.read_if(kind == KIND_GET_STRUCT_FIELD, |s| {
+            s.rpc_int32(SVC_RESOLVED_GET_STRUCT_FIELD, MID_FIELD_IDX, node)
+        })?;
+        let array_element_name =
+            self.read_if(kind == KIND_ARRAY_SCAN, |s| s.node_array_element_name(node))?;
+        let is_outer = self.read_if(kind == KIND_ARRAY_SCAN, |s| s.node_is_outer(node))?;
+        let project_columns =
+            self.read_if(kind == KIND_PROJECT_SCAN, |s| s.node_scan_columns(node))?;
+        let computed_column_name = self.read_if(kind == KIND_COMPUTED_COLUMN, |s| {
+            s.node_computed_column_name(node)
+        })?;
+        let column_definition_name = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
+            s.rpc_string(
                 SVC_RESOLVED_COLUMN_DEFINITION,
                 MID_COLUMN_DEFINITION_NAME,
                 node,
-            )?)
-        } else {
-            None
-        };
-        let column_definition_type = if kind == KIND_COLUMN_DEFINITION {
-            Some(self.node_column_definition_type(node)?)
-        } else {
-            None
-        };
-        let insert_mode = if kind == KIND_INSERT_STMT {
-            Some(self.node_insert_mode(node)?)
-        } else {
-            None
-        };
-        let insert_columns = if kind == KIND_INSERT_STMT {
-            Some(self.node_insert_columns(node)?)
-        } else {
-            None
-        };
-        let create_mode = if is_create_statement(&kind) {
-            Some(self.node_create_mode(node)?)
-        } else {
-            None
-        };
+            )
+        })?;
+        let column_definition_type = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
+            s.node_column_definition_type(node)
+        })?;
+        let insert_mode = self.read_if(kind == KIND_INSERT_STMT, |s| s.node_insert_mode(node))?;
+        let insert_columns =
+            self.read_if(kind == KIND_INSERT_STMT, |s| s.node_insert_columns(node))?;
+        let create_mode = self.read_if(is_create_statement(&kind), |s| s.node_create_mode(node))?;
         let (merge_action, merge_match) = if kind == KIND_MERGE_WHEN {
             (
                 Some(self.node_merge_action(node)?),
@@ -1357,11 +1285,9 @@ impl Module {
         } else {
             None
         };
-        let parameter_name = if kind == KIND_PARAMETER {
-            Some(self.rpc_string(SVC_RESOLVED_PARAMETER, MID_PARAMETER_NAME, node)?)
-        } else {
-            None
-        };
+        let parameter_name = self.read_if(kind == KIND_PARAMETER, |s| {
+            s.rpc_string(SVC_RESOLVED_PARAMETER, MID_PARAMETER_NAME, node)
+        })?;
         let child_ptrs = self.child_nodes(node)?;
         let mut children = Vec::with_capacity(child_ptrs.len());
         for child in child_ptrs {
