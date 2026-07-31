@@ -487,6 +487,63 @@ fn zero_value_literals_decode_as_zero() {
 }
 
 #[test]
+fn narrow_integer_and_float_literals_carry_their_value() {
+    let mut module = Module::new().unwrap();
+
+    // The narrow numeric types have no literal syntax, so they arise from a
+    // literal `CAST`, which the analyzer constant-folds into a typed
+    // ResolvedLiteral of the target type.
+    let cases: [(&str, LiteralValue); 4] = [
+        ("SELECT CAST(1 AS INT32)", LiteralValue::Int32(1)),
+        ("SELECT CAST(2 AS UINT32)", LiteralValue::Uint32(2)),
+        ("SELECT CAST(3 AS UINT64)", LiteralValue::Uint64(3)),
+        ("SELECT CAST(1.5 AS FLOAT)", LiteralValue::Float(1.5)),
+    ];
+
+    for (sql, expected) in cases {
+        let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+        let literal = find_kind(&root, "ResolvedLiteral")
+            .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
+        assert_eq!(literal.literal_value(), Some(&expected), "for {sql}");
+    }
+}
+
+#[test]
+fn complex_scalar_literals_carry_their_canonical_text() {
+    let mut module = Module::new().unwrap();
+
+    // NUMERIC/DATETIME/TIME/INTERVAL are complex scalars; their value comes back
+    // as the canonical text GoogleSQL prints for the underlying value. INTERVAL
+    // needs its string form (`INTERVAL '1' DAY`) to fold to a literal — the
+    // datepart form `INTERVAL 1 DAY` stays a function call over an INT64 literal.
+    let cases: [(&str, LiteralValue); 4] = [
+        (
+            "SELECT NUMERIC '1.5'",
+            LiteralValue::Numeric("1.5".to_string()),
+        ),
+        (
+            "SELECT DATETIME '2020-01-02 03:04:05'",
+            LiteralValue::Datetime("2020-01-02 03:04:05".to_string()),
+        ),
+        (
+            "SELECT TIME '03:04:05'",
+            LiteralValue::Time("03:04:05".to_string()),
+        ),
+        (
+            "SELECT INTERVAL '1' DAY",
+            LiteralValue::Interval("0-0 1 0:0:0".to_string()),
+        ),
+    ];
+
+    for (sql, expected) in cases {
+        let root = module.resolved_tree(sql, &[]).unwrap().unwrap();
+        let literal = find_kind(&root, "ResolvedLiteral")
+            .unwrap_or_else(|| panic!("{sql} should produce a ResolvedLiteral"));
+        assert_eq!(literal.literal_value(), Some(&expected), "for {sql}");
+    }
+}
+
+#[test]
 fn non_literal_nodes_have_no_literal_value() {
     let mut module = Module::new().unwrap();
 
