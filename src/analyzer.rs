@@ -21,8 +21,14 @@ use crate::runtime::{Handle, Module};
 
 const SVC_ANALYZER: i32 = 0;
 const MID_ANALYZE_EXPRESSION: i32 = 0;
+const MID_ANALYZE_NEXT_STATEMENT: i32 = 1;
 const MID_ANALYZE_STATEMENT: i32 = 2;
 const MID_ANALYZE_TYPE: i32 = 4;
+
+const SVC_PARSE_RESUME_LOCATION: i32 = 695;
+const MID_NEW_RESUME_LOCATION_FROM_STRING: i32 = 2;
+const MID_RESUME_LOCATION_BYTE_POSITION: i32 = 10;
+const MID_FREE_RESUME_LOCATION: i32 = 14;
 
 const SVC_ANALYZER_OPTIONS: i32 = 554;
 const MID_NEW_ANALYZER_OPTIONS: i32 = 1;
@@ -1067,6 +1073,25 @@ impl Module {
         )
     }
 
+    /// Analyzes every statement in a possibly multi-statement `sql` against a
+    /// catalog populated with `tables`, returning how many statements were
+    /// analyzed.
+    ///
+    /// Statements are separated by semicolons (a trailing semicolon is optional);
+    /// each is resolved in turn against the same catalog. Analysis stops at the
+    /// first statement that fails, returning [`Error::GoogleSql`] with a location
+    /// relative to the whole script. An empty or whitespace-only script yields
+    /// `0`.
+    pub fn analyze_statements(&mut self, sql: &str, tables: &[TableDef]) -> Result<usize, Error> {
+        let analyzed = self.run_multi_analysis(
+            sql,
+            CatalogContents::tables_only(tables),
+            AnalysisOptions::default(),
+            |_, _| Ok(()),
+        )?;
+        Ok(analyzed.len())
+    }
+
     /// Resolves a type name to its canonical resolved type name.
     ///
     /// Parses and analyzes `type_name` (e.g. `"INT64"`, `"ARRAY<STRING>"`,
@@ -1188,6 +1213,21 @@ impl Module {
         )
     }
 
+    /// Analyzes every statement in a possibly multi-statement `sql` against
+    /// `catalog`, returning how many statements were analyzed.
+    ///
+    /// The [`Catalog`] counterpart of [`Module::analyze_statements`]: each
+    /// statement resolves against the catalog's tables and user-defined functions.
+    pub fn analyze_statements_in(&mut self, sql: &str, catalog: &Catalog) -> Result<usize, Error> {
+        let analyzed = self.run_multi_analysis(
+            sql,
+            CatalogContents::of(catalog),
+            AnalysisOptions::default(),
+            |_, _| Ok(()),
+        )?;
+        Ok(analyzed.len())
+    }
+
     /// Resolves a type name against `catalog` to its canonical resolved type name.
     ///
     /// The [`Catalog`] counterpart of [`Module::analyze_type`]: `type_name` may
@@ -1283,6 +1323,53 @@ impl Module {
         opts: AnalysisOptions,
         extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
     ) -> Result<T, Error> {
+        // The single-statement pipeline: one `AnalyzeStatement`/`AnalyzeExpression`/
+        // `AnalyzeType` call, then `extract` on its output.
+        self.run_pipeline(sql, catalog, opts, move |module, sql, call, catalog, tf| {
+            module.analyze(sql, call, catalog, tf, extract)
+        })
+    }
+
+    /// Runs the analysis pipeline over every statement in a possibly
+    /// multi-statement `sql`, invoking `extract` on each statement's
+    /// `AnalyzerOutput` in turn and collecting the results.
+    ///
+    /// The catalog and options are built once and shared across all statements, so
+    /// the extractor sees each statement resolved against the same catalog. A
+    /// statement that fails analysis stops the run and its error is returned.
+    fn run_multi_analysis<T>(
+        &mut self,
+        sql: &str,
+        catalog: CatalogContents,
+        opts: AnalysisOptions,
+        extract: impl FnMut(&mut Self, u64) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        self.run_pipeline(sql, catalog, opts, move |module, sql, call, catalog, tf| {
+            module.analyze_each(sql, call, catalog, tf, extract)
+        })
+    }
+
+    /// Sets up the shared analysis state — `AnalyzerOptions`, language features,
+    /// the catalog, and the type factory — then hands control to `terminal`, which
+    /// performs the actual analyzer call(s) and reads their output while every
+    /// handle is still alive.
+    ///
+    /// When `prune_columns` is set, table scans expose only the columns the query
+    /// references; this matters only for extractors that inspect scan columns
+    /// (i.e. lineage), so the schema/success APIs leave it off.
+    ///
+    /// Every wasm-side handle acquired during the analysis is an RAII [`Handle`]
+    /// that enqueues its own free on drop; the enclosing [`with_frees`](Module::with_frees)
+    /// releases them all, whether the analysis succeeded or failed. All the
+    /// handles stay alive until `terminal` returns, so it reads the `AnalyzerOutput`
+    /// (and the catalog/type factory that own its nodes and types) intact.
+    fn run_pipeline<R>(
+        &mut self,
+        sql: &str,
+        catalog: CatalogContents,
+        opts: AnalysisOptions,
+        terminal: impl FnOnce(&mut Self, &str, AnalyzerCall, u64, u64) -> Result<R, Error>,
+    ) -> Result<R, Error> {
         self.with_frees(move |module| {
             let options = module.acquire_handle(
                 SVC_ANALYZER_OPTIONS,
@@ -1305,7 +1392,7 @@ impl Module {
                 mid: opts.target.mid(),
                 frees_output: opts.target.frees_output(),
             };
-            module.analyze_with_options(sql, call, catalog, extract)
+            module.analyze_with_options(sql, call, catalog, terminal)
         })
     }
 
@@ -1370,13 +1457,13 @@ impl Module {
     /// Builds the `TypeFactory` handle and runs the analysis against it. The
     /// factory outlives the analysis (it owns the resolved output's types) and is
     /// freed by the top-level [`flush_frees`](Module::flush_frees).
-    fn analyze_with_options<T>(
+    fn analyze_with_options<R>(
         &mut self,
         sql: &str,
         call: AnalyzerCall,
         catalog: CatalogContents,
-        extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
-    ) -> Result<T, Error> {
+        terminal: impl FnOnce(&mut Self, &str, AnalyzerCall, u64, u64) -> Result<R, Error>,
+    ) -> Result<R, Error> {
         let type_factory = self.acquire_handle(
             SVC_TYPE_FACTORY,
             MID_NEW_TYPE_FACTORY,
@@ -1384,21 +1471,21 @@ impl Module {
             SVC_TYPE_FACTORY,
             MID_FREE_TYPE_FACTORY,
         )?;
-        self.analyze_with_catalog(sql, call, type_factory.ptr(), catalog, extract)
+        self.analyze_with_catalog(sql, call, type_factory.ptr(), catalog, terminal)
     }
 
     /// Builds a `SimpleCatalog` handle over `type_factory`, populates it with the
     /// catalog contents, and runs the analysis. The catalog outlives the analysis
     /// (it owns the resolved output's nodes) and is freed by the top-level
     /// [`flush_frees`](Module::flush_frees).
-    fn analyze_with_catalog<T>(
+    fn analyze_with_catalog<R>(
         &mut self,
         sql: &str,
         call: AnalyzerCall,
         type_factory: u64,
         contents: CatalogContents,
-        extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
-    ) -> Result<T, Error> {
+        terminal: impl FnOnce(&mut Self, &str, AnalyzerCall, u64, u64) -> Result<R, Error>,
+    ) -> Result<R, Error> {
         let mut catalog_req = Vec::new();
         pb::append_string(&mut catalog_req, 1, "");
         pb::append_handle(&mut catalog_req, 2, type_factory);
@@ -1410,24 +1497,25 @@ impl Module {
             MID_FREE_SIMPLE_CATALOG,
         )?;
         self.add_builtin_functions(catalog.ptr())?;
-        self.populate_and_analyze(sql, call, catalog.ptr(), type_factory, contents, extract)
+        self.populate_and_analyze(sql, call, catalog.ptr(), type_factory, contents, terminal)
     }
 
-    /// Registers a catalog's declarations and runs the analysis. Every handle
-    /// created while populating the catalog stays alive until `extract` returns
-    /// and is freed by the top-level [`flush_frees`](Module::flush_frees).
-    fn populate_and_analyze<T>(
+    /// Registers a catalog's declarations and runs the analysis via `terminal`.
+    /// Every handle created while populating the catalog stays alive until
+    /// `terminal` returns and is freed by the top-level
+    /// [`flush_frees`](Module::flush_frees).
+    fn populate_and_analyze<R>(
         &mut self,
         sql: &str,
         call: AnalyzerCall,
         catalog: u64,
         type_factory: u64,
         contents: CatalogContents,
-        extract: impl FnOnce(&mut Self, u64) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        // Bound (not `_`) so these handles stay alive across `analyze` and enqueue
-        // their frees only after it returns: dropping them earlier would order
-        // their frees ahead of the AnalyzerOutput that references them.
+        terminal: impl FnOnce(&mut Self, &str, AnalyzerCall, u64, u64) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        // Bound (not `_`) so these handles stay alive across the analysis and
+        // enqueue their frees only after it returns: dropping them earlier would
+        // order their frees ahead of the AnalyzerOutput that references them.
         //
         // The descriptor pool is built first so proto type resolution during
         // catalog population can find its messages; proto descriptors are a
@@ -1438,7 +1526,7 @@ impl Module {
         // Query parameters are an analysis-wide `AnalyzerOptions` setting rather
         // than a catalog declaration, so only the top-level contents supply them.
         self.add_query_parameters(call.options, type_factory, contents.parameters)?;
-        let result = self.analyze(sql, call, catalog, type_factory, extract);
+        let result = terminal(self, sql, call, catalog, type_factory);
         drop(handles);
         result
     }
@@ -2921,5 +3009,96 @@ impl Module {
         } else {
             extract(self, output_ptr)
         }
+    }
+
+    /// Analyzes each statement of a possibly multi-statement `sql` in turn via
+    /// `AnalyzeNextStatement`, running `extract` on each statement's
+    /// `AnalyzerOutput` and collecting the results.
+    ///
+    /// A `ParseResumeLocation` carries the byte offset between calls; each call
+    /// advances it past one statement (and its separating semicolon). The loop
+    /// stops once the resume location reaches the end of the input or a call
+    /// yields no statement (only trailing whitespace or comments remain). Each
+    /// statement's owned `AnalyzerOutput` is freed after its extractor runs. A
+    /// statement that fails analysis surfaces its error and ends the run.
+    fn analyze_each<T>(
+        &mut self,
+        sql: &str,
+        call: AnalyzerCall,
+        catalog: u64,
+        type_factory: u64,
+        mut extract: impl FnMut(&mut Self, u64) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        // `AnalyzeNextStatement` errors if asked to parse a stretch of only
+        // whitespace, so the loop stops once the offset reaches the last
+        // non-whitespace byte. The resume location still gets the full input for
+        // correct byte offsets; only the termination bound is trimmed.
+        let effective_len = i32::try_from(sql.trim_end().len())
+            .map_err(|_| Error::Protocol("sql too long".into()))?;
+        let mut resume_req = Vec::new();
+        pb::append_string(&mut resume_req, 1, sql);
+        let resume = self.acquire_handle(
+            SVC_PARSE_RESUME_LOCATION,
+            MID_NEW_RESUME_LOCATION_FROM_STRING,
+            &resume_req,
+            SVC_PARSE_RESUME_LOCATION,
+            MID_FREE_RESUME_LOCATION,
+        )?;
+
+        let mut results = Vec::new();
+        loop {
+            let position = self.resume_byte_position(resume.ptr())?;
+            // Nothing left to parse once the offset reaches the trailing
+            // whitespace after the last statement.
+            if position >= effective_len {
+                break;
+            }
+            let output_ptr =
+                self.analyze_next_statement(resume.ptr(), call.options, catalog, type_factory)?;
+            // A null output with an OK status means only trailing whitespace or
+            // comments followed the last statement, so the script is exhausted.
+            if output_ptr == 0 {
+                break;
+            }
+            let output =
+                self.register_free(SVC_ANALYZER_OUTPUT, MID_FREE_ANALYZER_OUTPUT, output_ptr);
+            results.push(extract(self, output.ptr())?);
+            // The call always advances past a produced statement; guard against a
+            // stuck offset so a non-advancing location cannot loop forever.
+            if self.resume_byte_position(resume.ptr())? <= position {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    /// Invokes `AnalyzeNextStatement`, returning the next statement's
+    /// `AnalyzerOutput` handle (0 when the input holds no further statement).
+    fn analyze_next_statement(
+        &mut self,
+        resume: u64,
+        options: u64,
+        catalog: u64,
+        type_factory: u64,
+    ) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, resume);
+        pb::append_handle(&mut req, 2, options);
+        pb::append_handle(&mut req, 3, catalog);
+        pb::append_handle(&mut req, 4, type_factory);
+        let resp = self.invoke(SVC_ANALYZER, MID_ANALYZE_NEXT_STATEMENT, &req)?;
+        check_error(&resp)?;
+        Ok(pb::read_handle_at_field(&resp, 2))
+    }
+
+    /// Reads a `ParseResumeLocation`'s current byte offset into the input.
+    fn resume_byte_position(&mut self, resume: u64) -> Result<i32, Error> {
+        let resp = self.invoke_handle(
+            SVC_PARSE_RESUME_LOCATION,
+            MID_RESUME_LOCATION_BYTE_POSITION,
+            resume,
+        )?;
+        check_error(&resp)?;
+        Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
     }
 }
