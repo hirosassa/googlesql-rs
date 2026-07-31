@@ -23,12 +23,23 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install ${{ matrix.rust }}
+        id: toolchain
         run: |
           rustup toolchain install ${{ matrix.rust }} --profile minimal --component rustfmt,clippy
           rustup default ${{ matrix.rust }}
+          echo "rustc=$(rustc -V | sed 's/[^a-zA-Z0-9._-]/-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          # Rotate the cache key on the exact rustc build. Nightly's compiler
+          # changes daily and Cargo fingerprints embed its commit, so a single
+          # shared entry leaves the heavy wasmtime/cranelift dep tree cold on
+          # every nightly run (~3x slower than stable). Keying on `rustc -V`
+          # means each toolchain build gets its own entry that is saved warm and
+          # reused until the next rotation; stable/beta rarely change, so their
+          # caches stay warm as before.
+          key: ${{ steps.toolchain.outputs.rustc }}
 
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
