@@ -99,9 +99,9 @@ pub enum SqlErrorKind {
     /// `Syntax error:` (e.g. `Syntax error: Unexpected end of statement`).
     Syntax,
 
-    /// A feature the underlying GoogleSQL build does not support, such as an
-    /// unimplemented statement kind (e.g. `ALTER MODEL`). Identified by the
-    /// `not supported` phrase.
+    /// A feature the underlying GoogleSQL build does not support, reported with
+    /// the `not supported` phrase (e.g. `Analytic functions not supported`).
+    /// Identified by that phrase appearing anywhere in the message.
     Unsupported,
 
     /// Any other error GoogleSQL reported while resolving the statement: an

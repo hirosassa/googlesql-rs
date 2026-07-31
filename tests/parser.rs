@@ -130,3 +130,40 @@ fn parses_qualify_clause_in_a_script() {
     );
     assert_eq!(parsed.statements().len(), 2);
 }
+
+/// The parser accepts DML and DDL statements, not just queries; each parses
+/// into a non-empty canonical form. (Semantic acceptance is the analyzer's
+/// job; here we only pin that parsing does not reject them.)
+#[test]
+fn parses_dml_and_ddl_statements() {
+    let mut module = Module::new().unwrap();
+
+    for sql in [
+        "INSERT INTO t (a) VALUES (1)",
+        "UPDATE t SET a = 1 WHERE a = 2",
+        "DELETE FROM t WHERE a = 1",
+        "CREATE TABLE t (a INT64)",
+    ] {
+        let parsed = module
+            .parse_statement(sql)
+            .unwrap_or_else(|e| panic!("failed to parse {sql:?}: {e:?}"));
+        assert!(
+            !parsed.canonical_sql().is_empty(),
+            "empty canonical SQL for {sql:?}"
+        );
+    }
+}
+
+/// A transaction-control script parses into its individual statements.
+#[test]
+fn parses_transaction_control_script() {
+    let mut module = Module::new().unwrap();
+    let parsed = module.parse_statements("BEGIN; SELECT 1; COMMIT;").unwrap();
+
+    assert!(
+        parsed.is_complete(),
+        "no error expected: {:?}",
+        parsed.error()
+    );
+    assert_eq!(parsed.statements().len(), 3);
+}

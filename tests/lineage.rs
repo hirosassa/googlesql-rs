@@ -78,6 +78,36 @@ fn reports_every_table_in_a_join() {
 }
 
 #[test]
+fn reports_tables_of_insert_select() {
+    let mut module = Module::new().unwrap();
+
+    let src = TableDef {
+        name: "src".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+    let dst = TableDef {
+        name: "dst".to_string(),
+        columns: vec![ColumnDef {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+    };
+
+    // `INSERT ... SELECT` is a DML statement: the generic resolved-tree walk
+    // surfaces both the source table it reads and the destination it targets.
+    let tables = module
+        .referenced_tables("INSERT INTO dst (id) SELECT id FROM src", &[src, dst])
+        .unwrap();
+
+    let names: Vec<&str> = tables.iter().map(|t| t.name()).collect();
+    assert!(names.contains(&"src"), "expected src, got: {names:?}");
+    assert!(names.contains(&"dst"), "expected dst, got: {names:?}");
+}
+
+#[test]
 fn propagates_analysis_error() {
     let mut module = Module::new().unwrap();
 

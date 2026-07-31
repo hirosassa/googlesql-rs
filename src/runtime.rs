@@ -26,6 +26,7 @@ const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 const SVC_LANGUAGE_OPTIONS: i32 = 678;
 const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
+const MID_SET_SUPPORTS_ALL_STATEMENT_KINDS: i32 = 20;
 
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
@@ -341,14 +342,17 @@ impl Module {
     }
 
     /// Returns a cached `LanguageOptions` handle with the maximum released
-    /// language feature set enabled, building it on first use.
+    /// language feature set enabled and all statement kinds accepted, building
+    /// it on first use.
     ///
     /// GoogleSQL gates optional syntax (e.g. the `QUALIFY` clause) behind
-    /// language features that default `LanguageOptions` leaves off. The parser
+    /// language features that default `LanguageOptions` leaves off, and its
+    /// analyzer resolves only query statements unless told otherwise. The parser
     /// and analyzer both wire the returned handle into their options so those
-    /// features are accepted. The configuration is immutable and identical for
-    /// every call, so the handle is built once and cached for the `Module`'s
-    /// lifetime rather than reconstructed (two RPCs) per parse/analyze. It is
+    /// features — and DML/DDL/script statement kinds — are accepted. The
+    /// configuration is immutable and identical for every call, so the handle is
+    /// built once and cached for the `Module`'s lifetime rather than
+    /// reconstructed per parse/analyze. It is
     /// deliberately not registered for deferred free: the parser/analyzer option
     /// setters copy it rather than adopt it, and its wasm-side allocation is
     /// reclaimed when the `Store` is dropped with the instance.
@@ -360,6 +364,17 @@ impl Module {
         let resp = self.invoke(
             SVC_LANGUAGE_OPTIONS,
             MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES,
+            &pb::handle_arg(ptr),
+        )?;
+        crate::error::check_error(&resp)?;
+        // Accept every statement kind (DML, DDL, script control), not just
+        // query. Without this the analyzer rejects e.g. INSERT/CREATE TABLE
+        // with "Statement not supported"; the parser is unaffected since it
+        // never restricts statement kinds. Equivalent to passing an empty set
+        // to SetSupportedStatementKinds.
+        let resp = self.invoke(
+            SVC_LANGUAGE_OPTIONS,
+            MID_SET_SUPPORTS_ALL_STATEMENT_KINDS,
             &pb::handle_arg(ptr),
         )?;
         crate::error::check_error(&resp)?;
