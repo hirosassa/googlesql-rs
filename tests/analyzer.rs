@@ -10,8 +10,8 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, NamedCatalog, QueryParameter, StatementKind, StructField, TableDef,
-    TvfArgument, TvfDef,
+    LanguageFeature, Module, NamedCatalog, ProcedureDef, QueryParameter, StatementKind,
+    StructField, TableDef, TvfArgument, TvfDef,
 };
 
 #[test]
@@ -366,6 +366,7 @@ fn resolves_a_registered_scalar_function() {
         parameters: vec![],
         table_functions: vec![],
         catalogs: vec![],
+        procedures: vec![],
     };
 
     let columns = module
@@ -401,6 +402,7 @@ fn resolves_a_registered_aggregate_function() {
         parameters: vec![],
         table_functions: vec![],
         catalogs: vec![],
+        procedures: vec![],
     };
 
     let columns = module
@@ -429,6 +431,7 @@ fn registered_function_type_checks_its_arguments() {
         parameters: vec![],
         table_functions: vec![],
         catalogs: vec![],
+        procedures: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1249,4 +1252,56 @@ fn resolves_a_map_column() {
 
     assert_eq!(columns.len(), 1);
     assert_eq!(columns[0].type_name(), "MAP<STRING, INT64>");
+}
+
+#[test]
+fn analyzes_a_call_to_a_registered_procedure() {
+    let mut module = Module::new().unwrap();
+
+    // A procedure taking one INT64 argument; CALL with a matching argument
+    // resolves against it.
+    let catalog = Catalog {
+        procedures: vec![ProcedureDef {
+            name: "my_proc".to_string(),
+            arguments: vec![ColumnType::Int64],
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("CALL my_proc(1)", &catalog);
+    assert!(
+        result.is_ok(),
+        "expected the CALL to resolve, got: {result:?}"
+    );
+}
+
+#[test]
+fn procedure_call_type_checks_its_argument() {
+    let mut module = Module::new().unwrap();
+
+    // The procedure expects INT64; calling it with a STRING fails type checking.
+    let catalog = Catalog {
+        procedures: vec![ProcedureDef {
+            name: "my_proc".to_string(),
+            arguments: vec![ColumnType::Int64],
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("CALL my_proc('x')", &catalog);
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected a type-mismatch error, got: {result:?}"
+    );
+}
+
+#[test]
+fn rejects_a_call_to_an_unknown_procedure() {
+    let mut module = Module::new().unwrap();
+
+    let result = module.analyze_statement_in("CALL missing_proc()", &Catalog::default());
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected an unknown-procedure error, got: {result:?}"
+    );
 }

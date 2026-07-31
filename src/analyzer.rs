@@ -90,6 +90,11 @@ const SVC_FUNCTION: i32 = 636;
 const MID_NEW_FUNCTION: i32 = 3;
 const MID_FREE_FUNCTION: i32 = 55;
 
+const SVC_PROCEDURE: i32 = 703;
+const MID_NEW_PROCEDURE: i32 = 0;
+const MID_FREE_PROCEDURE: i32 = 6;
+const MID_ADD_PROCEDURE_NAMED: i32 = 65;
+
 const SVC_TVF_RELATION: i32 = 1400;
 const MID_NEW_TVF_RELATION: i32 = 0;
 const MID_FREE_TVF_RELATION: i32 = 10;
@@ -495,6 +500,21 @@ pub struct TvfDef {
     pub columns: Vec<ColumnDef>,
 }
 
+/// A user-defined stored procedure, registered into the catalog before
+/// analysis.
+///
+/// Registering it lets a `CALL my_proc(1)` statement resolve, type-checking each
+/// call argument against [`arguments`](Self::arguments). A procedure has no
+/// expression result — it is invoked by `CALL`, not referenced in a query.
+#[derive(Debug, Clone)]
+pub struct ProcedureDef {
+    /// The procedure name as invoked by `CALL`.
+    pub name: String,
+    /// The argument types, in order; each `CALL` argument is checked against
+    /// these. Empty for a procedure called as `CALL my_proc()`.
+    pub arguments: Vec<ColumnType>,
+}
+
 /// The declarations made visible to the analyzer for a query.
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
@@ -523,6 +543,8 @@ pub struct Catalog {
     /// Nested sub-catalogs, each a named namespace whose declarations resolve
     /// only under its qualified name (e.g. `dataset.table`).
     pub catalogs: Vec<NamedCatalog>,
+    /// User-defined stored procedures, invoked by `CALL`.
+    pub procedures: Vec<ProcedureDef>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -566,6 +588,7 @@ struct CatalogContents<'a> {
     parameters: &'a [QueryParameter],
     table_functions: &'a [TvfDef],
     catalogs: &'a [NamedCatalog],
+    procedures: &'a [ProcedureDef],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -579,6 +602,7 @@ impl<'a> CatalogContents<'a> {
             parameters: &[],
             table_functions: &[],
             catalogs: &[],
+            procedures: &[],
         }
     }
 
@@ -591,6 +615,7 @@ impl<'a> CatalogContents<'a> {
             parameters: catalog.parameters.as_slice(),
             table_functions: catalog.table_functions.as_slice(),
             catalogs: catalog.catalogs.as_slice(),
+            procedures: catalog.procedures.as_slice(),
         }
     }
 }
@@ -995,6 +1020,7 @@ impl Module {
             type_factory,
             contents.table_functions,
         )?);
+        self.add_procedures(catalog, type_factory, contents.procedures, &mut handles)?;
         for sub in contents.catalogs {
             let child = self.new_simple_catalog(&sub.name, type_factory)?;
             let child_handles = self.populate_catalog(
@@ -1276,13 +1302,8 @@ impl Module {
         let result_type = self.build_column_type(type_factory, &function.return_type)?;
         let result_arg = self.new_function_argument_type(result_type)?;
 
-        let mut argument_ptrs = Vec::with_capacity(function.arguments.len());
-        for argument in &function.arguments {
-            let argument_type = self.build_column_type(type_factory, argument)?;
-            let argument_arg = self.new_function_argument_type(argument_type)?;
-            argument_ptrs.push(argument_arg.ptr());
-            handles.push(argument_arg);
-        }
+        let argument_ptrs =
+            self.build_argument_types(type_factory, &function.arguments, handles)?;
 
         let signature = self.new_function_signature(result_arg.ptr(), &argument_ptrs)?;
         let handle = self.new_function(&function.name, function.kind.mode(), signature.ptr())?;
@@ -1306,6 +1327,27 @@ impl Module {
             SVC_FUNCTION_ARGUMENT_TYPE,
             MID_FREE_FUNCTION_ARGUMENT_TYPE,
         )
+    }
+
+    /// Wraps each type in `arguments` in a `FunctionArgumentType`, returning the
+    /// resulting handles' raw pointers in order for a `FunctionSignature`. Every
+    /// created handle is pushed onto `handles` so it outlives the analysis: the
+    /// signature references these argument types by raw pointer and must not see
+    /// them freed.
+    fn build_argument_types(
+        &mut self,
+        type_factory: u64,
+        arguments: &[ColumnType],
+        handles: &mut Vec<Handle>,
+    ) -> Result<Vec<u64>, Error> {
+        let mut argument_ptrs = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let argument_type = self.build_column_type(type_factory, argument)?;
+            let argument_arg = self.new_function_argument_type(argument_type)?;
+            argument_ptrs.push(argument_arg.ptr());
+            handles.push(argument_arg);
+        }
+        Ok(argument_ptrs)
     }
 
     /// Builds a `FunctionSignature` from a result and argument `FunctionArgumentType`s.
@@ -1353,6 +1395,81 @@ impl Module {
         pb::append_handle(&mut req, 1, catalog);
         pb::append_handle(&mut req, 2, function);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_FUNCTION, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each procedure into `catalog`, pushing every wasm-side handle
+    /// created along the way onto `handles` so the caller keeps them alive across
+    /// the analysis (a `Procedure` references its `FunctionSignature` and
+    /// argument types by raw pointer, and the catalog references it without
+    /// owning it).
+    fn add_procedures(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        procedures: &[ProcedureDef],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        for procedure in procedures {
+            self.add_procedure(catalog, type_factory, procedure, handles)?;
+        }
+        Ok(())
+    }
+
+    /// Builds a `Procedure` from `procedure` and registers it under its name in
+    /// `catalog`. A procedure carries a `FunctionSignature` like a function; it
+    /// has no expression result, so the signature's result type is an
+    /// unused `INT64` placeholder and only the argument types are meaningful.
+    fn add_procedure(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        procedure: &ProcedureDef,
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        let result_type = self.build_column_type(type_factory, &ColumnType::Int64)?;
+        let result_arg = self.new_function_argument_type(result_type)?;
+
+        let argument_ptrs =
+            self.build_argument_types(type_factory, &procedure.arguments, handles)?;
+
+        let signature = self.new_function_signature(result_arg.ptr(), &argument_ptrs)?;
+        let handle = self.new_procedure(&procedure.name, signature.ptr())?;
+        self.register_procedure(catalog, &procedure.name, handle.ptr())?;
+
+        handles.push(result_arg);
+        handles.push(signature);
+        handles.push(handle);
+        Ok(())
+    }
+
+    /// Builds a `Procedure` named `name` carrying a single `signature`. The name
+    /// is passed as a one-element name path.
+    fn new_procedure(&mut self, name: &str, signature: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_handle(&mut req, 2, signature);
+        self.acquire_handle(
+            SVC_PROCEDURE,
+            MID_NEW_PROCEDURE,
+            &req,
+            SVC_PROCEDURE,
+            MID_FREE_PROCEDURE,
+        )
+    }
+
+    /// Registers `procedure` under `name` in `catalog` (non-owning).
+    fn register_procedure(
+        &mut self,
+        catalog: u64,
+        name: &str,
+        procedure: u64,
+    ) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, procedure);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_PROCEDURE_NAMED, &req)?;
         check_error(&resp)
     }
 
