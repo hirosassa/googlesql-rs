@@ -10,8 +10,8 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    LanguageFeature, Module, QueryParameter, StatementKind, StructField, TableDef, TvfArgument,
-    TvfDef,
+    LanguageFeature, Module, NamedCatalog, QueryParameter, StatementKind, StructField, TableDef,
+    TvfArgument, TvfDef,
 };
 
 #[test]
@@ -365,6 +365,7 @@ fn resolves_a_registered_scalar_function() {
         constants: vec![],
         parameters: vec![],
         table_functions: vec![],
+        catalogs: vec![],
     };
 
     let columns = module
@@ -399,6 +400,7 @@ fn resolves_a_registered_aggregate_function() {
         constants: vec![],
         parameters: vec![],
         table_functions: vec![],
+        catalogs: vec![],
     };
 
     let columns = module
@@ -426,6 +428,7 @@ fn registered_function_type_checks_its_arguments() {
         constants: vec![],
         parameters: vec![],
         table_functions: vec![],
+        catalogs: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -1085,5 +1088,101 @@ fn rejects_unknown_table_valued_function() {
     assert!(
         matches!(result, Err(Error::GoogleSql(_))),
         "expected an unresolved-function error, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_a_query_against_a_nested_catalog() {
+    let mut module = Module::new().unwrap();
+
+    // Register a sub-catalog "ds" holding table "t"; the table then resolves
+    // under the qualified name "ds.t", mirroring a BigQuery dataset.table.
+    let catalog = Catalog {
+        catalogs: vec![NamedCatalog {
+            name: "ds".to_string(),
+            catalog: Catalog {
+                tables: vec![TableDef {
+                    name: "t".to_string(),
+                    columns: vec![ColumnDef {
+                        name: "a".to_string(),
+                        ty: ColumnType::Int64,
+                    }],
+                }],
+                ..Catalog::default()
+            },
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT a FROM ds.t", &catalog);
+    assert!(
+        result.is_ok(),
+        "expected the qualified table to resolve, got: {result:?}"
+    );
+}
+
+#[test]
+fn nested_catalog_tables_are_not_visible_unqualified() {
+    let mut module = Module::new().unwrap();
+
+    // The table lives only inside the "ds" sub-catalog, so referencing it
+    // without the "ds." prefix must fail: the namespace is not flattened.
+    let catalog = Catalog {
+        catalogs: vec![NamedCatalog {
+            name: "ds".to_string(),
+            catalog: Catalog {
+                tables: vec![TableDef {
+                    name: "t".to_string(),
+                    columns: vec![ColumnDef {
+                        name: "a".to_string(),
+                        ty: ColumnType::Int64,
+                    }],
+                }],
+                ..Catalog::default()
+            },
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT a FROM t", &catalog);
+    assert!(
+        matches!(result, Err(Error::GoogleSql(_))),
+        "expected the unqualified table to be unresolved, got: {result:?}"
+    );
+}
+
+#[test]
+fn analyzes_a_query_against_a_two_level_nested_catalog() {
+    let mut module = Module::new().unwrap();
+
+    // Nest catalogs two deep ("a" -> "b" -> table "t") so the table resolves
+    // under the fully qualified "a.b.t".
+    let catalog = Catalog {
+        catalogs: vec![NamedCatalog {
+            name: "a".to_string(),
+            catalog: Catalog {
+                catalogs: vec![NamedCatalog {
+                    name: "b".to_string(),
+                    catalog: Catalog {
+                        tables: vec![TableDef {
+                            name: "t".to_string(),
+                            columns: vec![ColumnDef {
+                                name: "n".to_string(),
+                                ty: ColumnType::Int64,
+                            }],
+                        }],
+                        ..Catalog::default()
+                    },
+                }],
+                ..Catalog::default()
+            },
+        }],
+        ..Catalog::default()
+    };
+
+    let result = module.analyze_statement_in("SELECT n FROM a.b.t", &catalog);
+    assert!(
+        result.is_ok(),
+        "expected the two-level qualified table to resolve, got: {result:?}"
     );
 }

@@ -60,6 +60,7 @@ const MID_NEW_SIMPLE_CATALOG: i32 = 0;
 const MID_ADD_BUILTIN_FUNCTIONS_AND_TYPES: i32 = 3;
 const MID_ADD_FUNCTION: i32 = 10;
 const MID_ADD_TABLE_NAMED: i32 = 72;
+const MID_ADD_CATALOG_NAMED: i32 = 4;
 const MID_ADD_CONSTANT_NAMED: i32 = 8;
 const MID_ADD_TABLE_VALUED_FUNCTION_NAMED: i32 = 73;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
@@ -488,10 +489,12 @@ pub struct TvfDef {
 /// The declarations made visible to the analyzer for a query.
 ///
 /// Bundles the [`tables`](Self::tables), [`functions`](Self::functions),
-/// [`constants`](Self::constants), and [`parameters`](Self::parameters) a query
-/// may reference, passed to the `*_in` analysis entry points. The table-only
-/// entry points (e.g. [`Module::analyze_output_columns`]) are equivalent to a
-/// `Catalog` with only tables.
+/// [`constants`](Self::constants), [`parameters`](Self::parameters),
+/// [`table_functions`](Self::table_functions), and nested
+/// [`catalogs`](Self::catalogs) a query may reference, passed to the `*_in`
+/// analysis entry points. The table-only entry points (e.g.
+/// [`Module::analyze_output_columns`]) are equivalent to a `Catalog` with only
+/// tables.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     /// User-defined tables.
@@ -501,9 +504,34 @@ pub struct Catalog {
     /// User-defined named constants.
     pub constants: Vec<ConstantDef>,
     /// Typed query parameters (`@name`).
+    ///
+    /// Only honored on the top-level catalog: parameters are an analysis-wide
+    /// setting, not a namespaced declaration, so any set on a nested
+    /// [`NamedCatalog`] are ignored.
     pub parameters: Vec<QueryParameter>,
     /// User-defined table-valued functions.
     pub table_functions: Vec<TvfDef>,
+    /// Nested sub-catalogs, each a named namespace whose declarations resolve
+    /// only under its qualified name (e.g. `dataset.table`).
+    pub catalogs: Vec<NamedCatalog>,
+}
+
+/// A named nested catalog: a namespace whose declarations resolve only under
+/// its name.
+///
+/// Registering a `NamedCatalog` called `ds` whose inner [`Catalog`] holds a
+/// table `t` lets `SELECT * FROM ds.t` resolve, mirroring a BigQuery
+/// `dataset.table`. The unqualified `t` stays unresolved: nesting does not
+/// flatten the namespace. Sub-catalogs may nest arbitrarily deep (`a.b.t`).
+///
+/// Unlike the top-level catalog, a nested catalog does not receive GoogleSQL's
+/// builtin functions and types — it is a pure namespace for user declarations.
+#[derive(Debug, Clone)]
+pub struct NamedCatalog {
+    /// The namespace name, as used to qualify references (the `ds` in `ds.t`).
+    pub name: String,
+    /// The declarations visible under [`name`](Self::name).
+    pub catalog: Catalog,
 }
 
 /// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
@@ -528,11 +556,12 @@ struct CatalogContents<'a> {
     constants: &'a [ConstantDef],
     parameters: &'a [QueryParameter],
     table_functions: &'a [TvfDef],
+    catalogs: &'a [NamedCatalog],
 }
 
 impl<'a> CatalogContents<'a> {
-    /// Only tables, no functions, constants, or parameters (the table-only entry
-    /// points).
+    /// Only tables, no functions, constants, parameters, or sub-catalogs (the
+    /// table-only entry points).
     const fn tables_only(tables: &'a [TableDef]) -> Self {
         Self {
             tables,
@@ -540,6 +569,7 @@ impl<'a> CatalogContents<'a> {
             constants: &[],
             parameters: &[],
             table_functions: &[],
+            catalogs: &[],
         }
     }
 
@@ -551,6 +581,7 @@ impl<'a> CatalogContents<'a> {
             constants: catalog.constants.as_slice(),
             parameters: catalog.parameters.as_slice(),
             table_functions: catalog.table_functions.as_slice(),
+            catalogs: catalog.catalogs.as_slice(),
         }
     }
 }
@@ -908,9 +939,9 @@ impl Module {
         self.populate_and_analyze(sql, options, catalog.ptr(), type_factory, contents, extract)
     }
 
-    /// Registers a catalog's tables and functions and runs the analysis. The
-    /// created `SimpleTable` and function handles stay alive until `extract`
-    /// returns and are freed by the top-level [`flush_frees`](Module::flush_frees).
+    /// Registers a catalog's declarations and runs the analysis. Every handle
+    /// created while populating the catalog stays alive until `extract` returns
+    /// and is freed by the top-level [`flush_frees`](Module::flush_frees).
     fn populate_and_analyze<T>(
         &mut self,
         sql: &str,
@@ -923,13 +954,50 @@ impl Module {
         // Bound (not `_`) so these handles stay alive across `analyze` and enqueue
         // their frees only after it returns: dropping them earlier would order
         // their frees ahead of the AnalyzerOutput that references them.
-        let _table_handles = self.add_tables(catalog, type_factory, contents.tables)?;
-        let _function_handles = self.add_functions(catalog, type_factory, contents.functions)?;
-        let _constant_handles = self.add_constants(catalog, contents.constants)?;
-        let _tvf_handles =
-            self.add_table_functions(catalog, type_factory, contents.table_functions)?;
+        let _handles = self.populate_catalog(catalog, type_factory, contents)?;
+        // Query parameters are an analysis-wide `AnalyzerOptions` setting rather
+        // than a catalog declaration, so only the top-level contents supply them.
         self.add_query_parameters(options, type_factory, contents.parameters)?;
         self.analyze(sql, options, catalog, type_factory, extract)
+    }
+
+    /// Registers every declaration in `contents` into `catalog`, recursing into
+    /// nested sub-catalogs, and returns all wasm-side handles created so the
+    /// caller keeps them alive across the analysis.
+    ///
+    /// A sub-catalog is a plain [`SimpleCatalog`] added under its name via
+    /// `AddCatalog2`, which does not take ownership; like the tables and
+    /// functions it holds, it is referenced by the resolved output and so must
+    /// outlive the analysis. Sub-catalogs intentionally do not receive the
+    /// builtin functions and types (added only to the root), so they act as pure
+    /// namespaces. A failure part way through drops the handles built so far,
+    /// enqueueing their frees.
+    fn populate_catalog(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        contents: CatalogContents,
+    ) -> Result<Vec<Handle>, Error> {
+        let mut handles = self.add_tables(catalog, type_factory, contents.tables)?;
+        handles.extend(self.add_functions(catalog, type_factory, contents.functions)?);
+        handles.extend(self.add_constants(catalog, contents.constants)?);
+        handles.extend(self.add_table_functions(
+            catalog,
+            type_factory,
+            contents.table_functions,
+        )?);
+        for sub in contents.catalogs {
+            let child = self.new_simple_catalog(&sub.name, type_factory)?;
+            let child_handles = self.populate_catalog(
+                child.ptr(),
+                type_factory,
+                CatalogContents::of(&sub.catalog),
+            )?;
+            self.register_catalog(catalog, &sub.name, child.ptr())?;
+            handles.extend(child_handles);
+            handles.push(child);
+        }
+        Ok(handles)
     }
 
     /// Registers each table into `catalog`, returning the created `SimpleTable`
@@ -1094,6 +1162,32 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         pb::append_handle(&mut req, 3, table);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_TABLE_NAMED, &req)?;
+        check_error(&resp)
+    }
+
+    /// Builds a named, empty `SimpleCatalog` over `type_factory`, returning its
+    /// handle for the caller to populate and keep alive across the analysis.
+    fn new_simple_catalog(&mut self, name: &str, type_factory: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_handle(&mut req, 2, type_factory);
+        self.acquire_handle(
+            SVC_SIMPLE_CATALOG,
+            MID_NEW_SIMPLE_CATALOG,
+            &req,
+            SVC_SIMPLE_CATALOG,
+            MID_FREE_SIMPLE_CATALOG,
+        )
+    }
+
+    /// Registers `child` as a nested catalog under `name` in `parent`
+    /// (non-owning: `parent` references `child` without freeing it).
+    fn register_catalog(&mut self, parent: u64, name: &str, child: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, parent);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, child);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_CATALOG_NAMED, &req)?;
         check_error(&resp)
     }
 
