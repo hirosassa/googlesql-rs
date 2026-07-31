@@ -9,8 +9,8 @@
 )]
 
 use googlesql::{
-    ColumnDef, ColumnType, Error, InsertMode, JoinType, LiteralValue, Module, ResolvedNode,
-    SetOperation, SubqueryKind, TableDef,
+    ColumnDef, ColumnType, CreateMode, Error, InsertMode, JoinType, LiteralValue, Module,
+    ResolvedNode, SetOperation, SubqueryKind, TableDef,
 };
 
 fn users_table() -> TableDef {
@@ -2092,4 +2092,54 @@ fn non_insert_nodes_have_no_target_columns() {
 
     assert_eq!(root.kind(), "ResolvedQueryStmt");
     assert_eq!(root.insert_columns(), None);
+}
+
+#[test]
+fn plain_create_table_reports_the_default_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("CREATE TABLE t (a INT64)", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedCreateTableStmt");
+    assert_eq!(root.create_mode(), Some(CreateMode::Default));
+}
+
+#[test]
+fn create_or_replace_table_reports_the_or_replace_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("CREATE OR REPLACE TABLE t (a INT64)", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.create_mode(), Some(CreateMode::OrReplace));
+}
+
+#[test]
+fn create_table_if_not_exists_reports_the_if_not_exists_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("CREATE TABLE IF NOT EXISTS t (a INT64)", &[])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.create_mode(), Some(CreateMode::IfNotExists));
+}
+
+#[test]
+fn non_create_table_nodes_have_no_create_mode() {
+    let mut module = Module::new().unwrap();
+
+    let root = module
+        .resolved_tree("SELECT id FROM users", &[users_table()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(root.kind(), "ResolvedQueryStmt");
+    assert_eq!(root.create_mode(), None);
 }
