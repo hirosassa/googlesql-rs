@@ -440,21 +440,21 @@ pub enum LiteralValue {
     Interval(String),
     /// An `ARRAY` constant, holding its element values in order. Each element is
     /// itself a [`LiteralValue`], so nested arrays and structs recurse.
-    Array(Vec<LiteralValue>),
+    Array(Vec<Self>),
     /// A `STRUCT` constant, holding its fields as `(name, value)` pairs in order.
     /// A field of an anonymous struct (e.g. the tuple `(1, 'x')`) has an empty
     /// name. Each field value is itself a [`LiteralValue`].
-    Struct(Vec<(String, LiteralValue)>),
+    Struct(Vec<(String, Self)>),
     /// A `RANGE` constant, holding its half-open `[start, end)` bounds. Each
     /// bound is a [`LiteralValue`] of the range's element type, or
     /// [`Null`](LiteralValue::Null) when the bound is unbounded.
     Range {
         /// The inclusive lower bound, or [`Null`](LiteralValue::Null) if
         /// unbounded.
-        start: Box<LiteralValue>,
+        start: Box<Self>,
         /// The exclusive upper bound, or [`Null`](LiteralValue::Null) if
         /// unbounded.
-        end: Box<LiteralValue>,
+        end: Box<Self>,
     },
     /// A `JSON` constant, as the normalized JSON text GoogleSQL prints (e.g.
     /// `{"a":1}`).
