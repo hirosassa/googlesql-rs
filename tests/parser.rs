@@ -167,3 +167,50 @@ fn parses_transaction_control_script() {
     );
     assert_eq!(parsed.statements().len(), 3);
 }
+
+/// A bare SQL expression (not a full statement) parses into an AST and
+/// round-trips through its canonical form.
+#[test]
+fn parses_a_bare_expression() {
+    let mut module = Module::new().unwrap();
+    let parsed = module.parse_expression("a + 1").unwrap();
+
+    let canonical = parsed.canonical_sql();
+    assert!(
+        canonical.contains('a') && canonical.contains('+') && canonical.contains('1'),
+        "canonical expression must preserve its operands and operator: {canonical:?}"
+    );
+    // The root is an expression node, not a statement/query node.
+    assert!(
+        !parsed.root().kind().is_empty(),
+        "root kind: {:?}",
+        parsed.root().kind()
+    );
+    assert!(
+        parsed.root().kind().contains("Expression"),
+        "expression root should be an expression node: {:?}",
+        parsed.root().kind()
+    );
+}
+
+/// A syntactically invalid expression returns a GoogleSql error.
+#[test]
+fn returns_error_for_invalid_expression() {
+    let mut module = Module::new().unwrap();
+    let err = module.parse_expression("1 +").unwrap_err();
+    assert!(
+        matches!(err, Error::GoogleSql(_)),
+        "a malformed expression must produce Error::GoogleSql: {err:?}"
+    );
+}
+
+/// A full statement is rejected when parsed as an expression.
+#[test]
+fn statement_is_not_a_valid_expression() {
+    let mut module = Module::new().unwrap();
+    let err = module.parse_expression("SELECT 1").unwrap_err();
+    assert!(
+        matches!(err, Error::GoogleSql(_)),
+        "a statement is not an expression: {err:?}"
+    );
+}

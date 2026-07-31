@@ -15,6 +15,7 @@ use crate::runtime::Module;
 
 const SVC_PARSER: i32 = 0;
 const MID_PARSE_STATEMENT: i32 = 10;
+const MID_PARSE_EXPRESSION: i32 = 6;
 const MID_PARSE_NEXT_STATEMENT: i32 = 8;
 const MID_UNPARSE: i32 = 12;
 
@@ -52,6 +53,28 @@ impl ParsedStatement {
     }
 
     /// The root node of the AST.
+    pub const fn root(&self) -> &AstNode {
+        &self.root
+    }
+}
+
+/// A parsed SQL expression (a fragment such as `a + 1`, not a full statement).
+///
+/// Holds the normalized (unparsed) expression string and a self-contained AST
+/// tree rooted at an expression node.
+#[derive(Debug, Clone)]
+pub struct ParsedExpression {
+    canonical_sql: String,
+    root: AstNode,
+}
+
+impl ParsedExpression {
+    /// The normalized canonical form of the expression.
+    pub fn canonical_sql(&self) -> &str {
+        &self.canonical_sql
+    }
+
+    /// The root node of the AST (an expression node).
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
@@ -105,18 +128,34 @@ impl Module {
     /// releases them all, whether the parse succeeded or failed.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
         self.with_frees(|module| {
-            let options = module.acquire_handle(
-                SVC_PARSER_OPTIONS,
-                MID_NEW_PARSER_OPTIONS,
-                &[],
-                SVC_PARSER_OPTIONS,
-                MID_FREE_PARSER_OPTIONS,
-            )?;
-            // Enable the maximum language feature set so gated syntax such as the
-            // `QUALIFY` clause is accepted.
-            let language = module.max_language_options()?;
-            module.set_parser_language_options(options.ptr(), language)?;
-            module.parse_with_options(sql, options.ptr())
+            let options = module.acquire_parser_options()?;
+            let (canonical_sql, root) =
+                module.parse_with_options(sql, options.ptr(), MID_PARSE_STATEMENT)?;
+            Ok(ParsedStatement {
+                canonical_sql,
+                root,
+            })
+        })
+    }
+
+    /// Parses a bare SQL expression (a fragment such as `a + 1`, not a full
+    /// statement) and returns the normalized result.
+    ///
+    /// Returns [`Error::GoogleSql`] if the input is not a valid expression;
+    /// note that a full statement (e.g. `SELECT 1`) is not a valid expression.
+    ///
+    /// Handle lifetimes mirror [`parse_statement`](Self::parse_statement): every
+    /// wasm-side handle is released by the enclosing `with_frees` once the tree
+    /// has been read, whether the parse succeeded or failed.
+    pub fn parse_expression(&mut self, sql: &str) -> Result<ParsedExpression, Error> {
+        self.with_frees(|module| {
+            let options = module.acquire_parser_options()?;
+            let (canonical_sql, root) =
+                module.parse_with_options(sql, options.ptr(), MID_PARSE_EXPRESSION)?;
+            Ok(ParsedExpression {
+                canonical_sql,
+                root,
+            })
         })
     }
 
@@ -137,17 +176,9 @@ impl Module {
     /// [`ParsedStatements::error`], never as an outer `Err`.
     pub fn parse_statements(&mut self, sql: &str) -> Result<ParsedStatements, Error> {
         self.with_frees(|module| {
-            let options = module.acquire_handle(
-                SVC_PARSER_OPTIONS,
-                MID_NEW_PARSER_OPTIONS,
-                &[],
-                SVC_PARSER_OPTIONS,
-                MID_FREE_PARSER_OPTIONS,
-            )?;
-            // Enable the maximum language feature set so gated syntax such as the
-            // `QUALIFY` clause is accepted for every statement in the script.
-            let language = module.max_language_options()?;
-            module.set_parser_language_options(options.ptr(), language)?;
+            // The maximum language feature set applies to every statement in the
+            // script, so gated syntax such as the `QUALIFY` clause is accepted.
+            let options = module.acquire_parser_options()?;
 
             let mut resume_req = Vec::new();
             pb::append_string(&mut resume_req, 1, sql);
@@ -192,6 +223,24 @@ impl Module {
         })
     }
 
+    /// Acquires a `ParserOptions` handle with the maximum language feature set
+    /// wired in, so gated syntax (e.g. the `QUALIFY` clause) is accepted.
+    ///
+    /// The returned RAII [`Handle`](crate::runtime::Handle) frees itself through
+    /// the enclosing `with_frees` frame once parsing is done.
+    fn acquire_parser_options(&mut self) -> Result<crate::runtime::Handle, Error> {
+        let options = self.acquire_handle(
+            SVC_PARSER_OPTIONS,
+            MID_NEW_PARSER_OPTIONS,
+            &[],
+            SVC_PARSER_OPTIONS,
+            MID_FREE_PARSER_OPTIONS,
+        )?;
+        let language = self.max_language_options()?;
+        self.set_parser_language_options(options.ptr(), language)?;
+        Ok(options)
+    }
+
     /// Wires a `LanguageOptions` handle into a `ParserOptions` handle.
     fn set_parser_language_options(
         &mut self,
@@ -205,30 +254,30 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Parses using a pre-built `ParserOptions` handle and produces the canonical SQL.
+    /// Parses using a pre-built `ParserOptions` handle and the given parser
+    /// method (`ParseStatement` or `ParseExpression`), returning the canonical
+    /// SQL and AST root. Both methods share the same request shape and yield a
+    /// `ParserOutput` handle whose tree is read the same way.
     fn parse_with_options(
         &mut self,
         sql: &str,
         options_ptr: u64,
-    ) -> Result<ParsedStatement, Error> {
+        parse_mid: i32,
+    ) -> Result<(String, AstNode), Error> {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, sql);
         pb::append_handle(&mut req, 2, options_ptr);
-        let resp = self.invoke(SVC_PARSER, MID_PARSE_STATEMENT, &req)?;
+        let resp = self.invoke(SVC_PARSER, parse_mid, &req)?;
         check_error(&resp)?;
         let output_ptr = pb::read_handle_at_field(&resp, 2);
         if output_ptr == 0 {
-            return Err(Error::Protocol("ParseStatement returned null".into()));
+            return Err(Error::Protocol("parse returned null".into()));
         }
         // The ParserOutput handle (which also owns the AST arena) is freed by the
         // top-level `flush_frees` after `build_from_output` has read the tree.
         let output = self.register_free(SVC_PARSER_OUTPUT, MID_FREE_PARSER_OUTPUT, output_ptr);
 
-        let (canonical_sql, root) = self.build_from_output(output.ptr())?;
-        Ok(ParsedStatement {
-            canonical_sql,
-            root,
-        })
+        self.build_from_output(output.ptr())
     }
 
     /// Extracts the AST root from a `ParserOutput` handle and builds the canonical SQL and AST tree.
