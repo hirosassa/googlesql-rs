@@ -42,6 +42,11 @@ const KIND_COMPUTED_COLUMN: &str = "ResolvedComputedColumn";
 const KIND_COLUMN_DEFINITION: &str = "ResolvedColumnDefinition";
 const KIND_INSERT_STMT: &str = "ResolvedInsertStmt";
 const KIND_CREATE_TABLE_STMT: &str = "ResolvedCreateTableStmt";
+const KIND_CREATE_TABLE_AS_SELECT_STMT: &str = "ResolvedCreateTableAsSelectStmt";
+const KIND_CREATE_VIEW_STMT: &str = "ResolvedCreateViewStmt";
+const KIND_CREATE_MATERIALIZED_VIEW_STMT: &str = "ResolvedCreateMaterializedViewStmt";
+const KIND_CREATE_EXTERNAL_TABLE_STMT: &str = "ResolvedCreateExternalTableStmt";
+const KIND_CREATE_FUNCTION_STMT: &str = "ResolvedCreateFunctionStmt";
 const KIND_MERGE_WHEN: &str = "ResolvedMergeWhen";
 
 /// Resolved type names (from `Type::DebugString`) of the scalar literals whose
@@ -1175,7 +1180,7 @@ impl Module {
         } else {
             None
         };
-        let create_mode = if kind == KIND_CREATE_TABLE_STMT {
+        let create_mode = if is_create_statement(&kind) {
             Some(self.node_create_mode(node)?)
         } else {
             None
@@ -1840,6 +1845,29 @@ impl Module {
 
 /// Records `column` under `table_name`, grouping repeated tables and skipping a
 /// column already recorded for that table (so lineage stays deduplicated).
+/// Whether a resolved node of this kind is a `ResolvedCreateStatement` and so
+/// carries a `CreateMode`.
+///
+/// `CreateMode` lives on the base `ResolvedCreateStatement`, which every CREATE
+/// form derives from, and is read through the base service via an upcast (see
+/// `node_create_mode`). This lists the concrete CREATE kinds this wasm build can
+/// produce that we have verified respond to that accessor; the authoritative set
+/// of `ResolvedCreateStatement` subclasses is the
+/// `AnyResolvedCreateStatementProto` oneof. `ResolvedCreateRowAccessPolicyStmt`
+/// is deliberately excluded, as it is not a `ResolvedCreateStatement` and handles
+/// its mode separately.
+fn is_create_statement(kind: &str) -> bool {
+    matches!(
+        kind,
+        KIND_CREATE_TABLE_STMT
+            | KIND_CREATE_TABLE_AS_SELECT_STMT
+            | KIND_CREATE_VIEW_STMT
+            | KIND_CREATE_MATERIALIZED_VIEW_STMT
+            | KIND_CREATE_EXTERNAL_TABLE_STMT
+            | KIND_CREATE_FUNCTION_STMT
+    )
+}
+
 fn add_referenced_column(tables: &mut Vec<TableRef>, table_name: &str, column: String) {
     if let Some(existing) = tables.iter_mut().find(|table| table.name == table_name) {
         if !existing.columns.contains(&column) {
