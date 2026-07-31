@@ -59,6 +59,7 @@ const MID_NEW_SIMPLE_CATALOG: i32 = 0;
 const MID_ADD_BUILTIN_FUNCTIONS_AND_TYPES: i32 = 3;
 const MID_ADD_FUNCTION: i32 = 10;
 const MID_ADD_TABLE_NAMED: i32 = 72;
+const MID_ADD_CONSTANT_NAMED: i32 = 8;
 const MID_FREE_SIMPLE_CATALOG: i32 = 114;
 
 const SVC_SIMPLE_TABLE: i32 = 1380;
@@ -81,6 +82,17 @@ const MID_FREE_FUNCTION_SIGNATURE: i32 = 46;
 const SVC_FUNCTION: i32 = 636;
 const MID_NEW_FUNCTION: i32 = 3;
 const MID_FREE_FUNCTION: i32 = 55;
+
+const SVC_SIMPLE_CONSTANT: i32 = 1354;
+const MID_NEW_SIMPLE_CONSTANT: i32 = 0;
+const MID_FREE_SIMPLE_CONSTANT: i32 = 8;
+
+const SVC_VALUE: i32 = 1428;
+const MID_NEW_VALUE_BOOL: i32 = 3;
+const MID_NEW_VALUE_DOUBLE: i32 = 9;
+const MID_NEW_VALUE_INT64: i32 = 18;
+const MID_NEW_VALUE_STRING: i32 = 44;
+const MID_FREE_VALUE: i32 = 153;
 
 /// `FunctionEnums::Mode::SCALAR` — a plain scalar function.
 const FUNCTION_MODE_SCALAR: i32 = 2;
@@ -237,18 +249,50 @@ impl FunctionKind {
     }
 }
 
+/// A named constant registered into the catalog before analysis.
+///
+/// Registering it lets the bare name resolve as an expression yielding the
+/// constant's value and type, e.g. `SELECT my_const`.
+#[derive(Debug, Clone)]
+pub struct ConstantDef {
+    /// The constant name as referenced in SQL.
+    pub name: String,
+    /// The constant's value, which also determines its type.
+    pub value: ConstantValue,
+}
+
+/// The value (and thus type) of a registered [`ConstantDef`].
+///
+/// Marked `#[non_exhaustive]` because GoogleSQL has more value types than the
+/// scalars modeled here.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ConstantValue {
+    /// An `INT64` constant.
+    Int64(i64),
+    /// A `DOUBLE` constant.
+    Double(f64),
+    /// A `BOOL` constant.
+    Bool(bool),
+    /// A `STRING` constant.
+    String(String),
+}
+
 /// The user-defined catalog entries made visible to the analyzer.
 ///
-/// Bundles the [`tables`](Self::tables) and [`functions`](Self::functions) a
-/// query may reference, passed to the `*_in` analysis entry points. The
-/// table-only entry points (e.g. [`Module::analyze_output_columns`]) are
-/// equivalent to a `Catalog` with no functions.
+/// Bundles the [`tables`](Self::tables), [`functions`](Self::functions), and
+/// [`constants`](Self::constants) a query may reference, passed to the `*_in`
+/// analysis entry points. The table-only entry points (e.g.
+/// [`Module::analyze_output_columns`]) are equivalent to a `Catalog` with no
+/// functions or constants.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     /// User-defined tables.
     pub tables: Vec<TableDef>,
     /// User-defined functions.
     pub functions: Vec<FunctionDef>,
+    /// User-defined named constants.
+    pub constants: Vec<ConstantDef>,
 }
 
 /// Per-analysis toggles applied to the `AnalyzerOptions` before resolving.
@@ -270,22 +314,26 @@ struct AnalysisOptions {
 struct CatalogContents<'a> {
     tables: &'a [TableDef],
     functions: &'a [FunctionDef],
+    constants: &'a [ConstantDef],
 }
 
 impl<'a> CatalogContents<'a> {
-    /// Only tables, no user-defined functions (the table-only entry points).
+    /// Only tables, no user-defined functions or constants (the table-only entry
+    /// points).
     const fn tables_only(tables: &'a [TableDef]) -> Self {
         Self {
             tables,
             functions: &[],
+            constants: &[],
         }
     }
 
-    /// Both the tables and functions declared by a [`Catalog`].
+    /// The tables, functions, and constants declared by a [`Catalog`].
     const fn of(catalog: &'a Catalog) -> Self {
         Self {
             tables: catalog.tables.as_slice(),
             functions: catalog.functions.as_slice(),
+            constants: catalog.constants.as_slice(),
         }
     }
 }
@@ -608,6 +656,7 @@ impl Module {
         // their frees ahead of the AnalyzerOutput that references them.
         let _table_handles = self.add_tables(catalog, type_factory, contents.tables)?;
         let _function_handles = self.add_functions(catalog, type_factory, contents.functions)?;
+        let _constant_handles = self.add_constants(catalog, contents.constants)?;
         self.analyze(sql, options, catalog, type_factory, extract)
     }
 
@@ -886,6 +935,73 @@ impl Module {
         pb::append_handle(&mut req, 1, catalog);
         pb::append_handle(&mut req, 2, function);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_FUNCTION, &req)?;
+        check_error(&resp)
+    }
+
+    /// Registers each named constant into `catalog`, returning the created
+    /// `Value` and `SimpleConstant` handles so the caller keeps them alive across
+    /// the analysis.
+    fn add_constants(
+        &mut self,
+        catalog: u64,
+        constants: &[ConstantDef],
+    ) -> Result<Vec<Handle>, Error> {
+        let mut handles = Vec::with_capacity(constants.len().saturating_mul(2));
+        for constant in constants {
+            let value = self.new_value(&constant.value)?;
+            let simple = self.new_simple_constant(&constant.name, value.ptr())?;
+            self.register_constant(catalog, &constant.name, simple.ptr())?;
+            handles.push(value);
+            handles.push(simple);
+        }
+        Ok(handles)
+    }
+
+    /// Builds a typed scalar `Value` from `value`.
+    fn new_value(&mut self, value: &ConstantValue) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        let mid = match *value {
+            ConstantValue::Int64(v) => {
+                pb::append_int64(&mut req, 1, v);
+                MID_NEW_VALUE_INT64
+            }
+            ConstantValue::Double(v) => {
+                pb::append_double(&mut req, 1, v);
+                MID_NEW_VALUE_DOUBLE
+            }
+            ConstantValue::Bool(v) => {
+                pb::append_bool(&mut req, 1, v);
+                MID_NEW_VALUE_BOOL
+            }
+            ConstantValue::String(ref v) => {
+                pb::append_string(&mut req, 1, v);
+                MID_NEW_VALUE_STRING
+            }
+        };
+        self.acquire_handle(SVC_VALUE, mid, &req, SVC_VALUE, MID_FREE_VALUE)
+    }
+
+    /// Builds a `SimpleConstant` named `name` carrying `value`.
+    fn new_simple_constant(&mut self, name: &str, value: u64) -> Result<Handle, Error> {
+        let mut req = Vec::new();
+        pb::append_string(&mut req, 1, name);
+        pb::append_handle(&mut req, 2, value);
+        self.acquire_handle(
+            SVC_SIMPLE_CONSTANT,
+            MID_NEW_SIMPLE_CONSTANT,
+            &req,
+            SVC_SIMPLE_CONSTANT,
+            MID_FREE_SIMPLE_CONSTANT,
+        )
+    }
+
+    /// Registers `constant` into `catalog` under `name` (non-owning).
+    fn register_constant(&mut self, catalog: u64, name: &str, constant: u64) -> Result<(), Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, catalog);
+        pb::append_string(&mut req, 2, name);
+        pb::append_handle(&mut req, 3, constant);
+        let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_CONSTANT_NAMED, &req)?;
         check_error(&resp)
     }
 

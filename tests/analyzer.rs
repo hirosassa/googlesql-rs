@@ -9,7 +9,8 @@
 )]
 
 use googlesql::{
-    Catalog, ColumnDef, ColumnType, Error, FunctionDef, FunctionKind, Module, StructField, TableDef,
+    Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
+    Module, StructField, TableDef,
 };
 
 #[test]
@@ -360,6 +361,7 @@ fn resolves_a_registered_scalar_function() {
             return_type: ColumnType::Int64,
             kind: FunctionKind::Scalar,
         }],
+        constants: vec![],
     };
 
     let columns = module
@@ -391,6 +393,7 @@ fn resolves_a_registered_aggregate_function() {
             return_type: ColumnType::Int64,
             kind: FunctionKind::Aggregate,
         }],
+        constants: vec![],
     };
 
     let columns = module
@@ -415,10 +418,88 @@ fn registered_function_type_checks_its_arguments() {
             return_type: ColumnType::Bool,
             kind: FunctionKind::Scalar,
         }],
+        constants: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
     assert!(result.is_err(), "argument type mismatch must not resolve");
+}
+
+#[test]
+fn resolves_a_registered_named_constant() {
+    let mut module = Module::new().unwrap();
+
+    // A named constant my_const of type INT64. Registering it lets the bare name
+    // resolve as an expression yielding the constant's type; without it the name
+    // is an unrecognized-column/name error.
+    let catalog = Catalog {
+        constants: vec![ConstantDef {
+            name: "my_const".to_string(),
+            value: ConstantValue::Int64(42),
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT my_const AS c", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn registered_string_constant_resolves_with_its_type() {
+    let mut module = Module::new().unwrap();
+
+    let catalog = Catalog {
+        constants: vec![ConstantDef {
+            name: "greeting".to_string(),
+            value: ConstantValue::String("hi".to_string()),
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT greeting AS g", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "STRING");
+}
+
+#[test]
+fn resolves_constants_of_each_scalar_value_type() {
+    let mut module = Module::new().unwrap();
+
+    // Exercises every ConstantValue variant, including a negative INT64 (the
+    // full two's-complement varint path) and a DOUBLE (fixed64 encoding).
+    let catalog = Catalog {
+        constants: vec![
+            ConstantDef {
+                name: "neg".to_string(),
+                value: ConstantValue::Int64(-7),
+            },
+            ConstantDef {
+                name: "ratio".to_string(),
+                value: ConstantValue::Double(3.5),
+            },
+            ConstantDef {
+                name: "flag".to_string(),
+                value: ConstantValue::Bool(true),
+            },
+        ],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT neg AS a, ratio AS b, flag AS c", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 3);
+    assert_eq!(columns[0].type_name(), "INT64");
+    assert_eq!(columns[1].type_name(), "DOUBLE");
+    assert_eq!(columns[2].type_name(), "BOOL");
 }
 
 #[test]
