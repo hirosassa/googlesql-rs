@@ -56,6 +56,7 @@ const MID_MAKE_ARRAY_TYPE: i32 = 13;
 const MID_MAKE_STRUCT_TYPE: i32 = 33;
 const MID_MAKE_RANGE_TYPE: i32 = 26;
 const MID_MAKE_MAP_TYPE: i32 = 20;
+const MID_MAKE_ENUM_TYPE: i32 = 16;
 
 const SVC_SIMPLE_CATALOG: i32 = 1347;
 const MID_NEW_SIMPLE_CATALOG: i32 = 0;
@@ -81,6 +82,36 @@ const MID_FREE_SIMPLE_COLUMN: i32 = 10;
 const SVC_SIMPLE_CONNECTION: i32 = 1352;
 const MID_NEW_SIMPLE_CONNECTION: i32 = 0;
 const MID_FREE_SIMPLE_CONNECTION: i32 = 4;
+
+const SVC_DESCRIPTOR_POOL: i32 = 2;
+const MID_NEW_DESCRIPTOR_POOL: i32 = 0;
+const MID_BUILD_FILE: i32 = 5;
+const MID_FIND_ENUM_TYPE_BY_NAME: i32 = 12;
+const MID_FREE_DESCRIPTOR_POOL: i32 = 27;
+
+const SVC_FILE_DESCRIPTOR_PROTO: i32 = 7;
+const MID_NEW_FILE_DESCRIPTOR_PROTO: i32 = 0;
+const MID_FREE_FILE_DESCRIPTOR_PROTO: i32 = 53;
+
+/// `MessageLite` is the protobuf base service; `FileDescriptorProto` inherits it,
+/// so a `FileDescriptorProto` handle can be populated from serialized bytes via
+/// `ParseFromString` rather than field-by-field setter calls.
+const SVC_MESSAGE_LITE: i32 = 10;
+const MID_PARSE_FROM_STRING: i32 = 14;
+
+/// Field numbers of a `FileDescriptorProto`: the file name and the repeated
+/// `enum_type` (each an `EnumDescriptorProto`).
+const FIELD_FDP_NAME: u32 = 1;
+const FIELD_FDP_ENUM_TYPE: u32 = 5;
+
+/// Field numbers of an `EnumDescriptorProto`: the enum name and its repeated
+/// `value` (each an `EnumValueDescriptorProto`).
+const FIELD_ENUM_NAME: u32 = 1;
+const FIELD_ENUM_VALUE: u32 = 2;
+
+/// Field numbers of an `EnumValueDescriptorProto`: the value name and number.
+const FIELD_ENUM_VALUE_NAME: u32 = 1;
+const FIELD_ENUM_VALUE_NUMBER: u32 = 2;
 
 const SVC_FUNCTION_ARGUMENT_TYPE: i32 = 637;
 const MID_NEW_FUNCTION_ARGUMENT_TYPE: i32 = 2;
@@ -521,6 +552,30 @@ pub struct ProcedureDef {
     pub arguments: Vec<ColumnType>,
 }
 
+/// A single value of a user-defined [`EnumDef`]: its name and integer number.
+#[derive(Debug, Clone)]
+pub struct EnumValue {
+    /// The value name as referenced in SQL (e.g. `'RED'` in `CAST('RED' AS Color)`).
+    pub name: String,
+    /// The value's integer number.
+    pub number: i32,
+}
+
+/// A user-defined enum type registered into the catalog before analysis.
+///
+/// Registering it makes [`name`](Self::name) usable wherever a type name is
+/// expected (e.g. `CAST(x AS Color)`); casting a string literal to the enum
+/// resolves only against the declared [`values`](Self::values). Internally the
+/// enum is materialized as a protobuf `EnumDescriptor` built into a descriptor
+/// pool, mirroring how GoogleSQL represents enum types.
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    /// The enum type name as referenced in SQL.
+    pub name: String,
+    /// The enum's values.
+    pub values: Vec<EnumValue>,
+}
+
 /// A user-defined named type registered into the catalog before analysis.
 ///
 /// Registering it makes the name usable wherever a type name is expected, e.g.
@@ -574,6 +629,9 @@ pub struct Catalog {
     /// User-defined named types, usable wherever a type name is expected (e.g.
     /// `CAST(x AS my_type)`).
     pub types: Vec<NamedType>,
+    /// User-defined enum types, usable wherever a type name is expected (e.g.
+    /// `CAST(x AS Color)`).
+    pub enums: Vec<EnumDef>,
 }
 
 /// A named nested catalog: a namespace whose declarations resolve only under
@@ -620,6 +678,7 @@ struct CatalogContents<'a> {
     procedures: &'a [ProcedureDef],
     connections: &'a [String],
     types: &'a [NamedType],
+    enums: &'a [EnumDef],
 }
 
 impl<'a> CatalogContents<'a> {
@@ -636,6 +695,7 @@ impl<'a> CatalogContents<'a> {
             procedures: &[],
             connections: &[],
             types: &[],
+            enums: &[],
         }
     }
 
@@ -651,8 +711,37 @@ impl<'a> CatalogContents<'a> {
             procedures: catalog.procedures.as_slice(),
             connections: catalog.connections.as_slice(),
             types: catalog.types.as_slice(),
+            enums: catalog.enums.as_slice(),
         }
     }
+}
+
+/// Wire-encodes an [`EnumDef`] as a `FileDescriptorProto` declaring a single
+/// enum. Each file name is made unique per `index` so several enums can share
+/// one descriptor pool without name collisions. The value number is encoded as
+/// a sign-extended varint (protobuf's `int32`) so negative numbers round-trip.
+fn encode_enum_fdp(def: &EnumDef, index: usize) -> Vec<u8> {
+    let mut enum_type = Vec::new();
+    pb::append_string(&mut enum_type, FIELD_ENUM_NAME, &def.name);
+    for value in &def.values {
+        let mut value_msg = Vec::new();
+        pb::append_string(&mut value_msg, FIELD_ENUM_VALUE_NAME, &value.name);
+        pb::append_int64(
+            &mut value_msg,
+            FIELD_ENUM_VALUE_NUMBER,
+            i64::from(value.number),
+        );
+        pb::append_submessage(&mut enum_type, FIELD_ENUM_VALUE, &value_msg);
+    }
+
+    let mut fdp = Vec::new();
+    pb::append_string(
+        &mut fdp,
+        FIELD_FDP_NAME,
+        &format!("googlesql_enum_{index}.proto"),
+    );
+    pb::append_submessage(&mut fdp, FIELD_FDP_ENUM_TYPE, &enum_type);
+    fdp
 }
 
 impl Module {
@@ -1058,6 +1147,7 @@ impl Module {
         self.add_procedures(catalog, type_factory, contents.procedures, &mut handles)?;
         self.add_connections(catalog, contents.connections, &mut handles)?;
         self.add_types(catalog, type_factory, contents.types)?;
+        self.add_enums(catalog, type_factory, contents.enums, &mut handles)?;
         for sub in contents.catalogs {
             let child = self.new_simple_catalog(&sub.name, type_factory)?;
             let child_handles = self.populate_catalog(
@@ -1581,6 +1671,111 @@ impl Module {
         pb::append_handle(&mut req, 3, type_handle);
         let resp = self.invoke(SVC_SIMPLE_CATALOG, MID_ADD_TYPE_NAMED, &req)?;
         check_error(&resp)
+    }
+
+    /// Registers each enum type into `catalog`. Each enum is materialized as a
+    /// protobuf `EnumDescriptor`: a `FileDescriptorProto` carrying the enum is
+    /// wire-encoded, parsed into a shared `DescriptorPool`, built, and the
+    /// resulting `EnumType` is registered under the enum's name.
+    ///
+    /// The pool is pushed onto `handles` so it outlives the analysis: the
+    /// registered `EnumType` — and any resolved output referencing it — points
+    /// into the pool's descriptors, so freeing the pool early would leave those
+    /// references dangling. The source `FileDescriptorProto`s are retained the
+    /// same way; `BuildFile` copies them into the pool, so this is conservative
+    /// rather than required.
+    fn add_enums(
+        &mut self,
+        catalog: u64,
+        type_factory: u64,
+        enums: &[EnumDef],
+        handles: &mut Vec<Handle>,
+    ) -> Result<(), Error> {
+        if enums.is_empty() {
+            return Ok(());
+        }
+        let pool = self.acquire_handle(
+            SVC_DESCRIPTOR_POOL,
+            MID_NEW_DESCRIPTOR_POOL,
+            &[],
+            SVC_DESCRIPTOR_POOL,
+            MID_FREE_DESCRIPTOR_POOL,
+        )?;
+        for (index, def) in enums.iter().enumerate() {
+            let fdp = self.build_enum_file(pool.ptr(), def, index)?;
+            let enum_desc = self.find_enum_type(pool.ptr(), &def.name)?;
+            let enum_type = self.make_enum_type(type_factory, enum_desc)?;
+            self.register_type(catalog, &def.name, enum_type)?;
+            handles.push(fdp);
+        }
+        handles.push(pool);
+        Ok(())
+    }
+
+    /// Wire-encodes `def` as a single-enum `FileDescriptorProto`, parses it into
+    /// `pool`, and builds it so the enum becomes findable by name. Returns the
+    /// source `FileDescriptorProto` handle for the caller to keep alive.
+    fn build_enum_file(&mut self, pool: u64, def: &EnumDef, index: usize) -> Result<Handle, Error> {
+        let bytes = encode_enum_fdp(def, index);
+        let fdp = self.acquire_handle(
+            SVC_FILE_DESCRIPTOR_PROTO,
+            MID_NEW_FILE_DESCRIPTOR_PROTO,
+            &[],
+            SVC_FILE_DESCRIPTOR_PROTO,
+            MID_FREE_FILE_DESCRIPTOR_PROTO,
+        )?;
+        // Populate the proto from serialized bytes via the `MessageLite` base
+        // rather than field-by-field setter calls.
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, fdp.ptr());
+        pb::append_submessage(&mut req, 2, &bytes);
+        let resp = self.invoke(SVC_MESSAGE_LITE, MID_PARSE_FROM_STRING, &req)?;
+        check_error(&resp)?;
+        if !pb::read_bool_at_field(&resp, 1) {
+            return Err(Error::Protocol(
+                "ParseFromString rejected the enum descriptor".into(),
+            ));
+        }
+        // Build the file into the pool so its descriptors become resolvable.
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, pool);
+        pb::append_handle(&mut req, 2, fdp.ptr());
+        let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_BUILD_FILE, &req)?;
+        check_error(&resp)?;
+        if pb::read_handle_at_field(&resp, 1) == 0 {
+            return Err(Error::Protocol("BuildFile returned null".into()));
+        }
+        Ok(fdp)
+    }
+
+    /// Looks up an enum `EnumDescriptor` by its full name in `pool`.
+    fn find_enum_type(&mut self, pool: u64, name: &str) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, pool);
+        pb::append_string(&mut req, 2, name);
+        let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_FIND_ENUM_TYPE_BY_NAME, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 1);
+        if ptr == 0 {
+            return Err(Error::Protocol(format!("enum type {name} not found")));
+        }
+        Ok(ptr)
+    }
+
+    /// Builds the `EnumType` for `enum_desc`. The resulting type is owned by the
+    /// `type_factory`, so the caller retains no handle for it. The handle is read
+    /// from response field 2 (field 1 carries the abstract type-node variant).
+    fn make_enum_type(&mut self, type_factory: u64, enum_desc: u64) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, type_factory);
+        pb::append_handle(&mut req, 2, enum_desc);
+        let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_ENUM_TYPE, &req)?;
+        check_error(&resp)?;
+        let ptr = pb::read_handle_at_field(&resp, 2);
+        if ptr == 0 {
+            return Err(Error::Protocol("MakeEnumType returned null".into()));
+        }
+        Ok(ptr)
     }
 
     /// Registers each table-valued function into `catalog`, returning the created
