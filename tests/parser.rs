@@ -214,3 +214,46 @@ fn statement_is_not_a_valid_expression() {
         "a statement is not an expression: {err:?}"
     );
 }
+
+/// A type declaration parses into an AST rooted at a type node and round-trips
+/// through its canonical form.
+#[test]
+fn parses_a_type_declaration() {
+    let mut module = Module::new().unwrap();
+    let parsed = module.parse_type("ARRAY<INT64>").unwrap();
+
+    let canonical = parsed.canonical_sql();
+    assert!(
+        canonical.contains("ARRAY") && canonical.contains("INT64"),
+        "canonical type must preserve its structure: {canonical:?}"
+    );
+    assert!(
+        parsed.root().kind().contains("Type"),
+        "type root should be a type node: {:?}",
+        parsed.root().kind()
+    );
+}
+
+/// A struct type exposes its field types in the parsed tree.
+#[test]
+fn parses_a_struct_type() {
+    let mut module = Module::new().unwrap();
+    let parsed = module.parse_type("STRUCT<a INT64, b STRING>").unwrap();
+
+    let canonical = parsed.canonical_sql();
+    assert!(
+        canonical.contains("STRUCT") && canonical.contains("INT64") && canonical.contains("STRING"),
+        "canonical struct type must preserve its fields: {canonical:?}"
+    );
+}
+
+/// An invalid type string returns a GoogleSql error.
+#[test]
+fn returns_error_for_invalid_type() {
+    let mut module = Module::new().unwrap();
+    let err = module.parse_type("NOT A TYPE").unwrap_err();
+    assert!(
+        matches!(err, Error::GoogleSql(_)),
+        "a malformed type must produce Error::GoogleSql: {err:?}"
+    );
+}

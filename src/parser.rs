@@ -16,6 +16,7 @@ use crate::runtime::Module;
 const SVC_PARSER: i32 = 0;
 const MID_PARSE_STATEMENT: i32 = 10;
 const MID_PARSE_EXPRESSION: i32 = 6;
+const MID_PARSE_TYPE: i32 = 11;
 const MID_PARSE_NEXT_STATEMENT: i32 = 8;
 const MID_UNPARSE: i32 = 12;
 
@@ -75,6 +76,28 @@ impl ParsedExpression {
     }
 
     /// The root node of the AST (an expression node).
+    pub const fn root(&self) -> &AstNode {
+        &self.root
+    }
+}
+
+/// A parsed SQL type declaration (e.g. `ARRAY<INT64>` or `STRUCT<a INT64>`).
+///
+/// Holds the normalized (unparsed) type string and a self-contained AST tree
+/// rooted at a type node.
+#[derive(Debug, Clone)]
+pub struct ParsedType {
+    canonical_sql: String,
+    root: AstNode,
+}
+
+impl ParsedType {
+    /// The normalized canonical form of the type.
+    pub fn canonical_sql(&self) -> &str {
+        &self.canonical_sql
+    }
+
+    /// The root node of the AST (a type node).
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
@@ -153,6 +176,26 @@ impl Module {
             let (canonical_sql, root) =
                 module.parse_with_options(sql, options.ptr(), MID_PARSE_EXPRESSION)?;
             Ok(ParsedExpression {
+                canonical_sql,
+                root,
+            })
+        })
+    }
+
+    /// Parses a SQL type declaration (e.g. `ARRAY<INT64>` or `STRUCT<a INT64>`)
+    /// and returns the normalized result.
+    ///
+    /// Returns [`Error::GoogleSql`] if the input is not a valid type.
+    ///
+    /// Handle lifetimes mirror [`parse_statement`](Self::parse_statement): every
+    /// wasm-side handle is released by the enclosing `with_frees` once the tree
+    /// has been read, whether the parse succeeded or failed.
+    pub fn parse_type(&mut self, sql: &str) -> Result<ParsedType, Error> {
+        self.with_frees(|module| {
+            let options = module.acquire_parser_options()?;
+            let (canonical_sql, root) =
+                module.parse_with_options(sql, options.ptr(), MID_PARSE_TYPE)?;
+            Ok(ParsedType {
                 canonical_sql,
                 root,
             })
