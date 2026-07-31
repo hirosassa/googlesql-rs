@@ -323,3 +323,61 @@ fn returns_error_for_invalid_script() {
         "a malformed script must produce Error::GoogleSql: {err:?}"
     );
 }
+
+/// `parse_script_statements` yields one `ParsedStatement` per top-level script
+/// statement, including scripting statements.
+#[test]
+fn parses_script_statements_one_at_a_time() {
+    let mut module = Module::new().unwrap();
+    let parsed = module
+        .parse_script_statements("DECLARE x INT64 DEFAULT 0; SET x = x + 1; SELECT x")
+        .unwrap();
+
+    assert!(
+        parsed.is_complete(),
+        "no error expected: {:?}",
+        parsed.error()
+    );
+    let statements = parsed.statements();
+    assert_eq!(statements.len(), 3, "expected three statements");
+    assert_eq!(statements[0].root().kind(), "ASTVariableDeclaration");
+    assert_eq!(statements[1].root().kind(), "ASTSingleAssignment");
+    assert_eq!(statements[2].root().kind(), "ASTQueryStatement");
+}
+
+/// `parse_script_statements` accepts scripting statements that
+/// `parse_statements` rejects outright — the two entry points differ.
+#[test]
+fn parse_script_statements_accepts_what_parse_statements_rejects() {
+    let mut module = Module::new().unwrap();
+    let script = "DECLARE x INT64 DEFAULT 0; SELECT 1";
+
+    // parse_statements halts on the very first (scripting) statement, parsing
+    // nothing and reporting the error.
+    let plain = module.parse_statements(script).unwrap();
+    assert!(plain.statements().is_empty());
+    assert!(plain.error().is_some());
+
+    // parse_script_statements parses the whole script.
+    let scripted = module.parse_script_statements(script).unwrap();
+    assert!(
+        scripted.is_complete(),
+        "no error expected: {:?}",
+        scripted.error()
+    );
+    assert_eq!(scripted.statements().len(), 2);
+}
+
+/// A syntax error mid-script yields the statements parsed before it plus the
+/// error, just like `parse_statements`.
+#[test]
+fn parse_script_statements_returns_prefix_and_error_on_failure() {
+    let mut module = Module::new().unwrap();
+    let parsed = module
+        .parse_script_statements("DECLARE x INT64 DEFAULT 0; SELECT FROM; SELECT 3")
+        .unwrap();
+
+    assert_eq!(parsed.statements().len(), 1);
+    assert!(!parsed.is_complete());
+    assert!(parsed.error().is_some(), "a syntax error is reported");
+}

@@ -19,6 +19,7 @@ const MID_PARSE_EXPRESSION: i32 = 6;
 const MID_PARSE_TYPE: i32 = 11;
 const MID_PARSE_SCRIPT: i32 = 9;
 const MID_PARSE_NEXT_STATEMENT: i32 = 8;
+const MID_PARSE_NEXT_SCRIPT_STATEMENT: i32 = 7;
 const MID_UNPARSE: i32 = 12;
 
 const SVC_PARSER_OPTIONS: i32 = 699;
@@ -270,6 +271,42 @@ impl Module {
     /// protocol fault); a GoogleSQL syntax error is reported through
     /// [`ParsedStatements::error`], never as an outer `Err`.
     pub fn parse_statements(&mut self, sql: &str) -> Result<ParsedStatements, Error> {
+        self.parse_statement_stream(sql, MID_PARSE_NEXT_STATEMENT)
+    }
+
+    /// Parses a script into its constituent statements, one at a time, accepting
+    /// scripting constructs.
+    ///
+    /// This is the script-aware counterpart to
+    /// [`parse_statements`](Self::parse_statements): it drives
+    /// `ParseNextScriptStatement` rather than `ParseNextStatement`, so scripting
+    /// statements (`DECLARE`, `SET`, `IF`, `WHILE`, `BEGIN ... END`, ...) are
+    /// accepted rather than rejected. Each top-level script statement is returned
+    /// as its own [`ParsedStatement`]; a `BEGIN ... END` block comes back as a
+    /// single statement whose AST holds the nested statements. Use
+    /// [`parse_script`](Self::parse_script) instead to get the whole script as
+    /// one tree.
+    ///
+    /// Error handling matches [`parse_statements`](Self::parse_statements):
+    /// GoogleSQL halts at the first syntax error and cannot resume, so
+    /// [`ParsedStatements`] holds every statement parsed before the error plus
+    /// the error itself, and the outer [`Error`] is reserved for infrastructure
+    /// faults.
+    pub fn parse_script_statements(&mut self, sql: &str) -> Result<ParsedStatements, Error> {
+        self.parse_statement_stream(sql, MID_PARSE_NEXT_SCRIPT_STATEMENT)
+    }
+
+    /// Drives a `ParseResumeLocation` through one of the incremental parser
+    /// methods (`ParseNextStatement` or `ParseNextScriptStatement`, selected by
+    /// `next_mid`), collecting one [`ParsedStatement`] per call until the input
+    /// is exhausted or a syntax error halts it. Both methods share the same
+    /// request and response shape, differing only in whether they accept
+    /// scripting statements.
+    fn parse_statement_stream(
+        &mut self,
+        sql: &str,
+        next_mid: i32,
+    ) -> Result<ParsedStatements, Error> {
         self.with_frees(|module| {
             // The maximum language feature set applies to every statement in the
             // script, so gated syntax such as the `QUALIFY` clause is accepted.
@@ -290,7 +327,7 @@ impl Module {
                 let mut req = Vec::new();
                 pb::append_handle(&mut req, 1, resume.ptr());
                 pb::append_handle(&mut req, 2, options.ptr());
-                let resp = module.invoke(SVC_PARSER, MID_PARSE_NEXT_STATEMENT, &req)?;
+                let resp = module.invoke(SVC_PARSER, next_mid, &req)?;
                 // A syntax error halts the script: GoogleSQL cannot resume past it.
                 if let Some(message) = pb::extract_error(&resp) {
                     break Some(message.into());
