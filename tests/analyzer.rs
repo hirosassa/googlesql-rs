@@ -10,7 +10,7 @@
 
 use googlesql::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, Error, FunctionDef, FunctionKind,
-    Module, StructField, TableDef,
+    Module, QueryParameter, StructField, TableDef,
 };
 
 #[test]
@@ -362,6 +362,7 @@ fn resolves_a_registered_scalar_function() {
             kind: FunctionKind::Scalar,
         }],
         constants: vec![],
+        parameters: vec![],
     };
 
     let columns = module
@@ -394,6 +395,7 @@ fn resolves_a_registered_aggregate_function() {
             kind: FunctionKind::Aggregate,
         }],
         constants: vec![],
+        parameters: vec![],
     };
 
     let columns = module
@@ -419,6 +421,7 @@ fn registered_function_type_checks_its_arguments() {
             kind: FunctionKind::Scalar,
         }],
         constants: vec![],
+        parameters: vec![],
     };
 
     let result = module.analyze_statement_in("SELECT needs_int('x')", &catalog);
@@ -500,6 +503,47 @@ fn resolves_constants_of_each_scalar_value_type() {
     assert_eq!(columns[0].type_name(), "INT64");
     assert_eq!(columns[1].type_name(), "DOUBLE");
     assert_eq!(columns[2].type_name(), "BOOL");
+}
+
+#[test]
+fn declared_query_parameter_resolves_with_its_type() {
+    let mut module = Module::new().unwrap();
+
+    // Declaring @id as INT64 lets `SELECT @id` resolve to a known INT64 output
+    // type, rather than an inferred/unknown parameter type.
+    let catalog = Catalog {
+        parameters: vec![QueryParameter {
+            name: "id".to_string(),
+            ty: ColumnType::Int64,
+        }],
+        ..Catalog::default()
+    };
+
+    let columns = module
+        .analyze_output_columns_in("SELECT @id AS v", &catalog)
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "INT64");
+}
+
+#[test]
+fn declared_query_parameter_type_checks_its_uses() {
+    let mut module = Module::new().unwrap();
+
+    // @n is declared INT64, so using it where a STRING is required must fail to
+    // resolve — the declared type is enforced.
+    let catalog = Catalog {
+        parameters: vec![QueryParameter {
+            name: "n".to_string(),
+            ty: ColumnType::Int64,
+        }],
+        ..Catalog::default()
+    };
+
+    // `NOT` requires BOOL, so applying it to the INT64 parameter must fail.
+    let result = module.analyze_statement_in("SELECT NOT @n", &catalog);
+    assert!(result.is_err(), "declared parameter type must be enforced");
 }
 
 #[test]
