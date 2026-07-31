@@ -1230,3 +1230,23 @@ fn rejects_a_range_of_an_unsupported_element_type() {
         "expected RANGE<INT64> to be rejected, got: {result:?}"
     );
 }
+
+#[test]
+fn resolves_a_map_column() {
+    let mut module = Module::new().unwrap();
+
+    let table = TableDef {
+        name: "t".to_string(),
+        columns: vec![ColumnDef {
+            name: "m".to_string(),
+            ty: ColumnType::Map(Box::new(ColumnType::String), Box::new(ColumnType::Int64)),
+        }],
+    };
+
+    let columns = module
+        .analyze_output_columns("SELECT m FROM t", &[table])
+        .unwrap();
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].type_name(), "MAP<STRING, INT64>");
+}
