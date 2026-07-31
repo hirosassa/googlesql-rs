@@ -258,6 +258,24 @@ const SVC_TIME_VALUE: i32 = 1414;
 const MID_TIME_DEBUG_STRING: i32 = 9;
 const SVC_INTERVAL_VALUE: i32 = 674;
 const MID_INTERVAL_APPEND_TO_STRING: i32 = 3;
+// Composite value accessors: a nested child's type is not known statically, so
+// the reader routes on `TypeKind` and recurses into the element values.
+const MID_VALUE_NUM_ELEMENTS: i32 = 138;
+const MID_VALUE_ELEMENT: i32 = 115;
+const MID_VALUE_NUM_FIELDS: i32 = 139;
+const MID_VALUE_FIELD: i32 = 121;
+const MID_VALUE_RANGE_START: i32 = 145;
+const MID_VALUE_RANGE_END: i32 = 118;
+const MID_VALUE_JSON_STRING: i32 = 135;
+const MID_VALUE_TYPE: i32 = 148;
+const MID_VALUE_TYPE_KIND: i32 = 149;
+const SVC_STRUCT_TYPE: i32 = 1388;
+const MID_STRUCT_TYPE_FIELD: i32 = 17;
+// `TypeKind` enum values used to route composite values.
+const TYPE_KIND_ARRAY: i32 = 17;
+const TYPE_KIND_STRUCT: i32 = 18;
+const TYPE_KIND_JSON: i32 = 27;
+const TYPE_KIND_RANGE: i32 = 30;
 
 /// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
@@ -419,6 +437,27 @@ pub enum LiteralValue {
     /// `<years>-<months> <days> <hours>:<minutes>:<seconds>` form (e.g.
     /// `0-0 1 0:0:0` for one day).
     Interval(String),
+    /// An `ARRAY` constant, holding its element values in order. Each element is
+    /// itself a [`LiteralValue`], so nested arrays and structs recurse.
+    Array(Vec<LiteralValue>),
+    /// A `STRUCT` constant, holding its fields as `(name, value)` pairs in order.
+    /// A field of an anonymous struct (e.g. the tuple `(1, 'x')`) has an empty
+    /// name. Each field value is itself a [`LiteralValue`].
+    Struct(Vec<(String, LiteralValue)>),
+    /// A `RANGE` constant, holding its half-open `[start, end)` bounds. Each
+    /// bound is a [`LiteralValue`] of the range's element type, or
+    /// [`Null`](LiteralValue::Null) when the bound is unbounded.
+    Range {
+        /// The inclusive lower bound, or [`Null`](LiteralValue::Null) if
+        /// unbounded.
+        start: Box<LiteralValue>,
+        /// The exclusive upper bound, or [`Null`](LiteralValue::Null) if
+        /// unbounded.
+        end: Box<LiteralValue>,
+    },
+    /// A `JSON` constant, as the normalized JSON text GoogleSQL prints (e.g.
+    /// `{"a":1}`).
+    Json(String),
     /// A `NULL` constant. Its resolved type is still available through the
     /// node's [`type_name`](ResolvedNode::type_name) (e.g. `INT64` for
     /// `CAST(NULL AS INT64)`); this variant carries no payload because a `NULL`
@@ -1716,12 +1755,27 @@ impl Module {
         type_name: Option<&str>,
     ) -> Result<Option<LiteralValue>, Error> {
         let value = self.rpc_handle(SVC_RESOLVED_LITERAL, MID_LITERAL_VALUE, node)?;
-        // A NULL literal has no readable contents; the typed accessors below trap
+        self.read_value(value, type_name)
+    }
+
+    /// Reads a `Value` handle of the given resolved type into a [`LiteralValue`].
+    ///
+    /// Scalars dispatch on `type_name` (their debug string matches the type name
+    /// exactly); composites, whose element types are not known statically, route
+    /// on the value's `TypeKind` and recurse into their element values. Types
+    /// this crate does not model yield `None`; a composite yields `None` if any
+    /// element does.
+    fn read_value(
+        &mut self,
+        value: u64,
+        type_name: Option<&str>,
+    ) -> Result<Option<LiteralValue>, Error> {
+        // A NULL value has no readable contents; the typed accessors below trap
         // on the wasm side if called on one, so detect NULL before dispatching.
         if self.value_is_null(value)? {
             return Ok(Some(LiteralValue::Null));
         }
-        let literal = match type_name {
+        let scalar = match type_name {
             Some(TYPE_INT64) => LiteralValue::Int64(self.value_int64(value, MID_VALUE_INT64)?),
             Some(TYPE_INT32) => LiteralValue::Int32(self.value_int32(value, MID_VALUE_INT32)?),
             Some(TYPE_UINT32) => LiteralValue::Uint32(self.value_uint32(value, MID_VALUE_UINT32)?),
@@ -1761,9 +1815,110 @@ impl Module {
                 SVC_INTERVAL_VALUE,
                 MID_INTERVAL_APPEND_TO_STRING,
             )?),
-            _ => return Ok(None),
+            // Not a modelled scalar; fall through to the composite router.
+            _ => return self.read_composite_value(value),
         };
-        Ok(Some(literal))
+        Ok(Some(scalar))
+    }
+
+    /// Routes a non-scalar `Value` on its `TypeKind` and recurses into elements.
+    /// A kind this crate does not model yields `None`.
+    fn read_composite_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
+        match self.value_int32(value, MID_VALUE_TYPE_KIND)? {
+            TYPE_KIND_ARRAY => self.read_array_value(value),
+            TYPE_KIND_STRUCT => self.read_struct_value(value),
+            TYPE_KIND_RANGE => self.read_range_value(value),
+            TYPE_KIND_JSON => {
+                let resp = self.value_resp(value, MID_VALUE_JSON_STRING)?;
+                Ok(Some(LiteralValue::Json(
+                    pb::read_string_at_field(&resp, 1).unwrap_or_default(),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Reads a nested child `Value` whose type is discovered from the value
+    /// itself, then recurses. Used for array elements, struct fields, and range
+    /// bounds, where the element type is not carried by the enclosing node.
+    fn read_child_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
+        let type_handle = self.rpc_handle(SVC_VALUE, MID_VALUE_TYPE, value)?;
+        let type_name = self.type_debug_string(type_handle)?;
+        self.read_value(value, Some(&type_name))
+    }
+
+    /// Reads an `ARRAY` value as its element values in order. Yields `None` if
+    /// any element is of a type this crate does not model.
+    fn read_array_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
+        let count = self.value_int32(value, MID_VALUE_NUM_ELEMENTS)?;
+        let mut elements = Vec::new();
+        for index in 0..count {
+            let element = self.value_indexed_child(value, MID_VALUE_ELEMENT, index)?;
+            let Some(literal) = self.read_child_value(element)? else {
+                return Ok(None);
+            };
+            elements.push(literal);
+        }
+        Ok(Some(LiteralValue::Array(elements)))
+    }
+
+    /// Reads a `STRUCT` value as `(name, value)` pairs in order. Field names come
+    /// from the struct's type (anonymous fields report an empty name). Yields
+    /// `None` if any field is of a type this crate does not model.
+    fn read_struct_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
+        let count = self.value_int32(value, MID_VALUE_NUM_FIELDS)?;
+        let struct_type = self.rpc_handle(SVC_VALUE, MID_VALUE_TYPE, value)?;
+        let mut fields = Vec::new();
+        for index in 0..count {
+            let name = self.struct_field_name(struct_type, index)?;
+            let field = self.value_indexed_child(value, MID_VALUE_FIELD, index)?;
+            let Some(literal) = self.read_child_value(field)? else {
+                return Ok(None);
+            };
+            fields.push((name, literal));
+        }
+        Ok(Some(LiteralValue::Struct(fields)))
+    }
+
+    /// Reads a `RANGE` value as its `[start, end)` bounds, each an unbounded
+    /// bound reading back as [`LiteralValue::Null`].
+    fn read_range_value(&mut self, value: u64) -> Result<Option<LiteralValue>, Error> {
+        let start_value = self.rpc_handle(SVC_VALUE, MID_VALUE_RANGE_START, value)?;
+        let end_value = self.rpc_handle(SVC_VALUE, MID_VALUE_RANGE_END, value)?;
+        let (Some(start), Some(end)) = (
+            self.read_child_value(start_value)?,
+            self.read_child_value(end_value)?,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(LiteralValue::Range {
+            start: Box::new(start),
+            end: Box::new(end),
+        }))
+    }
+
+    /// Fetches the i-th child of a composite `Value` (an array element or struct
+    /// field), returned as a borrowed handle into the parent value.
+    fn value_indexed_child(&mut self, value: u64, mid: i32, index: i32) -> Result<u64, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, value);
+        pb::append_int32(&mut req, 2, index);
+        let resp = self.invoke(SVC_VALUE, mid, &req)?;
+        check_error(&resp)?;
+        Ok(pb::read_handle_at_field(&resp, 1))
+    }
+
+    /// Reads the name of a struct type's i-th field. The accessor returns a
+    /// submessage carrying the name at field 1; an anonymous field reads back as
+    /// an empty name.
+    fn struct_field_name(&mut self, struct_type: u64, index: i32) -> Result<String, Error> {
+        let mut req = Vec::new();
+        pb::append_handle(&mut req, 1, struct_type);
+        pb::append_int32(&mut req, 2, index);
+        let resp = self.invoke(SVC_STRUCT_TYPE, MID_STRUCT_TYPE_FIELD, &req)?;
+        check_error(&resp)?;
+        let field = pb::read_bytes_at_field(&resp, 1).unwrap_or_default();
+        Ok(pb::read_string_at_field(&field, 1).unwrap_or_default())
     }
 
     /// Reads an int64 from a `Value` handle via the given accessor.
