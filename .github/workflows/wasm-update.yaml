@@ -1,0 +1,78 @@
+name: wasm-update
+
+# Watches goccy/googlesql-wasm for new releases and, when one appears, opens a
+# PR that bumps the pinned version, URL and SHA256 in build.rs via
+# scripts/update-wasm.sh. Dependabot cannot track this pin because the wasm is
+# fetched from a GitHub Release URL rather than declared as a package.
+#
+# NOTE: PRs opened with the default GITHUB_TOKEN do not trigger the `test`
+# workflow (GitHub suppresses workflow events on token-authored commits to avoid
+# loops). Close/reopen the PR, push an empty commit, or use a PAT stored in a
+# secret if you want CI (including the build.rs SHA256 verification) to run
+# automatically on it.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # every Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve current and latest wasm versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          current=$(grep -oP 'WASM_VERSION: &str = "\K[^"]+' build.rs)
+          latest=$(gh release view --repo goccy/googlesql-wasm --json tagName -q .tagName)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current latest=$latest"
+
+          update=false
+          if [ "$current" != "$latest" ] && \
+             [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ]; then
+            update=true
+          fi
+          echo "update=$update" >> "$GITHUB_OUTPUT"
+
+      - name: Open update PR
+        if: steps.versions.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          CURRENT: ${{ steps.versions.outputs.current }}
+        run: |
+          branch="chore/wasm-${LATEST}"
+
+          if [ -n "$(gh pr list --head "$branch" --state open --json number -q '.[].number')" ]; then
+            echo "PR for $branch already open; nothing to do."
+            exit 0
+          fi
+
+          ./scripts/update-wasm.sh "$LATEST"
+          if git diff --quiet -- build.rs; then
+            echo "build.rs unchanged; nothing to do."
+            exit 0
+          fi
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add build.rs
+          git commit -m "chore: bump googlesql.wasm ${CURRENT} -> ${LATEST}"
+          git push -u origin "$branch"
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore: bump googlesql.wasm ${CURRENT} -> ${LATEST}" \
+            --body "Automated bump of the bundled googlesql.wasm from \`${CURRENT}\` to \`${LATEST}\` (goccy/googlesql-wasm). Version, URL and SHA256 in \`build.rs\` were updated by \`scripts/update-wasm.sh\`."
