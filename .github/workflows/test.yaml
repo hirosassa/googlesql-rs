@@ -20,7 +20,7 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install ${{ matrix.rust }}
         id: toolchain
@@ -58,7 +58,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup toolchain install stable --component llvm-tools-preview
