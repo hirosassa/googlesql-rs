@@ -75,7 +75,7 @@ jobs:
           save-if: true
 
       - name: Cache llvm-cov instrumented target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Persist the instrumented wasmtime/cranelift tree wholesale so only
           # changed workspace crates recompile. Key on Cargo.lock AND Cargo.toml
