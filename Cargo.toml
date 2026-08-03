@@ -27,7 +27,7 @@ thiserror = "2"
 sha2 = "0.11"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 # Benchmarks live in benches/queries.rs and use criterion's own harness. They
 # are excluded from `cargo test`; run them explicitly with `cargo bench`.
