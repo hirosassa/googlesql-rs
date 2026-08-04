@@ -15,7 +15,9 @@
     reason = "bench code"
 )]
 
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use googlesql::{ColumnDef, ColumnType, Module, TableDef};
 
 /// A two-table catalog the analyzer benchmarks resolve against.
