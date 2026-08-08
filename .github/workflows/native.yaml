@@ -20,6 +20,12 @@ on:
       - 'scripts/gen-native-guest.sh'
       - 'scripts/gen-native-dispatch.py'
       - '.github/workflows/native.yaml'
+      # The prebuilt-distribution scripts and their pin, validated by the
+      # `prebuilt` job below.
+      - 'scripts/native-guest-digest.sh'
+      - 'scripts/pack-native-guest.sh'
+      - 'scripts/fetch-native-guest.sh'
+      - 'scripts/native-guest.lock'
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,3 +98,98 @@ jobs:
       - name: Differential tests vs wasmtime
         working-directory: googlesql-rs
         run: cargo test --features native --lib 'native_backend::'
+
+  prebuilt:
+    name: native prebuilt (fetch roundtrip)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout googlesql-rs
+        uses: actions/checkout@v7
+        with:
+          path: googlesql-rs
+
+      - name: Read the pins from the lock
+        id: pins
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source scripts/native-guest.lock
+          {
+            echo "wasm2rs_ref=$WASM2RS_REF"
+            echo "content_sha256=$CONTENT_SHA256"
+          } >>"$GITHUB_OUTPUT"
+
+      # Reproduce the guest at the lock's pinned wasm2rs ref (not the workflow's
+      # `main`), so the regenerated digest can be asserted against the lock.
+      - name: Checkout wasm2rs (pinned ref)
+        uses: actions/checkout@v7
+        with:
+          repository: hirosassa/wasm2rs
+          ref: ${{ steps.pins.outputs.wasm2rs_ref }}
+          path: wasm2rs
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Fetch the pinned googlesql.wasm
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          url=$(grep -oP 'https://github\.com/goccy/[^"]+\.wasm' build.rs)
+          sha=$(grep -oP 'WASM_SHA256: &str = "\K[0-9a-f]+' build.rs)
+          curl -fsSL --retry 3 "$url" -o /tmp/googlesql.wasm
+          echo "${sha}  /tmp/googlesql.wasm" | sha256sum -c -
+
+      - name: Generate the guest
+        working-directory: googlesql-rs
+        env:
+          # Also set at workflow level; kept explicit here so this step reads as
+          # self-contained (the fetch step above writes the wasm to this path).
+          GOOGLESQL_WASM: /tmp/googlesql.wasm
+          WASM2RS_DIR: ${{ github.workspace }}/wasm2rs
+        run: scripts/gen-native-guest.sh
+
+      - name: Reproducibility — the generated tree matches the pinned digest
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          actual=$(scripts/native-guest-digest.sh)
+          echo "content digest: $actual"
+          if [[ "$actual" != "${{ steps.pins.outputs.content_sha256 }}" ]]; then
+            echo "error: generated tree does not match CONTENT_SHA256 in the lock" >&2
+            exit 1
+          fi
+
+      - name: Pack the tarball (as the release workflow would)
+        working-directory: googlesql-rs
+        run: scripts/pack-native-guest.sh /tmp/native-guest.tar.gz
+
+      # Wipe the generated sources but keep the committed guest/Cargo.toml, so the
+      # tree looks like a fresh checkout before the fetch script provisions it.
+      - name: Simulate a fresh checkout
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          find native/guest -type f ! -name Cargo.toml -delete
+          rm -f native/dispatch.rs
+
+      - name: Fetch from the local tarball and verify the digest
+        working-directory: googlesql-rs
+        env:
+          GUEST_TARBALL: /tmp/native-guest.tar.gz
+        run: scripts/fetch-native-guest.sh
+
+      # The extracted tree is byte-identical (digest-verified) to the one the
+      # `native` job compiles, so resolving the path-dependency is enough here;
+      # buildability is already covered there.
+      - name: Cargo resolves the provisioned guest under --features native
+        working-directory: googlesql-rs
+        run: cargo metadata --features native --format-version 1 >/dev/null

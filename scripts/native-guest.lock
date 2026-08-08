@@ -1,0 +1,22 @@
+# Pinned prebuilt native guest — the wasm2rs-generated `guest` crate plus the
+# dispatch table, distributed via GitHub Releases so the `native` feature can be
+# built without the wasm2rs / wasm-tools / python toolchain.
+#
+# Content-addressed: CONTENT_SHA256 is the canonical hash of the generated tree
+# (scripts/native-guest-digest.sh), reproducible from the two pinned inputs
+# below, so integrity is verified on file CONTENT — not the non-reproducible
+# tar/gzip framing that transports it. wasm2rs output is deterministic, so
+# regenerating from the same inputs yields the same digest.
+#
+# Generated from:
+#   googlesql.wasm  v0.3.4  (the SHA-pinned module resolved by build.rs)
+#   wasm2rs         a5e0502ac691c87769ed08a813646bb8b0d7fbe9
+#
+# When either input moves, regenerate, update CONTENT_SHA256 (and RELEASE_TAG /
+# TARBALL_URL), and republish with .github/workflows/release-native-guest.yaml.
+WASM_VERSION=v0.3.4
+WASM2RS_REF=a5e0502ac691c87769ed08a813646bb8b0d7fbe9
+CONTENT_SHA256=3684479940f5cb03088d500e36159bbf54be9fcfb94b844e89992cb0a3721b0c
+RELEASE_TAG=native-guest-v0.3.4-a5e0502
+TARBALL_NAME=native-guest.tar.gz
+TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.3.4-a5e0502/native-guest.tar.gz

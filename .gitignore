@@ -13,5 +13,9 @@
 /native/guest/*
 !/native/guest/Cargo.toml
 
+# The prebuilt guest tarball scripts/pack-native-guest.sh emits (published to a
+# Release, never committed).
+/native-guest.tar.gz
+
 # tooling caches
 /.workspace_cache/
