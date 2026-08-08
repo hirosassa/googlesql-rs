@@ -54,6 +54,8 @@ mod ast;
 mod backend;
 mod error;
 mod formatter;
+#[cfg(feature = "native")]
+mod native_backend;
 mod parser;
 mod pb;
 mod resolved;

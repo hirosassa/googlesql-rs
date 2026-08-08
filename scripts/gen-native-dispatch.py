@@ -16,13 +16,18 @@ Usage: python3 scripts/gen-native-dispatch.py
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-WASM = REPO / "spike" / "googlesql.wasm"
+# The wasm to read the export section from. Defaults to the SHA-pinned
+# spike/googlesql.wasm; CI (where that file is not checked in) points
+# GOOGLESQL_WASM at the same v0.3.4 wasm the build downloads, keeping the native
+# dispatch table in lock-step with the wasmtime backend.
+WASM = Path(os.environ.get("GOOGLESQL_WASM", REPO / "spike" / "googlesql.wasm"))
 OUT = REPO / "native" / "dispatch.rs"
 
 # Names that are NOT dispatched via packed_by_name (lifecycle / allocator).
