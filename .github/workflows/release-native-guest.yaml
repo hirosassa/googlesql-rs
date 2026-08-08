@@ -1,0 +1,106 @@
+name: release-native-guest
+
+# Publishes the prebuilt native guest (the wasm2rs-generated `guest` crate +
+# dispatch table) as a GitHub Release asset, so downstream builds can enable the
+# `native` feature via scripts/fetch-native-guest.sh without the wasm2rs /
+# wasm-tools / python toolchain that scripts/gen-native-guest.sh requires.
+#
+# Manual only: run after bumping the pinned wasm (build.rs) or the wasm2rs ref /
+# content digest (scripts/native-guest.lock). The job regenerates from the pins,
+# asserts the digest matches the lock (so a drifted pin cannot be published), and
+# uploads the tarball to the lock's RELEASE_TAG.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: publish prebuilt native guest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout googlesql-rs
+        uses: actions/checkout@v7
+        with:
+          path: googlesql-rs
+
+      - name: Read the pins from the lock
+        id: pins
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source scripts/native-guest.lock
+          {
+            echo "wasm2rs_ref=$WASM2RS_REF"
+            echo "release_tag=$RELEASE_TAG"
+            echo "tarball_name=$TARBALL_NAME"
+            echo "content_sha256=$CONTENT_SHA256"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Checkout wasm2rs (pinned ref)
+        uses: actions/checkout@v7
+        with:
+          repository: hirosassa/wasm2rs
+          ref: ${{ steps.pins.outputs.wasm2rs_ref }}
+          path: wasm2rs
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Fetch the pinned googlesql.wasm
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          url=$(grep -oP 'https://github\.com/goccy/[^"]+\.wasm' build.rs)
+          sha=$(grep -oP 'WASM_SHA256: &str = "\K[0-9a-f]+' build.rs)
+          curl -fsSL --retry 3 "$url" -o /tmp/googlesql.wasm
+          echo "${sha}  /tmp/googlesql.wasm" | sha256sum -c -
+
+      - name: Generate the guest
+        working-directory: googlesql-rs
+        env:
+          GOOGLESQL_WASM: /tmp/googlesql.wasm
+          WASM2RS_DIR: ${{ github.workspace }}/wasm2rs
+        run: scripts/gen-native-guest.sh
+
+      - name: Verify the generated tree reproduces the pinned digest
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          actual=$(scripts/native-guest-digest.sh)
+          echo "content digest: $actual"
+          if [[ "$actual" != "${{ steps.pins.outputs.content_sha256 }}" ]]; then
+            echo "error: generated tree does not match the pinned CONTENT_SHA256; update the lock before publishing" >&2
+            exit 1
+          fi
+
+      - name: Pack the tarball
+        working-directory: googlesql-rs
+        run: scripts/pack-native-guest.sh "${{ github.workspace }}/${{ steps.pins.outputs.tarball_name }}"
+
+      - name: Publish to the Release
+        working-directory: googlesql-rs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.pins.outputs.release_tag }}'
+          asset="${{ github.workspace }}/${{ steps.pins.outputs.tarball_name }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Prebuilt native guest (wasm2rs-generated). Content digest: ${{ steps.pins.outputs.content_sha256 }}"
+          fi
+          gh release upload "$tag" "$asset" --clobber

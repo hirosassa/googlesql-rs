@@ -57,6 +57,33 @@ path-dependency (and a fresh checkout / default build works) without the generat
 present. `scripts/gen-native-dispatch.py` emits the 26,316-arm `(svc,mid) → func{N}` table
 plus the by-name table from the wasm export section.
 
+## Using the prebuilt guest (no toolchain)
+
+Generating the guest needs a `wasm2rs` checkout, `wasm-tools`, and `python3`. To skip that,
+fetch the pre-generated tree from a GitHub Release instead:
+
+```bash
+scripts/fetch-native-guest.sh        # download + extract + verify native/guest and native/dispatch.rs
+cargo build --release --features native
+```
+
+`scripts/native-guest.lock` pins the two inputs the tree is generated from — the
+SHA-pinned `googlesql.wasm` (`v0.3.4`, via `build.rs`) and a `wasm2rs` commit — together
+with `CONTENT_SHA256`, the canonical hash of the generated files
+(`scripts/native-guest-digest.sh`). wasm2rs output is deterministic, so that digest is
+reproducible from the pins; the fetch script verifies the extracted tree against it, so
+integrity rests on file **content**, not the tar/gzip framing. `GUEST_TARBALL=/path.tar.gz`
+uses a local tarball instead of downloading (offline / CI). The release workflow
+(`.github/workflows/release-native-guest.yaml`, manual) regenerates from the pins, asserts
+the digest, and publishes the tarball; the `prebuilt` job in `native.yaml` exercises the
+pack → fetch → verify roundtrip on every native-touching PR.
+
+What this does **not** remove is the one-time optimized compile: the `guest` crate builds at
+`opt-level = 3` for real native performance (its `[profile.release]`), which takes tens of
+minutes on first build and is then cached. A precompiled `rlib` is tied to an exact
+rustc/target and so cannot be distributed portably — only the generated **source** is
+prebuilt, not its object code.
+
 ## Differential results
 
 `src/native_backend.rs` (`#[cfg(test)]`) constructs both engines in one process and
@@ -106,6 +133,9 @@ unaffected. The default `test` workflow no longer runs `--all-features`; the ded
 differential tests. The full standalone shim is also preserved on the `spike/native-backend`
 branch.
 
-Remaining follow-ups: a prebuilt/optimized `guest` for real native performance (today it is
-built `opt-level = 0` for correctness only), and `Drop` handling for outstanding wasm
-handles.
+The generated guest is also published as a Release asset so the `native` feature can be
+built without the wasm2rs toolchain — see [Using the prebuilt guest](#using-the-prebuilt-guest-no-toolchain).
+
+Remaining follow-up: exposing the native engine as public API (today `Module::new_native()`
+is `pub(crate)`, reached only by the differential tests). The response-buffer leak on the
+read-error path was fixed in #140.
