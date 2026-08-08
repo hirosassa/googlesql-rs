@@ -51,12 +51,14 @@
 
 mod analyzer;
 mod ast;
+mod backend;
 mod error;
 mod formatter;
 mod parser;
 mod pb;
 mod resolved;
 mod runtime;
+mod wasmtime_backend;
 
 pub use analyzer::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, FunctionDef,

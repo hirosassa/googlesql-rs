@@ -1,26 +1,19 @@
-//! Host runtime that drives the GoogleSQL prebuilt wasm on top of wasmtime.
+//! The engine-agnostic [`Module`]: the GoogleSQL bindings and the RPC
+//! marshaling that drive a [`GuestInstance`].
 //!
-//! ABI details are documented in `docs/SPIKE.md`. Key points:
-//! - WASI (preview1) is provided as a reactor; `/` is pre-opened (for timezone reads, etc.)
-//! - All C++ runtime imports from `env` are satisfied by stubs
-//! - `wasmify::callback_invoke` is provided (returns 0 in the MVP — no callbacks registered)
-//! - RPC convention: `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)`
+//! `Module` owns the parser/formatter/analyzer bindings and the shared plumbing
+//! (request encoding, the persistent wasm request region, packed-response
+//! decoding, and deferred handle frees) written once against the engine-agnostic
+//! ABI. The wasm engine itself — wasmtime, plus WASI and the C++ `env` stubs —
+//! lives in [`wasmtime_backend`](crate::wasmtime_backend); the RPC convention it
+//! drives is described on [`backend`](crate::backend) (ABI specifics in
+//! `docs/SPIKE.md`).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use wasmtime::{
-    Caller, Engine, Extern, ExternType, Instance, Linker, Memory, Module as WasmModule, Store,
-    TypedFunc, Val, ValType,
-};
-use wasmtime_wasi::p1::WasiP1Ctx;
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
-
+use crate::backend::GuestInstance;
 use crate::error::Error;
 use crate::pb;
-
-/// Absolute path to googlesql.wasm prepared by build.rs.
-const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 
 /// `LanguageOptions` service and method ids (see `spike/wazero.go`).
 const SVC_LANGUAGE_OPTIONS: i32 = 678;
@@ -55,68 +48,28 @@ enum LanguageFeatureMode {
     Minimal(Vec<i32>),
 }
 
-/// Process-wide cache of the compiled wasm module and its `Engine`.
+/// A single instance of the GoogleSQL guest, the entry point to the parser,
+/// formatter, and analyzer.
 ///
-/// JIT-compiling the ~13MB module dominates the cost of [`Module::new`]. wasmtime's
-/// `Engine` and `Module` are `Send + Sync` and designed to be shared across many
-/// instances and threads, so we compile once here and only instantiate per `Module`.
-/// The immutable compiled code is shared; each `Module` still gets its own `Store`,
-/// `Instance`, and linear memory, so instances stay fully isolated.
-static SHARED_WASM: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
-
-/// Returns the shared `Engine` and compiled module, compiling on first use.
-///
-/// Uses `get_or_init` so the expensive compilation runs exactly once even when
-/// many threads construct a `Module` concurrently; the losers block rather than
-/// each recompiling. A compilation failure is cached (the embedded wasm is fixed,
-/// so it would fail identically every time).
-fn shared_wasm() -> Result<&'static (Engine, WasmModule), Error> {
-    SHARED_WASM
-        .get_or_init(|| {
-            let engine = Engine::default();
-            let wasm = WasmModule::from_file(&engine, WASM_PATH)
-                .map_err(|e| format!("load {WASM_PATH}: {e}"))?;
-            Ok((engine, wasm))
-        })
-        .as_ref()
-        .map_err(|e| Error::Instantiate(e.clone()))
-}
-
-/// Host state carried in the wasmtime `Store`.
-struct HostState {
-    wasi: WasiP1Ctx,
-}
-
-/// A single instance of the GoogleSQL wasm module.
-///
-/// wasmtime's `Store` requires exclusive access (`&mut`), so every method takes
-/// `&mut self`, serializing all calls through one instance. A `Module` is
-/// [`Send`], so it can be moved between threads and, since each instance owns an
-/// isolated wasm linear memory, many instances (one per thread) run truly in
-/// parallel. wasmtime forbids concurrent calls into a single instance, so a
-/// `Module` is deliberately not `Sync`: parallelism comes from separate
-/// instances, not from sharing one.
+/// Each `Module` owns one `GuestInstance`, which requires exclusive access, so
+/// every method takes `&mut self`,
+/// serializing all calls through the one instance. A `Module` is [`Send`], so it
+/// can be moved between threads and, since each instance owns an isolated wasm
+/// linear memory, many instances (one per thread) run truly in parallel. The
+/// engine forbids concurrent calls into a single instance, so a `Module` is
+/// deliberately not `Sync`: parallelism comes from separate instances, not from
+/// sharing one.
 pub struct Module {
-    store: Store<HostState>,
-    memory: Memory,
-    alloc_fn: TypedFunc<u32, u32>,
-    free_fn: TypedFunc<u32, ()>,
-    instance: Instance,
+    /// The wasm engine that executes the GoogleSQL guest. Boxed as a trait
+    /// object so the default wasmtime engine and a future ahead-of-time-compiled
+    /// engine share the identical `Module` above them; the indirection is one
+    /// vtable hop per RPC, negligible beside the guest call itself.
+    backend: Box<dyn GuestInstance>,
     /// Deferred frees enqueued by dropped [`Handle`]s, drained by
     /// [`Module::flush_frees`]. Shared with each live [`Handle`] via `Arc` (not
     /// `Rc`) so the whole `Module` stays [`Send`]; the `Mutex` is only ever
     /// taken by the single owning thread, so it is uncontended.
     pending_frees: Arc<Mutex<Vec<PendingFree>>>,
-    /// Cache of `w_<svc>_<mid>` RPC exports, keyed by `(svc, mid)`.
-    ///
-    /// Resolving an export is a by-name lookup plus a type check; the tree-walking
-    /// APIs make thousands of RPC calls, so caching the resolved [`TypedFunc`]
-    /// removes that per-call cost (and the per-call name formatting) after the
-    /// first use. `TypedFunc` is a cheap `Copy` handle independent of the store.
-    invoke_cache: HashMap<(i32, i32), TypedFunc<(u32, u32), u64>>,
-    /// Cache of named exports (e.g. `wasmify_get_type_name`), keyed by name, for
-    /// the same reason as [`Module::invoke_cache`].
-    export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
     /// Cached `LanguageOptions` handle, built on first use by
     /// [`Module::language_options`] and reused for the `Module`'s lifetime.
     ///
@@ -173,25 +126,6 @@ pub struct Module {
     req_scratch_cap: u32,
 }
 
-/// Identifies the export a [`Module::call_typed`] call targets, used only to
-/// build the call-failure message. Formatting is deferred to the error path so
-/// the cached-lookup hot path never allocates the export name.
-enum ExportId<'a> {
-    /// A `w_<svc>_<mid>` RPC export.
-    Rpc { svc: i32, mid: i32 },
-    /// A named export such as `wasmify_get_type_name`.
-    Named(&'a str),
-}
-
-impl std::fmt::Display for ExportId<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Self::Rpc { svc, mid } => write!(f, "w_{svc}_{mid}"),
-            Self::Named(name) => f.write_str(name),
-        }
-    }
-}
-
 /// A wasm-side handle free deferred until [`Module::flush_frees`]: the
 /// `w_<svc>_<mid>` free RPC to invoke with `ptr`.
 #[derive(Clone, Copy)]
@@ -239,83 +173,13 @@ impl Drop for Handle {
 }
 
 impl Module {
-    /// Loads the embedded wasm and returns a fully initialized instance.
+    /// Loads the prebuilt wasm on the default engine and returns a fully
+    /// initialized instance.
     pub fn new() -> Result<Self, Error> {
-        let (engine, wasm) = shared_wasm()?;
-
-        let mut linker: Linker<HostState> = Linker::new(engine);
-        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |s: &mut HostState| &mut s.wasi)
-            .map_err(|e| Error::Instantiate(format!("wasi linker: {e}")))?;
-        register_callback_import(&mut linker)?;
-        register_env_stubs(&mut linker, wasm)?;
-
-        let mut builder = WasiCtxBuilder::new();
-        builder.inherit_stderr();
-        // Resolve the host tz database (may be a chain of symlinks on macOS) and
-        // preopen the real directory directly at the guest path cctz expects, so
-        // absl's FindTimeZoneByName works without in-sandbox symlink traversal.
-        if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
-            builder.env("TZDIR", "/usr/share/zoneinfo");
-            // Best-effort: the required "/" preopen below also covers zoneinfo,
-            // so failing to preopen it directly is tolerable and discarded.
-            #[allow(
-                clippy::let_underscore_must_use,
-                reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
-            )]
-            let _ = builder.preopened_dir(
-                &real,
-                "/usr/share/zoneinfo",
-                DirPerms::READ,
-                FilePerms::READ,
-            );
-        }
-        let wasi = builder
-            .preopened_dir("/", "/", DirPerms::READ, FilePerms::READ)
-            .map_err(|e| Error::Instantiate(format!("preopen /: {e}")))?
-            .build_p1();
-        let mut store = Store::new(engine, HostState { wasi });
-
-        let instance = linker
-            .instantiate(&mut store, wasm)
-            .map_err(|e| Error::Instantiate(format!("instantiate: {e}")))?;
-
-        let memory = instance
-            .get_memory(&mut store, "memory")
-            .ok_or_else(|| Error::Instantiate("wasm export `memory` not found".into()))?;
-
-        // Initialize the WASI reactor (runs C++ global constructors).
-        if let Some(init) = instance.get_func(&mut store, "_initialize") {
-            let init = init
-                .typed::<(), ()>(&store)
-                .map_err(|e| Error::Instantiate(format!("_initialize type: {e}")))?;
-            init.call(&mut store, ())
-                .map_err(|e| Error::Instantiate(format!("_initialize call: {e}")))?;
-        }
-        if let Some(winit) = instance.get_func(&mut store, "wasm_init") {
-            let winit = winit
-                .typed::<(), u32>(&store)
-                .map_err(|e| Error::Instantiate(format!("wasm_init type: {e}")))?;
-            winit
-                .call(&mut store, ())
-                .map_err(|e| Error::Instantiate(format!("wasm_init call: {e}")))?;
-        }
-
-        let alloc_fn = instance
-            .get_typed_func::<u32, u32>(&mut store, "wasm_alloc")
-            .map_err(|e| Error::Instantiate(format!("wasm_alloc: {e}")))?;
-        let free_fn = instance
-            .get_typed_func::<u32, ()>(&mut store, "wasm_free")
-            .map_err(|e| Error::Instantiate(format!("wasm_free: {e}")))?;
-
+        let backend = crate::wasmtime_backend::WasmtimeInstance::new()?;
         Ok(Self {
-            store,
-            memory,
-            alloc_fn,
-            free_fn,
-            instance,
+            backend: Box::new(backend),
             pending_frees: Arc::new(Mutex::new(Vec::new())),
-            invoke_cache: HashMap::new(),
-            export_cache: HashMap::new(),
             cached_language_options: None,
             descriptor_pool: None,
             supported_statement_kinds: Vec::new(),
@@ -567,89 +431,103 @@ impl Module {
 
     /// Allocates `len` bytes in wasm linear memory and returns the pointer.
     pub fn alloc(&mut self, len: u32) -> Result<u32, Error> {
-        self.alloc_fn
-            .call(&mut self.store, len)
-            .map_err(|e| Error::Wasm(format!("wasm_alloc({len}): {e}")))
+        self.backend.alloc(len)
     }
 
     /// Frees a pointer previously returned by `alloc`.
     pub fn free(&mut self, ptr: u32) -> Result<(), Error> {
-        self.free_fn
-            .call(&mut self.store, ptr)
-            .map_err(|e| Error::Wasm(format!("wasm_free({ptr}): {e}")))
+        self.backend.free(ptr)
     }
 
     /// Writes a byte slice into wasm memory at `ptr`.
     pub fn write(&mut self, ptr: u32, data: &[u8]) -> Result<(), Error> {
-        let offset = usize::try_from(ptr).map_err(|e| Error::Memory(e.to_string()))?;
-        self.memory
-            .write(&mut self.store, offset, data)
-            .map_err(|e| Error::Memory(e.to_string()))
+        self.backend.write(ptr, data)
     }
 
     /// Reads `len` bytes from wasm memory starting at `ptr` and returns them as a `Vec<u8>`.
     pub fn read(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, Error> {
-        let offset = usize::try_from(ptr).map_err(|e| Error::Memory(e.to_string()))?;
-        let len = usize::try_from(len).map_err(|e| Error::Memory(e.to_string()))?;
-        let mut buf = vec![0u8; len];
-        self.memory
-            .read(&self.store, offset, &mut buf)
-            .map_err(|e| Error::Memory(e.to_string()))?;
-        Ok(buf)
+        self.backend.read(ptr, len)
     }
 
-    /// Invokes a wasmify RPC.
-    ///
-    /// Follows the `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` convention:
-    /// writes `req` into the persistent wasm request region, calls the export, and
-    /// returns the response bytes. The request region is reused across calls; only
-    /// the wasm-allocated response buffer is freed.
+    /// Invokes a wasmify RPC following the `w_<svc>_<mid>` convention: encodes
+    /// `req` into the reused request region, calls the export via the backend, and
+    /// decodes the packed response, freeing the wasm-side response buffer.
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
-        let func = match self.invoke_cache.get(&(svc, mid)) {
-            Some(func) => func.clone(),
-            None => {
-                let name = format!("w_{svc}_{mid}");
-                let func = self.typed_export(&name)?;
-                self.invoke_cache.insert((svc, mid), func.clone());
-                func
-            }
-        };
-        self.call_typed(func, ExportId::Rpc { svc, mid }, req)
+        let (req_ptr, req_len) = self.prepare_request(req)?;
+        let packed = self.backend.call_rpc(svc, mid, req_ptr, req_len)?;
+        self.finish_response(packed)
     }
 
-    /// Calls a named export (`w_<svc>_<mid>` or `wasmify_get_type_name`, etc.)
-    /// using the `(ptr,len) -> (ptr<<32 | len)` convention.
+    /// Calls a named export (`wasmify_get_type_name`, etc.), the by-name
+    /// counterpart to [`invoke`](Module::invoke).
     pub fn call_export(&mut self, name: &str, req: &[u8]) -> Result<Vec<u8>, Error> {
-        let func = match self.export_cache.get(name) {
-            Some(func) => func.clone(),
-            None => {
-                let func = self.typed_export(name)?;
-                self.export_cache.insert(name.to_string(), func.clone());
-                func
-            }
-        };
-        self.call_typed(func, ExportId::Named(name), req)
+        let (req_ptr, req_len) = self.prepare_request(req)?;
+        let packed = self.backend.call_named(name, req_ptr, req_len)?;
+        self.finish_response(packed)
     }
 
-    /// Invokes an RPC whose request is encoded into the reused
-    /// [`scratch`](Module::scratch) buffer by `build`, avoiding a fresh per-call
-    /// request allocation. The buffer retains its capacity between calls, so
-    /// `build` must only append to it (it is cleared first). Used by the
-    /// tree-walk hot paths.
+    /// Encodes `req` into the persistent wasm request region for a call and
+    /// returns the `(ptr, len)` pair to pass to the export, or `(0, 0)` for an
+    /// empty request. The region is reused across calls (see
+    /// [`wasm_request_scratch`](Module::wasm_request_scratch)); only its growth
+    /// touches the wasm allocator.
+    fn prepare_request(&mut self, req: &[u8]) -> Result<(u32, u32), Error> {
+        if req.is_empty() {
+            return Ok((0, 0));
+        }
+        let len = u32::try_from(req.len()).map_err(|e| Error::Memory(e.to_string()))?;
+        let ptr = self.wasm_request_scratch(len)?;
+        self.backend.write(ptr, req)?;
+        Ok((ptr, len))
+    }
+
+    /// Decodes a packed `(ptr<<32 | len)` response: reads the response bytes and
+    /// frees the wasm-side response buffer the export allocated. An empty response
+    /// (`len == 0`) neither reads nor frees.
+    fn finish_response(&mut self, packed: u64) -> Result<Vec<u8>, Error> {
+        let resp_ptr = u32::try_from(packed >> 32).map_err(|e| Error::Memory(e.to_string()))?;
+        let resp_len =
+            u32::try_from(packed & 0xFFFF_FFFF).map_err(|e| Error::Memory(e.to_string()))?;
+        if resp_len == 0 {
+            return Ok(Vec::new());
+        }
+        let resp = self.backend.read(resp_ptr, resp_len)?;
+        self.backend.free(resp_ptr)?;
+        Ok(resp)
+    }
+
+    /// Encodes a request into the reused [`scratch`](Module::scratch) buffer via
+    /// `build`, runs `call` with it, and returns the buffer to `self` afterwards
+    /// (on success or failure) so its capacity is kept for the next call.
+    ///
+    /// This is the single home of the scratch-reuse dance shared by
+    /// [`invoke_encoded`](Module::invoke_encoded) and
+    /// [`call_export_encoded`](Module::call_export_encoded): the buffer is taken
+    /// out so `call` can borrow `self` mutably, and `build` must only append to it
+    /// (it is cleared first). Used by the tree-walk hot paths to avoid a fresh
+    /// per-call request allocation.
+    fn with_scratch(
+        &mut self,
+        build: impl FnOnce(&mut Vec<u8>),
+        call: impl FnOnce(&mut Self, &[u8]) -> Result<Vec<u8>, Error>,
+    ) -> Result<Vec<u8>, Error> {
+        let mut buf = std::mem::take(&mut self.scratch);
+        buf.clear();
+        build(&mut buf);
+        let resp = call(self, &buf);
+        self.scratch = buf;
+        resp
+    }
+
+    /// Invokes a wasmify RPC whose request is encoded into the reused scratch
+    /// buffer by `build` (see [`with_scratch`](Module::with_scratch)).
     pub(crate) fn invoke_encoded(
         &mut self,
         svc: i32,
         mid: i32,
         build: impl FnOnce(&mut Vec<u8>),
     ) -> Result<Vec<u8>, Error> {
-        // Take the buffer out so `self.invoke` can borrow `self` mutably; put it
-        // back afterwards (on success or failure) to preserve its capacity.
-        let mut buf = std::mem::take(&mut self.scratch);
-        buf.clear();
-        build(&mut buf);
-        let resp = self.invoke(svc, mid, &buf);
-        self.scratch = buf;
-        resp
+        self.with_scratch(build, |m, buf| m.invoke(svc, mid, buf))
     }
 
     /// Invokes a single-handle RPC (`field 1 = ptr`) over the reused scratch
@@ -666,12 +544,7 @@ impl Module {
         name: &str,
         build: impl FnOnce(&mut Vec<u8>),
     ) -> Result<Vec<u8>, Error> {
-        let mut buf = std::mem::take(&mut self.scratch);
-        buf.clear();
-        build(&mut buf);
-        let resp = self.call_export(name, &buf);
-        self.scratch = buf;
-        resp
+        self.with_scratch(build, |m, buf| m.call_export(name, buf))
     }
 
     /// Returns the persistent wasm-side request region ([`Module::req_scratch_ptr`]),
@@ -702,156 +575,6 @@ impl Module {
         self.req_scratch_ptr = ptr;
         self.req_scratch_cap = len;
         Ok(ptr)
-    }
-
-    /// Resolves an export by name into a typed `(ptr,len) -> packed` function.
-    fn typed_export(&mut self, name: &str) -> Result<TypedFunc<(u32, u32), u64>, Error> {
-        self.instance
-            .get_typed_func::<(u32, u32), u64>(&mut self.store, name)
-            .map_err(|e| Error::Wasm(format!("export `{name}`: {e}")))
-    }
-
-    /// Runs one RPC over an already-resolved export: writes `req` into the
-    /// persistent wasm request region, calls the export, and returns the response
-    /// bytes. The request region is retained for the next call (see
-    /// [`Module::wasm_request_scratch`]); only the response buffer, which the wasm
-    /// side allocates, is freed. `id` names the export only for the call-failure
-    /// message, so it is formatted lazily off the hot path.
-    fn call_typed(
-        &mut self,
-        func: TypedFunc<(u32, u32), u64>,
-        id: ExportId<'_>,
-        req: &[u8],
-    ) -> Result<Vec<u8>, Error> {
-        let (req_ptr, req_len) = if req.is_empty() {
-            (0, 0)
-        } else {
-            let len = u32::try_from(req.len()).map_err(|e| Error::Memory(e.to_string()))?;
-            let ptr = self.wasm_request_scratch(len)?;
-            self.write(ptr, req)?;
-            (ptr, len)
-        };
-
-        let packed = func
-            .call(&mut self.store, (req_ptr, req_len))
-            .map_err(|e| Error::Wasm(format!("`{id}` call: {e}")))?;
-
-        let resp_ptr = u32::try_from(packed >> 32).map_err(|e| Error::Memory(e.to_string()))?;
-        let resp_len =
-            u32::try_from(packed & 0xFFFF_FFFF).map_err(|e| Error::Memory(e.to_string()))?;
-        if resp_len == 0 {
-            return Ok(Vec::new());
-        }
-        let resp = self.read(resp_ptr, resp_len)?;
-        self.free(resp_ptr)?;
-        Ok(resp)
-    }
-}
-
-/// Registers the `wasmify::callback_invoke` import.
-///
-/// In the MVP, no Catalog or other callbacks are used, so this always returns 0
-/// (meaning "no handler registered"), following the same convention as wazero.
-fn register_callback_import(linker: &mut Linker<HostState>) -> Result<(), Error> {
-    linker
-        .func_wrap(
-            "wasmify",
-            "callback_invoke",
-            |_caller: Caller<'_, HostState>,
-             _callback_id: i32,
-             _method_id: i32,
-             _req_ptr: i32,
-             _req_len: i32|
-             -> i64 { 0 },
-        )
-        .map_err(|e| Error::Instantiate(format!("callback_invoke: {e}")))?;
-    Ok(())
-}
-
-/// Satisfies all C++ runtime `env` imports required by the wasm module with stubs.
-fn register_env_stubs(linker: &mut Linker<HostState>, wasm: &WasmModule) -> Result<(), Error> {
-    for import in wasm.imports() {
-        if import.module() != "env" {
-            continue;
-        }
-        let ExternType::Func(func_type) = import.ty() else {
-            continue;
-        };
-        let name = import.name().to_string();
-        let result_types: Vec<ValType> = func_type.results().collect();
-        linker
-            .func_new(
-                "env",
-                import.name(),
-                func_type,
-                move |mut caller, params, results| {
-                    env_stub_call(&name, &result_types, &mut caller, params, results)
-                },
-            )
-            .map_err(|e| Error::Instantiate(format!("env stub `{}`: {e}", import.name())))?;
-    }
-    Ok(())
-}
-
-/// Body of each `env` stub (ported from wazero's envStub convention).
-fn env_stub_call(
-    name: &str,
-    result_types: &[ValType],
-    caller: &mut Caller<'_, HostState>,
-    params: &[Val],
-    results: &mut [Val],
-) -> wasmtime::Result<()> {
-    // C++ throws cannot be unwound, so trap.
-    if name.contains("__cxa_throw") || name.ends_with("_throw") {
-        return Err(wasmtime::Error::msg(format!(
-            "C++ exception thrown in wasm (env::{name})"
-        )));
-    }
-    // Semaphore waits succeed immediately in a single-threaded context.
-    if name.contains("SemWait") || name.contains("sem_wait") {
-        if let Some(slot) = results.get_mut(0) {
-            *slot = Val::I32(1);
-        }
-        return Ok(());
-    }
-    // Satisfy C++ exception object allocation via wasm_alloc.
-    if name.contains("allocate_exception") {
-        let size = params.first().and_then(Val::i32).unwrap_or(64);
-        let size = if size <= 0 { 64 } else { size };
-        let ptr = alloc_via_caller(caller, size).unwrap_or(0);
-        if let Some(slot) = results.get_mut(0) {
-            *slot = Val::I32(ptr);
-        }
-        return Ok(());
-    }
-    // All other stubs return the zero value for each result type.
-    for (i, ty) in result_types.iter().enumerate() {
-        if let Some(slot) = results.get_mut(i) {
-            *slot = zero_val(ty);
-        }
-    }
-    Ok(())
-}
-
-/// Calls `wasm_alloc` through a `Caller` and returns the allocated pointer (i32).
-fn alloc_via_caller(caller: &mut Caller<'_, HostState>, size: i32) -> Option<i32> {
-    let Some(Extern::Func(alloc)) = caller.get_export("wasm_alloc") else {
-        return None;
-    };
-    let typed = alloc.typed::<u32, u32>(&caller).ok()?;
-    let size = u32::try_from(size).ok()?;
-    let ptr = typed.call(&mut *caller, size).ok()?;
-    i32::try_from(ptr).ok()
-}
-
-/// Returns the zero `Val` for a numeric `ValType`.
-const fn zero_val(ty: &ValType) -> Val {
-    match ty {
-        ValType::I32 => Val::I32(0),
-        ValType::I64 => Val::I64(0),
-        ValType::F32 => Val::F32(0),
-        ValType::F64 => Val::F64(0),
-        _ => Val::I32(0),
     }
 }
 
@@ -1053,49 +776,6 @@ mod tests {
         assert_eq!(
             module.req_scratch_ptr, region,
             "a same-size request must reuse the region, not reallocate it"
-        );
-    }
-
-    /// Repeated RPCs to the same `(svc, mid)` resolve the export exactly once:
-    /// the first `invoke` populates the cache and later calls reuse the cached
-    /// `TypedFunc` instead of re-running `get_typed_func`.
-    #[test]
-    fn invoke_caches_typed_export_per_svc_mid() {
-        let mut module = super::Module::new().expect("instantiate module");
-
-        assert_eq!(
-            module.invoke_cache.len(),
-            0,
-            "cache must start empty before any RPC"
-        );
-
-        let mut handle = 0;
-        for _ in 0..3 {
-            let resp = module
-                .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
-                .expect("NewParserOptions RPC");
-            handle = super::pb::read_handle_at_field(&resp, 1);
-        }
-
-        assert_eq!(
-            module.invoke_cache.len(),
-            1,
-            "three calls to one RPC must leave a single cached export"
-        );
-
-        // A distinct RPC adds exactly one more entry rather than replacing it;
-        // free the last handle acquired above so the instance is left clean.
-        module
-            .invoke(
-                SVC_PARSER_OPTIONS,
-                MID_FREE_PARSER_OPTIONS,
-                &super::pb::handle_arg(handle),
-            )
-            .expect("FreeParserOptions RPC");
-        assert_eq!(
-            module.invoke_cache.len(),
-            2,
-            "a different (svc, mid) must add its own cache entry"
         );
     }
 }
