@@ -176,9 +176,18 @@ impl Module {
     /// Loads the prebuilt wasm on the default engine and returns a fully
     /// initialized instance.
     pub fn new() -> Result<Self, Error> {
-        let backend = crate::wasmtime_backend::WasmtimeInstance::new()?;
+        Self::from_backend(Box::new(crate::wasmtime_backend::WasmtimeInstance::new()?))
+    }
+
+    /// Builds a `Module` around an already-initialized engine backend.
+    ///
+    /// The single seam through which an engine is injected: `new` supplies the
+    /// wasmtime backend today, and the forthcoming wasm2rs native engine will
+    /// plug in here behind the same [`GuestInstance`] trait without touching any
+    /// of the state below.
+    fn from_backend(backend: Box<dyn GuestInstance>) -> Result<Self, Error> {
         Ok(Self {
-            backend: Box::new(backend),
+            backend,
             pending_frees: Arc::new(Mutex::new(Vec::new())),
             cached_language_options: None,
             descriptor_pool: None,
