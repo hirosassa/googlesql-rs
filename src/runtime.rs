@@ -183,15 +183,17 @@ impl Module {
     /// initialized instance.
     ///
     /// Available only under the `native` feature. Unlike [`new`](Self::new), this
-    /// drives the module through native Rust with no wasm runtime. It is additive:
-    /// both engines can be constructed in one process, which the differential
-    /// tests rely on to compare native output against wasmtime.
+    /// drives the module through native Rust with no wasm runtime — every method
+    /// on the returned `Module` behaves identically, so the choice of engine is
+    /// invisible past construction. It is additive: both engines can be built in
+    /// one process (which the differential tests rely on to compare native output
+    /// against wasmtime).
+    ///
+    /// The generated `guest` crate the `native` feature depends on is large and
+    /// not committed; see `docs/NATIVE.md` for how to provision it
+    /// (`scripts/fetch-native-guest.sh`) and build with `--features native`.
     #[cfg(feature = "native")]
-    #[allow(
-        dead_code,
-        reason = "reached only by the native differential tests for now; public API is a later phase"
-    )]
-    pub(crate) fn new_native() -> Result<Self, Error> {
+    pub fn new_native() -> Result<Self, Error> {
         Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
     }
 
