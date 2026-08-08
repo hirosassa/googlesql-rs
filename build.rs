@@ -28,19 +28,43 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let dest = out_dir.join("googlesql.wasm");
+    let cwasm_dest = out_dir.join("googlesql.cwasm");
 
     // docs.rs builds run offline and only generate documentation — they never
     // execute the crate, and the wasm is loaded lazily at runtime (not embedded
     // at compile time). Skip fetching it there so the build doesn't fail on the
-    // network; only the env var below needs to be set for compilation.
+    // network; only the env vars below need to be set for compilation.
     if env::var_os("DOCS_RS").is_none() {
         let bytes = resolve_wasm_bytes(&dest)?;
         verify_sha256(&bytes)?;
         fs::write(&dest, &bytes)?;
+        precompile_cwasm(&bytes, &cwasm_dest)?;
     }
 
-    // Expose the absolute path to the wasm file for use at runtime.
+    // Expose the absolute paths to the wasm and its precompiled artifact for use
+    // at runtime.
     println!("cargo::rustc-env=GOOGLESQL_WASM_PATH={}", dest.display());
+    println!(
+        "cargo::rustc-env=GOOGLESQL_CWASM_PATH={}",
+        cwasm_dest.display()
+    );
+    Ok(())
+}
+
+/// Precompiles the wasm into a serialized `.cwasm` so the runtime deserializes
+/// native code instead of JIT-compiling on first use.
+///
+/// The engine here must match the runtime's `Engine::default()` exactly (same
+/// wasmtime version and default features, guaranteed by Cargo) — otherwise the
+/// runtime's `deserialize` rejects the artifact and falls back to JIT. A failure
+/// here is fatal: the artifact is required, and the runtime test asserts it
+/// deserializes.
+fn precompile_cwasm(wasm: &[u8], dest: &Path) -> Result<(), Box<dyn Error>> {
+    let engine = wasmtime::Engine::default();
+    let cwasm = engine
+        .precompile_module(wasm)
+        .map_err(|e| format!("precompile googlesql.wasm: {e}"))?;
+    fs::write(dest, &cwasm).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
     Ok(())
 }
 

@@ -28,32 +28,58 @@ use crate::error::Error;
 /// Absolute path to googlesql.wasm prepared by build.rs.
 const WASM_PATH: &str = env!("GOOGLESQL_WASM_PATH");
 
+/// Absolute path to the precompiled `googlesql.cwasm` prepared by build.rs.
+const CWASM_PATH: &str = env!("GOOGLESQL_CWASM_PATH");
+
 /// Process-wide cache of the compiled wasm module and its `Engine`.
 ///
-/// JIT-compiling the ~13MB module dominates the cost of [`WasmtimeInstance::new`].
+/// Loading the ~13MB module (deserializing the precompiled `.cwasm`, or
+/// JIT-compiling on fallback) dominates the cost of [`WasmtimeInstance::new`].
 /// wasmtime's `Engine` and `Module` are `Send + Sync` and designed to be shared
-/// across many instances and threads, so we compile once here and only
+/// across many instances and threads, so we load once here and only
 /// instantiate per instance. The immutable compiled code is shared; each
 /// instance still gets its own `Store`, `Instance`, and linear memory, so
 /// instances stay fully isolated.
 static SHARED_WASM: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
 
-/// Returns the shared `Engine` and compiled module, compiling on first use.
+/// Returns the shared `Engine` and compiled module, loading on first use.
 ///
-/// Uses `get_or_init` so the expensive compilation runs exactly once even when
-/// many threads construct an instance concurrently; the losers block rather than
-/// each recompiling. A compilation failure is cached (the embedded wasm is fixed,
-/// so it would fail identically every time).
+/// build.rs precompiles the wasm into a `.cwasm`, so the common path just
+/// deserializes that native artifact — no JIT. If deserialization fails (e.g. a
+/// stale artifact from a different wasmtime version or CPU), we fall back to
+/// JIT-compiling the wasm so correctness never depends on the artifact matching.
+///
+/// Uses `get_or_init` so the load runs exactly once even when many threads
+/// construct an instance concurrently; the losers block rather than each
+/// repeating the work. A failure is cached (the inputs are fixed, so it would
+/// fail identically every time).
 fn shared_wasm() -> Result<&'static (Engine, WasmModule), Error> {
     SHARED_WASM
         .get_or_init(|| {
             let engine = Engine::default();
-            let wasm = WasmModule::from_file(&engine, WASM_PATH)
-                .map_err(|e| format!("load {WASM_PATH}: {e}"))?;
-            Ok((engine, wasm))
+            let module = load_module(&engine)?;
+            Ok((engine, module))
         })
         .as_ref()
         .map_err(|e| Error::Instantiate(e.clone()))
+}
+
+/// Deserializes the precompiled `.cwasm`, falling back to JIT-compiling the wasm.
+fn load_module(engine: &Engine) -> Result<WasmModule, String> {
+    // SAFETY: CWASM_PATH is produced by our own build.rs from the SHA-pinned
+    // wasm using the identical `Engine::default()` configuration, so the bytes
+    // are a trusted, format-compatible artifact. A mismatch is caught by
+    // `deserialize_file` returning `Err` (not undefined behavior), which we
+    // handle by falling back to JIT below.
+    #[expect(
+        unsafe_code,
+        reason = "deserializing a trusted build-time artifact produced by our own build.rs"
+    )]
+    let deserialized = unsafe { WasmModule::deserialize_file(engine, CWASM_PATH) };
+    deserialized.or_else(|_| {
+        WasmModule::from_file(engine, WASM_PATH)
+            .map_err(|e| format!("load {WASM_PATH} (after .cwasm deserialize failed): {e}"))
+    })
 }
 
 /// Host state carried in the wasmtime `Store`.
@@ -345,8 +371,30 @@ const fn zero_val(ty: &ValType) -> Val {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code")]
 mod tests {
-    use super::WasmtimeInstance;
+    use super::{CWASM_PATH, WasmtimeInstance};
     use crate::backend::GuestInstance;
+    use wasmtime::{Engine, Module as WasmModule};
+
+    /// build.rs precompiles the wasm to a `.cwasm` with `Engine::default()`, and
+    /// the runtime deserializes it with the same default engine. This asserts the
+    /// artifact exists and deserializes cleanly — i.e. the fast (no-JIT) path is
+    /// actually available, not silently falling back to recompilation.
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "deserializing a trusted build-time artifact; mirrors the runtime path"
+    )]
+    fn cwasm_artifact_deserializes_with_runtime_engine() {
+        let engine = Engine::default();
+        // SAFETY: CWASM_PATH is produced by our own build.rs from the SHA-pinned
+        // wasm using the identical `Engine::default()` configuration.
+        let module = unsafe { WasmModule::deserialize_file(&engine, CWASM_PATH) };
+        assert!(
+            module.is_ok(),
+            "precompiled .cwasm at {CWASM_PATH} must deserialize with the runtime engine: {:?}",
+            module.err()
+        );
+    }
 
     /// Repeated RPCs to the same `(svc, mid)` resolve the export exactly once, and
     /// a distinct `(svc, mid)` adds its own entry. `NewParserOptions` (svc699/mid0)

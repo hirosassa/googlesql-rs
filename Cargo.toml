@@ -25,6 +25,12 @@ thiserror = "2"
 
 [build-dependencies]
 sha2 = "0.11"
+# Used to precompile googlesql.wasm into a `.cwasm` at build time so the runtime
+# deserializes native code instead of JIT-compiling on first use. Kept at the
+# same version and default features as the runtime `wasmtime` dependency: the
+# `.cwasm` compatibility check hashes the enabled wasm proposals, so a feature
+# mismatch would make every runtime `deserialize` fail and fall back to JIT.
+wasmtime = "47"
 
 [dev-dependencies]
 criterion = "0.8"
@@ -57,9 +63,11 @@ overflow-checks = true
 [lints.rust]
 # Turn every compiler warning into a hard error (matches CI's `-D warnings`).
 warnings = "deny"
-# This crate drives wasmtime through its safe API and has no FFI, so unsafe is
-# forbidden outright rather than merely denied.
-unsafe_code = "forbid"
+# This crate has no FFI and drives wasmtime through its safe API, with a single
+# exception: deserializing the build-time `.cwasm` (`Module::deserialize_file` is
+# `unsafe`). That one call carries a localized `#[allow(unsafe_code, reason=…)]`,
+# so unsafe is denied rather than forbidden to let that documented allow stand.
+unsafe_code = "deny"
 
 [lints.clippy]
 # rust-hardening: forbid panicking constructs in non-test code.
