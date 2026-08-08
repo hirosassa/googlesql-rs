@@ -28,7 +28,7 @@ use crate::error::Error;
 /// implementation, not here: a JIT engine caches a resolved function handle,
 /// whereas an ahead-of-time-compiled engine resolves exports at compile time and
 /// needs no cache.
-pub(crate) trait GuestInstance: Send {
+pub trait GuestInstance: Send {
     /// Allocates `len` bytes in the guest's linear memory and returns the pointer.
     fn alloc(&mut self, len: u32) -> Result<u32, Error>;
 

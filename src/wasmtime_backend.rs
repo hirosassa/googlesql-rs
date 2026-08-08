@@ -69,7 +69,7 @@ struct HostState {
 /// threads; each instance owns an isolated wasm linear memory, so many instances
 /// run truly in parallel. wasmtime forbids concurrent calls into a single
 /// instance, which is why it is not `Sync`.
-pub(crate) struct WasmtimeInstance {
+pub struct WasmtimeInstance {
     store: Store<HostState>,
     memory: Memory,
     alloc_fn: TypedFunc<u32, u32>,
