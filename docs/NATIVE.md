@@ -132,8 +132,7 @@ is committed (the ~122MB generated sources stay gitignored), which is enough for
 resolve the optional path-dependency so a fresh checkout and the default build/CI are
 unaffected. The default `test` workflow no longer runs `--all-features`; the dedicated
 `native` workflow regenerates `guest` from the pinned wasm and runs clippy + the
-differential tests. The full standalone shim is also preserved on the `spike/native-backend`
-branch.
+differential tests.
 
 The generated guest is also published as a Release asset so the `native` feature can be
 built without the wasm2rs toolchain — see [Using the prebuilt guest](#using-the-prebuilt-guest-no-toolchain).
