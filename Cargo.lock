@@ -821,11 +821,16 @@ name = "googlesql"
 version = "0.2.0"
 dependencies = [
  "criterion",
+ "guest",
  "sha2 0.11.0",
  "thiserror 2.0.19",
  "wasmtime",
  "wasmtime-wasi",
 ]
+
+[[package]]
+name = "guest"
+version = "0.1.0"
 
 [[package]]
 name = "half"

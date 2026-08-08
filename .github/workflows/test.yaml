@@ -42,10 +42,18 @@ jobs:
           key: ${{ steps.toolchain.outputs.rustc }}
 
       - name: Run cargo fmt
-        run: cargo fmt --all -- --check
+        # Scoped to this package, not `--all`: the in-repo `native/guest`
+        # path-dependency is excluded from the workspace, but `cargo fmt --all`
+        # still descends into its ~2.6M-LOC generated sources and overflows
+        # rustfmt's stack. This crate is the only real member anyway.
+        run: cargo fmt -- --check
 
       - name: Run cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::nursery
+        # Default features only. The opt-in `native` feature pulls in the
+        # ~122MB wasm2rs-generated `guest` crate, which is not present on a fresh
+        # checkout (only its manifest is committed); it is linted and tested in
+        # the dedicated `native` workflow instead.
+        run: cargo clippy --all-targets -- -D warnings -W clippy::nursery
 
       - name: Run cargo doc
         run: cargo doc --no-deps
