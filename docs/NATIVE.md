@@ -5,12 +5,16 @@ Rust** by [`wasm2rs`](https://github.com/hirosassa/wasm2rs), linked directly wit
 wasm runtime and no JIT. This is the opt-in `native` engine of the two-backend
 roadmap; the default engine stays wasmtime.
 
-## Conclusion: viable — proven byte-for-byte against wasmtime for parse + format
+## Conclusion: viable — proven byte-for-byte against wasmtime for parse, format, and analyze
 
 The wasm2rs output type-checks and runs. With a hand-written host-imports shim and a
 generated export dispatch, the native engine drives the same `GuestInstance` trait as
-wasmtime and produces **identical results** for the timezone-independent paths
-(parser, formatter). The analyzer needs one more piece (see *Timezone limitation*).
+wasmtime and produces **identical results** across the parser, formatter, and analyzer.
+The analyzer's timezone dependency is resolved by rooting the guest's single WASI preopen
+at `/` (see *Timezone*), matching the wasmtime backend's read-only `/` preopen.
+
+The engine is wired behind the opt-in `native` cargo feature (`Module::new_native`); the
+default build is unchanged and uses wasmtime only.
 
 ## Architecture
 
@@ -39,16 +43,19 @@ differential tests demand byte-for-byte agreement.
 ## Reproduction
 
 Prerequisites: a `wasm2rs` checkout (default `../wasm2rs`), `wasm-tools` on `PATH`, and
-the SHA-pinned `spike/googlesql.wasm`.
+the SHA-pinned `spike/googlesql.wasm` (or any `GOOGLESQL_WASM`-pointed v0.3.4 wasm — it
+must match the SHA in `build.rs` so native and wasmtime compare the same module).
 
 ```bash
 scripts/gen-native-guest.sh          # transpile + generate native/guest and native/dispatch.rs
 cargo test --features native --lib 'native_backend::'   # differential tests vs wasmtime
 ```
 
-`native/` is gitignored (122MB, regenerated). `scripts/gen-native-dispatch.py` emits the
-26,316-arm `(svc,mid) → func{N}` table plus the by-name table from the wasm export
-section.
+`native/`'s generated sources are gitignored (~122MB, regenerated); only the guest crate's
+tiny `native/guest/Cargo.toml` is committed, so Cargo can resolve the optional `guest`
+path-dependency (and a fresh checkout / default build works) without the generated code
+present. `scripts/gen-native-dispatch.py` emits the 26,316-arm `(svc,mid) → func{N}` table
+plus the by-name table from the wasm export section.
 
 ## Differential results
 
@@ -60,6 +67,8 @@ compares output for the same SQL:
 | `format_sql_matches_wasmtime` | ✅ native `format_sql` == wasmtime, byte for byte |
 | `parse_statement_matches_wasmtime` | ✅ native canonical SQL == wasmtime |
 | `parse_error_matches_wasmtime` | ✅ a syntax error is an `Err`, not a panic/success |
+| `analyze_expression_matches_wasmtime` | ✅ native inferred type == wasmtime, byte for byte (timezone path) |
+| `analyze_statement_matches_wasmtime` | ✅ native analysis succeeds where wasmtime does |
 
 ## Build gotchas (both are worked around via `[profile.dev.package.*]`)
 
@@ -72,24 +81,31 @@ compares output for the same SQL:
    (`DwarfCompileUnit::createAndAddScopeChildren`, SIGBUS). Building *this crate* with
    `debug = 0` avoids it without touching the deps' cached artifacts.
 
-## Timezone limitation (blocks the native analyzer)
+## Timezone (resolved)
 
 The analyzer's `AnalyzerOptions` constructor resolves a default timezone via absl cctz,
-which reads `/usr/share/zoneinfo`. The wasmtime backend satisfies this by pre-opening
-that directory into the WASI sandbox. The wasm2rs-generated WASI shim, however, pre-opens
-only the process CWD (fd 3) and rejects any absolute path with `ENOTCAPABLE`, with no way
-to configure a pre-open root — so the zoneinfo read fails and the analyzer traps. Parser
-and formatter never construct `AnalyzerOptions`, so they are unaffected.
+which reads absolute paths under `/usr/share/zoneinfo` (and may consult `/etc/localtime`).
+The wasm2rs-generated WASI shim originally pre-opened only the process CWD (fd 3) and
+rejected any absolute path with `ENOTCAPABLE`, so the read failed and the analyzer trapped.
 
-Closing this needs either a small wasm2rs change (a configurable WASI pre-open root) or
-forcing a timezone that resolves without file I/O. Tracked as follow-up work.
+wasm2rs now supports a configurable WASI pre-open root (`Instance::with_preopen_root`), and
+`NativeInstance::new` roots the single preopen at `/` — the same read-only `/` preopen the
+wasmtime backend already relies on. Those absolute reads now resolve, and the analyzer
+matches wasmtime (the resolved *value* of the default zone is irrelevant to the analyzed
+type, which is what the differential tests compare). Containment is unchanged: the shim
+still refuses `..` escapes lexically, so `/` grants read-only reach, not traversal out.
 
 ## Landing status
 
-Phase 4 proved the native engine; the feature wiring itself is **not yet merged**. A
-gitignored path-dependency to the generated `guest` crate breaks a fresh checkout (Cargo
-requires the path manifest to exist even when the feature is off), and CI's
-`--all-features` would compile the 122MB crate. Making the engine buildable in CI —
-generating or fetching `guest` as part of the build — is the next phase. This document
-plus `scripts/` reproduce the working spike; the full shim is preserved on the
-`spike/native-backend` branch.
+Landed behind the opt-in `native` feature. `Module::new()` is unchanged (wasmtime); the
+native engine is `Module::new_native()`. Only the guest crate's `native/guest/Cargo.toml`
+is committed (the ~122MB generated sources stay gitignored), which is enough for Cargo to
+resolve the optional path-dependency so a fresh checkout and the default build/CI are
+unaffected. The default `test` workflow no longer runs `--all-features`; the dedicated
+`native` workflow regenerates `guest` from the pinned wasm and runs clippy + the
+differential tests. The full standalone shim is also preserved on the `spike/native-backend`
+branch.
+
+Remaining follow-ups: a prebuilt/optimized `guest` for real native performance (today it is
+built `opt-level = 0` for correctness only), and `Drop` handling for outstanding wasm
+handles.

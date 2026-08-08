@@ -179,12 +179,28 @@ impl Module {
         Self::from_backend(Box::new(crate::wasmtime_backend::WasmtimeInstance::new()?))
     }
 
+    /// Loads the wasm2rs-transpiled native engine and returns a fully
+    /// initialized instance.
+    ///
+    /// Available only under the `native` feature. Unlike [`new`](Self::new), this
+    /// drives the module through native Rust with no wasm runtime. It is additive:
+    /// both engines can be constructed in one process, which the differential
+    /// tests rely on to compare native output against wasmtime.
+    #[cfg(feature = "native")]
+    #[allow(
+        dead_code,
+        reason = "reached only by the native differential tests for now; public API is a later phase"
+    )]
+    pub(crate) fn new_native() -> Result<Self, Error> {
+        Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
+    }
+
     /// Builds a `Module` around an already-initialized engine backend.
     ///
     /// The single seam through which an engine is injected: `new` supplies the
-    /// wasmtime backend today, and the forthcoming wasm2rs native engine will
-    /// plug in here behind the same [`GuestInstance`] trait without touching any
-    /// of the state below.
+    /// wasmtime backend today, and the native wasm2rs engine (`new_native`, under
+    /// the `native` feature) plugs in here behind the same [`GuestInstance`] trait
+    /// without touching any of the state below.
     fn from_backend(backend: Box<dyn GuestInstance>) -> Result<Self, Error> {
         Ok(Self {
             backend,
