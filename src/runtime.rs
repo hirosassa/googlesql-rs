@@ -509,6 +509,11 @@ impl Module {
     /// Decodes a packed `(ptr<<32 | len)` response: reads the response bytes and
     /// frees the wasm-side response buffer the export allocated. An empty response
     /// (`len == 0`) neither reads nor frees.
+    ///
+    /// The free is attempted on both the success and the read-failure path: a
+    /// failed `read` must not strand the guest-side buffer, since nothing else
+    /// tracks it and it would leak until the `Store` is dropped. The read error
+    /// takes priority over a free error (mirroring [`with_frees`](Module::with_frees)).
     fn finish_response(&mut self, packed: u64) -> Result<Vec<u8>, Error> {
         let resp_ptr = u32::try_from(packed >> 32).map_err(|e| Error::Memory(e.to_string()))?;
         let resp_len =
@@ -516,8 +521,10 @@ impl Module {
         if resp_len == 0 {
             return Ok(Vec::new());
         }
-        let resp = self.backend.read(resp_ptr, resp_len)?;
-        self.backend.free(resp_ptr)?;
+        let read = self.backend.read(resp_ptr, resp_len);
+        let freed = self.backend.free(resp_ptr);
+        let resp = read?;
+        freed?;
         Ok(resp)
     }
 
@@ -611,6 +618,151 @@ mod tests {
     const SVC_PARSER_OPTIONS: i32 = 699;
     const MID_NEW_PARSER_OPTIONS: i32 = 0;
     const MID_FREE_PARSER_OPTIONS: i32 = 12;
+
+    /// Allocation bookkeeping for [`FakeGuest`]: the next pointer to hand out and
+    /// the set of pointers still considered live, plus a switch to fail `read`.
+    #[derive(Default)]
+    struct AllocLog {
+        next: u32,
+        live: std::collections::BTreeSet<u32>,
+        fail_read: bool,
+    }
+
+    /// A minimal in-memory [`GuestInstance`](super::GuestInstance) that hands out
+    /// distinct non-null pointers, records which are still allocated, and can be
+    /// told to fail `read` to drive the buffer-cleanup error path. A test double
+    /// is used here because `GuestInstance` is the seam to the external wasm
+    /// engine — the one dependency the project allows faking.
+    struct FakeGuest {
+        log: super::Arc<super::Mutex<AllocLog>>,
+    }
+
+    impl FakeGuest {
+        fn log(&self) -> std::sync::MutexGuard<'_, AllocLog> {
+            self.log
+                .lock()
+                .unwrap_or_else(super::PoisonError::into_inner)
+        }
+    }
+
+    impl super::GuestInstance for FakeGuest {
+        fn alloc(&mut self, _len: u32) -> Result<u32, super::Error> {
+            let ptr = {
+                let mut log = self.log();
+                // Non-zero, distinct pointers; `wrapping_add` sidesteps the
+                // crate-wide `arithmetic_side_effects` ban with no real overflow.
+                let ptr = log.next.wrapping_add(16);
+                log.next = ptr;
+                log.live.insert(ptr);
+                ptr
+            };
+            Ok(ptr)
+        }
+
+        fn free(&mut self, ptr: u32) -> Result<(), super::Error> {
+            self.log().live.remove(&ptr);
+            Ok(())
+        }
+
+        fn write(&mut self, _ptr: u32, _data: &[u8]) -> Result<(), super::Error> {
+            Ok(())
+        }
+
+        fn read(&mut self, _ptr: u32, len: u32) -> Result<Vec<u8>, super::Error> {
+            if self.log().fail_read {
+                return Err(super::Error::Memory("simulated read failure".into()));
+            }
+            let len = usize::try_from(len).map_err(|e| super::Error::Memory(e.to_string()))?;
+            Ok(vec![0u8; len])
+        }
+
+        fn call_rpc(
+            &mut self,
+            _svc: i32,
+            _mid: i32,
+            _req_ptr: u32,
+            _req_len: u32,
+        ) -> Result<u64, super::Error> {
+            Ok(0)
+        }
+
+        fn call_named(
+            &mut self,
+            _name: &str,
+            _req_ptr: u32,
+            _req_len: u32,
+        ) -> Result<u64, super::Error> {
+            Ok(0)
+        }
+    }
+
+    /// Packs a `(ptr, len)` pair into the `ptr << 32 | len` response word the way
+    /// the guest does, using checked ops to respect the crate's arithmetic lints.
+    fn pack(ptr: u32, len: u32) -> u64 {
+        u64::from(ptr)
+            .checked_shl(32)
+            .and_then(|hi| hi.checked_add(u64::from(len)))
+            .expect("pack ptr/len")
+    }
+
+    /// Snapshots the still-live pointers recorded by a [`FakeGuest`]'s shared log,
+    /// so assertions read `live(&log)` instead of repeating the lock incantation.
+    fn live(log: &super::Arc<super::Mutex<AllocLog>>) -> std::collections::BTreeSet<u32> {
+        log.lock()
+            .unwrap_or_else(super::PoisonError::into_inner)
+            .live
+            .clone()
+    }
+
+    /// A failed `read` of the response buffer must still free that buffer:
+    /// otherwise every read error strands a guest-side allocation until the
+    /// `Store` is dropped, an unbounded leak under a reused `Module`.
+    #[test]
+    fn finish_response_frees_the_buffer_when_read_fails() {
+        let log = super::Arc::new(super::Mutex::new(AllocLog {
+            fail_read: true,
+            ..AllocLog::default()
+        }));
+        let mut module = super::Module::from_backend(Box::new(FakeGuest {
+            log: super::Arc::clone(&log),
+        }))
+        .expect("build module over the fake backend");
+
+        // The pointer `finish_response` receives stands in for the response buffer
+        // the guest allocated for this call.
+        let resp_ptr = module.alloc(8).expect("alloc response buffer");
+        assert!(
+            live(&log).contains(&resp_ptr),
+            "the response buffer must start out live"
+        );
+
+        let result = module.finish_response(pack(resp_ptr, 8));
+        assert!(result.is_err(), "a failed read must surface an error");
+        assert!(
+            live(&log).is_empty(),
+            "the response buffer must be freed even when the read fails"
+        );
+    }
+
+    /// The success path still frees the response buffer once its bytes are read.
+    #[test]
+    fn finish_response_frees_the_buffer_on_success() {
+        let log = super::Arc::new(super::Mutex::new(AllocLog::default()));
+        let mut module = super::Module::from_backend(Box::new(FakeGuest {
+            log: super::Arc::clone(&log),
+        }))
+        .expect("build module over the fake backend");
+
+        let resp_ptr = module.alloc(4).expect("alloc response buffer");
+        let resp = module
+            .finish_response(pack(resp_ptr, 4))
+            .expect("read the response");
+        assert_eq!(resp.len(), 4, "the whole response buffer must be read");
+        assert!(
+            live(&log).is_empty(),
+            "the success path must free the response buffer"
+        );
+    }
 
     /// A `Handle` does not free its wasm-side handle eagerly: dropping it only
     /// enqueues the free, which `flush_frees` later performs.
