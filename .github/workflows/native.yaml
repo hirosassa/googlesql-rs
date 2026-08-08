@@ -97,7 +97,12 @@ jobs:
 
       - name: Differential tests vs wasmtime
         working-directory: googlesql-rs
-        run: cargo test --features native --lib 'native_backend::'
+        # The in-crate differential tests, then the public-API smoke test in
+        # tests/native.rs (the `native_backend::` name filter above does not
+        # select integration targets, so it runs as a separate invocation).
+        run: |
+          cargo test --features native --lib 'native_backend::'
+          cargo test --features native --test native
 
   prebuilt:
     name: native prebuilt (fetch roundtrip)

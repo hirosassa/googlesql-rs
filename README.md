@@ -264,6 +264,13 @@ For offline environments or a locally available wasm file, you can override the 
 GOOGLESQL_WASM=/path/to/googlesql.wasm cargo build
 ```
 
+### Native backend (optional)
+
+By default the module runs on wasmtime (`Module::new`). The optional `native` feature adds
+`Module::new_native`, which drives the same module through standalone Rust transpiled from
+the wasm with no runtime; every other method is identical. The transpiled code is large and
+not committed, so provision it first — see [`docs/NATIVE.md`](docs/NATIVE.md).
+
 For details on the internal architecture and the WASM host ABI, see [`docs/SPIKE.md`](docs/SPIKE.md).
 
 ## License

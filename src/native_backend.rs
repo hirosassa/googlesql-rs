@@ -13,15 +13,6 @@
 //! other import returns the zero value of its result type. Keeping them
 //! identical is what lets the differential tests expect byte-for-byte agreement.
 
-// The native engine (and its generated dispatch) is currently reached only from
-// the differential tests below — `Module::new_native` has no non-test caller
-// yet. A public entry point is a later phase; until then these items are "unused"
-// in a `--features native` lib build without `cfg(test)`.
-#![allow(
-    dead_code,
-    reason = "native engine is exercised only by the differential tests for now; public API is a later phase"
-)]
-
 use crate::backend::GuestInstance;
 use crate::error::Error;
 

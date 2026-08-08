@@ -47,6 +47,15 @@
 //! [`Error::GoogleSql`], carrying a [`SqlError`] whose
 //! [`location`](SqlError::location) exposes the offending [`ErrorLocation`] when
 //! GoogleSQL supplied one.
+//!
+//! # Backends
+//!
+//! By default [`Module::new`] runs the module on wasmtime. The optional `native`
+//! feature adds `Module::new_native` (built only under that feature), which drives the same module through
+//! standalone Rust transpiled from the wasm (no runtime) — every other method is
+//! backend-agnostic, so only construction differs. The transpiled `guest` crate
+//! is large and not committed; see `docs/NATIVE.md` for provisioning it and
+//! building with `--features native`.
 #![warn(missing_docs)]
 
 mod analyzer;

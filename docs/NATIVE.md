@@ -125,7 +125,9 @@ still refuses `..` escapes lexically, so `/` grants read-only reach, not travers
 ## Landing status
 
 Landed behind the opt-in `native` feature. `Module::new()` is unchanged (wasmtime); the
-native engine is `Module::new_native()`. Only the guest crate's `native/guest/Cargo.toml`
+native engine is the public `Module::new_native()` (a public-API smoke test in
+`tests/native.rs` pins that surface, alongside the in-crate differential tests). Only the
+guest crate's `native/guest/Cargo.toml`
 is committed (the ~122MB generated sources stay gitignored), which is enough for Cargo to
 resolve the optional path-dependency so a fresh checkout and the default build/CI are
 unaffected. The default `test` workflow no longer runs `--all-features`; the dedicated
@@ -136,6 +138,7 @@ branch.
 The generated guest is also published as a Release asset so the `native` feature can be
 built without the wasm2rs toolchain — see [Using the prebuilt guest](#using-the-prebuilt-guest-no-toolchain).
 
-Remaining follow-up: exposing the native engine as public API (today `Module::new_native()`
-is `pub(crate)`, reached only by the differential tests). The response-buffer leak on the
-read-error path was fixed in #140.
+No remaining follow-ups from the spike: the native engine is now public
+(`Module::new_native()`), and the response-buffer leak on the read-error path was fixed in
+ #140. A precompiled (optimized) guest artifact is out of scope — an `rlib` is not portably
+distributable, so only the generated source is prebuilt (see the note above).
