@@ -826,6 +826,7 @@ dependencies = [
  "thiserror 2.0.19",
  "wasmtime",
  "wasmtime-wasi",
+ "zstd",
 ]
 
 [[package]]

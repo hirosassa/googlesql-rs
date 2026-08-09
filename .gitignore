@@ -12,6 +12,14 @@
 !/native/guest
 /native/guest/*
 !/native/guest/Cargo.toml
+# The hand-written C-ABI cdylib wrapper (`native-ffi` feature) IS committed
+# (unlike the generated `guest` beside it): the release workflow builds the
+# prebuilt cdylib from these sources. Only its build output and the generated
+# `../dispatch.rs` it include!s stay ignored.
+!/native/guest-ffi
+/native/guest-ffi/*
+!/native/guest-ffi/Cargo.toml
+!/native/guest-ffi/lib.rs
 
 # The prebuilt guest tarball scripts/pack-native-guest.sh emits (published to a
 # Release, never committed).

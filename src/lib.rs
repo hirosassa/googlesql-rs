@@ -65,6 +65,8 @@ mod error;
 mod formatter;
 #[cfg(feature = "native")]
 mod native_backend;
+#[cfg(feature = "native-ffi")]
+mod native_ffi_backend;
 mod parser;
 mod pb;
 mod resolved;

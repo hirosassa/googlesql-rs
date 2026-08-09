@@ -1,0 +1,210 @@
+name: native-ffi-release
+
+# Builds the prebuilt `guest-ffi` C-ABI cdylib for each supported target and
+# publishes it (zstd-compressed) as a GitHub Release asset, so a downstream build
+# with `--features native-ffi` downloads and links it instead of compiling the
+# ~2.6M-LOC `guest` crate at opt-level 3 (tens of minutes).
+#
+# A cdylib (not a staticlib) keeps its bundled `std` internal and exports only the
+# flat C entry points, so it links cleanly under any consumer rustc version.
+#
+# Triggered by pushing a `native-ffi-v*` tag. The tag is the Release the assets
+# are uploaded to and must equal `NATIVE_FFI_TAG` in build.rs. After a run, feed
+# the published checksums into scripts/update-native-ffi-pins.sh (printed in the
+# run summary) and commit the updated build_helpers.rs before downstream builds
+# can fetch the assets.
+on:
+  push:
+    tags:
+      - "native-ffi-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish to (e.g. native-ffi-v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # The tag drives both the Release and the asset URLs. On a tag push it is the
+  # pushed ref; on a manual run it is the supplied input.
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            dylib: libguest_ffi.dylib
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            dylib: libguest_ffi.dylib
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            dylib: libguest_ffi.so
+    steps:
+      - name: Checkout googlesql-rs
+        uses: actions/checkout@v7
+        with:
+          path: googlesql-rs
+
+      - name: Read the pins from the lock
+        id: pins
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source scripts/native-guest.lock
+          {
+            echo "wasm2rs_ref=$WASM2RS_REF"
+            echo "content_sha256=$CONTENT_SHA256"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Checkout wasm2rs (pinned ref)
+        uses: actions/checkout@v7
+        with:
+          repository: hirosassa/wasm2rs
+          ref: ${{ steps.pins.outputs.wasm2rs_ref }}
+          path: wasm2rs
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Ensure zstd is available
+        run: |
+          set -euo pipefail
+          if command -v zstd >/dev/null 2>&1; then exit 0; fi
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y zstd
+          elif command -v brew >/dev/null 2>&1; then
+            brew install zstd
+          else
+            echo "error: zstd not found and no known installer" >&2
+            exit 1
+          fi
+
+      - name: Fetch the pinned googlesql.wasm
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          # BSD-grep-compatible extraction (macOS runners lack `grep -P`).
+          url=$(grep -oE 'https://github\.com/goccy/[^"]+\.wasm' build.rs | head -1)
+          sha=$(grep -oE '[0-9a-f]{64}' build.rs | head -1)
+          curl -fsSL --retry 3 "$url" -o /tmp/googlesql.wasm
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${sha}  /tmp/googlesql.wasm" | sha256sum -c -
+          else
+            echo "${sha}  /tmp/googlesql.wasm" | shasum -a 256 -c -
+          fi
+
+      - name: Generate the guest
+        working-directory: googlesql-rs
+        env:
+          GOOGLESQL_WASM: /tmp/googlesql.wasm
+          WASM2RS_DIR: ${{ github.workspace }}/wasm2rs
+        run: scripts/gen-native-guest.sh
+
+      - name: Verify the generated tree reproduces the pinned digest
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          actual=$(scripts/native-guest-digest.sh)
+          echo "content digest: $actual"
+          if [[ "$actual" != "${{ steps.pins.outputs.content_sha256 }}" ]]; then
+            echo "error: generated guest does not match the pinned CONTENT_SHA256; update scripts/native-guest.lock before publishing" >&2
+            exit 1
+          fi
+
+      - name: Build the guest-ffi cdylib (opt-level 3)
+        working-directory: googlesql-rs
+        run: cargo build --release --manifest-path native/guest-ffi/Cargo.toml
+
+      - name: Compress and checksum the cdylib
+        id: asset
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          dylib="native/guest-ffi/target/release/${{ matrix.dylib }}"
+          ext="${{ matrix.dylib }}"; ext="${ext##*.}"
+          asset="libguest_ffi-${{ matrix.target }}.${ext}.zst"
+          # SHA256 of the *decompressed* cdylib — what build.rs verifies and links.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha=$(sha256sum "$dylib" | awk '{print $1}')
+          else
+            sha=$(shasum -a 256 "$dylib" | awk '{print $1}')
+          fi
+          zstd -q -19 -f -o "/tmp/${asset}" "$dylib"
+          echo "asset=${asset}" >>"$GITHUB_OUTPUT"
+          echo "sha=${sha}" >>"$GITHUB_OUTPUT"
+          # One `<target> <sha>` line for the aggregation job to assemble pins.
+          mkdir -p /tmp/pins
+          echo "${{ matrix.target }} ${sha}" > "/tmp/pins/${{ matrix.target }}.txt"
+
+      - name: Upload the asset to the Release
+        working-directory: googlesql-rs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" \
+              --notes "Prebuilt guest-ffi C-ABI cdylib (per target, zstd-compressed). Link via googlesql --features native-ffi."
+          fi
+          gh release upload "$tag" "/tmp/${{ steps.asset.outputs.asset }}" --clobber
+
+      - name: Upload the pin line as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pin-${{ matrix.target }}
+          path: /tmp/pins/${{ matrix.target }}.txt
+
+  checksums:
+    name: assemble pins
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout googlesql-rs
+        uses: actions/checkout@v7
+
+      - name: Download all pin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pin-*
+          path: pins
+          merge-multiple: true
+
+      - name: Assemble the checksums and pin-update instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          checksums=native-ffi-checksums.txt
+          cat pins/*.txt | LC_ALL=C sort > "$checksums"
+          echo "Published cdylib checksums (decompressed):"
+          cat "$checksums"
+          gh release upload "${RELEASE_TAG}" "$checksums" --clobber
+          {
+            echo "## native-ffi pins for ${RELEASE_TAG}"
+            echo
+            echo "Update the pins on a branch and open a PR:"
+            echo '```sh'
+            echo "scripts/update-native-ffi-pins.sh ${RELEASE_TAG} <<'EOF'"
+            cat "$checksums"
+            echo "EOF"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
