@@ -25,10 +25,16 @@ crate-type = ["cdylib"]
 [dependencies]
 guest = { path = "../guest" }
 
+# Debug info stays off in EVERY profile — generating it while monomorphizing the
+# ~2.6M-LOC `guest` generics overflows LLVM's DWARF emitter (rustc SIGSEGVs). The
+# dev profile defaults to `debuginfo=2`, so the CI wiring check (`cargo build`,
+# no `--release`) must turn it off explicitly here, not just in release.
+[profile.dev]
+debug = false
+
 # opt-level 3 (the release default) is the whole point of this crate: the linked
-# archive must carry optimized native code for a fair comparison against the
-# in-crate `native` engine. Debug info stays off (default) — generating it while
-# monomorphizing the ~2.6M-LOC `guest` generics overflows LLVM's DWARF emitter.
+# library must carry optimized native code for a fair comparison against the
+# in-crate `native` engine.
 [profile.release]
 debug = false
 # panic = "unwind" is load-bearing, not decorative: the C-ABI entry points in
