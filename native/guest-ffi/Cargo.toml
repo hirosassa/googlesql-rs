@@ -1,0 +1,40 @@
+# C-ABI staticlib wrapper around the wasm2rs-transpiled `guest` crate (PoC).
+#
+# Built separately from `googlesql` — `cargo build --release` here emits an
+# optimized `guest-ffi` shared library (`libguest_ffi.{dylib,so}` /
+# `guest_ffi.dll`) that `googlesql --features native-ffi` links via
+# `GUEST_FFI_LIB`. Its own workspace root (empty `[workspace]`) so the parent
+# repo's `--workspace`/`fmt --all` never descend into it or the huge `guest`.
+[package]
+name = "guest-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+path = "lib.rs"
+# cdylib: a self-contained `.dylib`/`.so`/`.dll` carrying `guest`'s optimized
+# object code plus the flat C entry points. Unlike a `staticlib`, a cdylib keeps
+# its bundled `std` internal and exports only the `#[no_mangle]` C symbols, so a
+# consumer built with a different rustc never sees a duplicate `rust_eh_personality`
+# (the one fixed-name std symbol a staticlib leaks) — the link is clean on every
+# target regardless of the consumer's toolchain version.
+crate-type = ["cdylib"]
+
+[dependencies]
+guest = { path = "../guest" }
+
+# opt-level 3 (the release default) is the whole point of this crate: the linked
+# archive must carry optimized native code for a fair comparison against the
+# in-crate `native` engine. Debug info stays off (default) — generating it while
+# monomorphizing the ~2.6M-LOC `guest` generics overflows LLVM's DWARF emitter.
+[profile.release]
+debug = false
+# panic = "unwind" is load-bearing, not decorative: the C-ABI entry points in
+# lib.rs wrap every call in `catch_unwind` to convert a guest trap (e.g. the
+# `import2` C++-throw stub) into an error status instead of unwinding across the
+# `extern "C"` edge (which is UB). If this became "abort", `catch_unwind` would
+# be a no-op and a trap would kill the host process. It is the release default,
+# but pinned here so the soundness precondition is stated where it is relied on.
+panic = "unwind"

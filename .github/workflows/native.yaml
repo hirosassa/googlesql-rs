@@ -26,6 +26,15 @@ on:
       - 'scripts/pack-native-guest.sh'
       - 'scripts/fetch-native-guest.sh'
       - 'scripts/native-guest.lock'
+      # The native-ffi (C-ABI cdylib) backend and its fetch/link plumbing,
+      # validated by the `native-ffi` job below.
+      - 'src/native_ffi_backend.rs'
+      - 'build_helpers.rs'
+      - 'native/guest-ffi/**'
+      - 'tests/native_ffi.rs'
+      - 'tests/build_helpers.rs'
+      - 'scripts/update-native-ffi-pins.sh'
+      - '.github/workflows/native-ffi-release.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -198,3 +207,99 @@ jobs:
       - name: Cargo resolves the provisioned guest under --features native
         working-directory: googlesql-rs
         run: cargo metadata --features native --format-version 1 >/dev/null
+
+  native-ffi:
+    name: native-ffi backend (C-ABI cdylib)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout googlesql-rs
+        uses: actions/checkout@v7
+        with:
+          path: googlesql-rs
+
+      - name: Checkout wasm2rs
+        uses: actions/checkout@v7
+        with:
+          repository: hirosassa/wasm2rs
+          ref: ${{ env.WASM2RS_REF }}
+          path: wasm2rs
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Cache cargo and the generated guest build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            googlesql-rs
+            googlesql-rs/native/guest-ffi
+          prefix-key: "native-ffi-${{ env.WASM2RS_REF }}"
+
+      - name: Fetch the pinned googlesql.wasm
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          url=$(grep -oP 'https://github\.com/goccy/[^"]+\.wasm' build.rs)
+          sha=$(grep -oP 'WASM_SHA256: &str = "\K[0-9a-f]+' build.rs)
+          curl -fsSL --retry 3 "$url" -o /tmp/googlesql.wasm
+          echo "${sha}  /tmp/googlesql.wasm" | sha256sum -c -
+
+      - name: Generate the native guest crate and dispatch table
+        working-directory: googlesql-rs
+        env:
+          WASM2RS_DIR: ${{ github.workspace }}/wasm2rs
+        run: scripts/gen-native-guest.sh
+
+      # A dev-profile cdylib (not the opt-level-3 release artifact the Release
+      # workflow ships) — this job checks the FFI wiring and the fetch/link path,
+      # not performance, so the far cheaper build is enough.
+      - name: Build the guest-ffi cdylib (dev profile)
+        working-directory: googlesql-rs
+        run: cargo build --manifest-path native/guest-ffi/Cargo.toml
+
+      - name: Unit-test the build helpers
+        working-directory: googlesql-rs
+        run: cargo test --test build_helpers
+
+      - name: Clippy (native-ffi backend)
+        working-directory: googlesql-rs
+        env:
+          GUEST_FFI_LIB: ${{ github.workspace }}/googlesql-rs/native/guest-ffi/target/debug
+        run: cargo clippy --all-targets --features native-ffi -- -D warnings -W clippy::nursery
+
+      - name: Differential test vs wasmtime (GUEST_FFI_LIB override)
+        working-directory: googlesql-rs
+        env:
+          GUEST_FFI_LIB: ${{ github.workspace }}/googlesql-rs/native/guest-ffi/target/debug
+        run: cargo test --features native-ffi --test native_ffi
+
+      # Exercise the download path build.rs takes for a released consumer: lay the
+      # compressed cdylib out as a `file://` Release, pin its checksum, and link
+      # with no GUEST_FFI_LIB so the fetch → zstd-decode → SHA-verify → link chain
+      # runs for real.
+      - name: Differential test via the download+verify path (file:// Release)
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y zstd
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')       # x86_64-unknown-linux-gnu
+          tag=$(grep -oP 'NATIVE_FFI_TAG: &str = "\K[^"]+' build.rs)
+          dylib="native/guest-ffi/target/debug/libguest_ffi.so"
+          sha=$(sha256sum "$dylib" | awk '{print $1}')
+          rel="/tmp/native-ffi-rel"
+          mkdir -p "$rel/$tag"
+          zstd -q -19 -f -o "$rel/$tag/libguest_ffi-${host}.so.zst" "$dylib"
+          # Pin the just-built checksum for this host target, then link with the
+          # download path (no GUEST_FFI_LIB in the environment).
+          echo "${host} ${sha}" | scripts/update-native-ffi-pins.sh "$tag"
+          env -u GUEST_FFI_LIB GUEST_FFI_URL_BASE="file://$rel" \
+            cargo test --features native-ffi --test native_ffi

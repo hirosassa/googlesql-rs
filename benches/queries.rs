@@ -6,11 +6,13 @@
 //! `analyzer` group — especially `resolved_tree`, which walks every resolved
 //! node — is the one to watch when the ABI or the traversal changes.
 //!
-//! Every group runs against each available backend, labelled `wasmtime` and
-//! (under `--features native`) `native`, so criterion reports them side by side:
+//! Every group runs against each available backend, labelled `wasmtime`,
+//! `native` (under `--features native`), and `native-ffi` (under
+//! `--features native-ffi`), so criterion reports them side by side:
 //! `cargo bench --features native` compares the wasmtime engine against the
-//! wasm2rs-transpiled native engine on identical work. Without the feature only
-//! the `wasmtime` arm builds.
+//! wasm2rs-transpiled native engine on identical work, and `--features
+//! native-ffi` adds the same engine reached through the C-ABI staticlib. Without
+//! any feature only the `wasmtime` arm builds.
 //!
 //! Run with `cargo bench`; these are excluded from `cargo test` (the
 //! `[[bench]]` target uses `harness = false`) and from CI's test run.
@@ -35,11 +37,13 @@ type Backend = (&'static str, fn() -> Module);
 fn backends() -> Vec<Backend> {
     #[allow(
         unused_mut,
-        reason = "mutated only under the `native` feature; immutable otherwise"
+        reason = "mutated only under the `native`/`native-ffi` features; immutable otherwise"
     )]
     let mut engines: Vec<Backend> = vec![("wasmtime", || Module::new().unwrap())];
     #[cfg(feature = "native")]
     engines.push(("native", || Module::new_native().unwrap()));
+    #[cfg(feature = "native-ffi")]
+    engines.push(("native-ffi", || Module::new_native_ffi().unwrap()));
     engines
 }
 

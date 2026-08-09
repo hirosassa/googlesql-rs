@@ -197,6 +197,26 @@ impl Module {
         Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
     }
 
+    /// Loads the native engine through the C-ABI staticlib and returns a fully
+    /// initialized instance. **PoC** (`native-ffi` feature).
+    ///
+    /// Behaves exactly like [`new_native`](Self::new_native) — the same wasm2rs
+    /// engine, byte-for-byte — but reaches it by linking a prebuilt
+    /// `libguest_ffi.a` over a C ABI rather than compiling the `guest` crate into
+    /// this build. That makes the optimized object code distributable as a
+    /// Release asset without the rustc-version coupling an `rlib` imposes; the
+    /// trade-off is a small FFI shim (`native_ffi_backend`). Every method past
+    /// construction is backend-agnostic, so the engine choice is invisible.
+    ///
+    /// The archive is provisioned separately (built from `native/guest-ffi`,
+    /// located via `GUEST_FFI_LIB`); see `docs/NATIVE.md`.
+    #[cfg(feature = "native-ffi")]
+    pub fn new_native_ffi() -> Result<Self, Error> {
+        Self::from_backend(Box::new(
+            crate::native_ffi_backend::NativeFfiInstance::new()?
+        ))
+    }
+
     /// Builds a `Module` around an already-initialized engine backend.
     ///
     /// The single seam through which an engine is injected: `new` supplies the

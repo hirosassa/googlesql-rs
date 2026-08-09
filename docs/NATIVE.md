@@ -82,7 +82,67 @@ What this does **not** remove is the one-time optimized compile: the `guest` cra
 `opt-level = 3` for real native performance (its `[profile.release]`), which takes tens of
 minutes on first build and is then cached. A precompiled `rlib` is tied to an exact
 rustc/target and so cannot be distributed portably — only the generated **source** is
-prebuilt, not its object code.
+prebuilt, not its object code. The `native-ffi` feature below removes that compile too.
+
+## Prebuilt native-ffi (no compile) — the C-ABI cdylib
+
+The `native-ffi` feature reaches the *same* wasm2rs engine as `native`, but through a flat
+C ABI exported by a prebuilt shared library (`native/guest-ffi`, a `cdylib`) instead of the
+`guest` path-dependency. It unlocks `Module::new_native_ffi()`; every method past
+construction is backend-agnostic, so the engine choice is invisible. Because the optimized
+(opt-level-3) object code ships in the cdylib, a consumer links it in seconds instead of
+paying the tens-of-minutes `guest` compile.
+
+Why a cdylib and not a `staticlib` (`.a`)? An `rlib` is rustc-version-locked; a C-ABI object
+archive is not, but a Rust `staticlib` still **leaks one fixed-name std symbol**
+(`rust_eh_personality`), so linking it into a consumer built with a *different* rustc
+collides on that symbol — a warning on macOS `ld`, a hard error on GNU `ld`. A `cdylib` keeps
+its bundled `std` internal and exports only the flat C entry points, so it links cleanly
+under **any** consumer toolchain (verified across stable 1.94, 1.96, and nightly). The C
+boundary is per-query (six ops: alloc/write/call/read/free), so the indirection is
+negligible — single-threaded parse/format/analyze latencies match the directly-linked
+`native` engine.
+
+```bash
+# Default: build.rs downloads the prebuilt cdylib for your target and links it.
+cargo build --release --features native-ffi
+
+# Local development, or a target with no published prebuilt: build the cdylib
+# yourself and point GUEST_FFI_LIB at the output directory.
+cargo build --release --manifest-path native/guest-ffi/Cargo.toml
+GUEST_FFI_LIB=native/guest-ffi/target/release cargo build --release --features native-ffi
+```
+
+`build.rs` resolves the cdylib in priority order, mirroring the wasm above:
+
+1. **`GUEST_FFI_LIB`** — a directory holding a locally built cdylib (`libguest_ffi.{dylib,so}`
+   / `guest_ffi.dll`). Used as-is; nothing is downloaded.
+2. A **verified cached copy** in `OUT_DIR` from an earlier build.
+3. **Download** the target's asset from the `native-ffi-v*` GitHub Release, zstd-decompress
+   it, and verify its SHA256 (pinned per target in `build_helpers.rs`) before caching and
+   linking it. `GUEST_FFI_URL_BASE` overrides the download base (a mirror, or a `file://`
+   directory for offline builds).
+
+An `rpath` to the chosen directory is baked in so the binary finds the shared library at
+runtime. Note the relocatability limitation: on the download path that directory is `OUT_DIR`
+(under `target/`), so a binary built with `native-ffi` is **not** self-contained — moving it,
+`cargo install`, or `cargo clean` breaks the link. For a relocatable binary, keep `OUT_DIR`
+in place, or use the `GUEST_FFI_LIB` path and ship `libguest_ffi.{dylib,so}` alongside the
+executable (with an `@loader_path`/`$ORIGIN` rpath).
+
+A target absent from the pin table in `build_helpers.rs`, or one whose pin is still the
+`PENDING_RELEASE` sentinel, has no usable download: the build fails with a clear message and
+you must build from source and set `GUEST_FFI_LIB`. Shipped targets: `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`.
+
+**Publishing.** `.github/workflows/native-ffi-release.yml` (triggered by pushing a
+`native-ffi-v*` tag) rebuilds the cdylib for every target from the pinned inputs — the same
+`googlesql.wasm` and `wasm2rs` commit as `native-guest.lock`, digest-asserted — compresses
+each with zstd, and uploads them to that Release. It then prints the published checksums;
+feed them into `scripts/update-native-ffi-pins.sh <tag>` to rewrite `NATIVE_FFI_TAG`
+(`build.rs`) and the per-target pins (`build_helpers.rs`), and commit the result before
+downstream builds can fetch. The `native-ffi` job in `native.yaml` exercises the whole
+fetch → decompress → verify → link → differential-test chain on every native-touching PR.
 
 ## Differential results
 

@@ -20,7 +20,10 @@ exclude = [".github/", ".workspace_cache/", "codecov.yml"]
 # `--all` operations would needlessly descend into it. It is still built as a
 # dependency under the `native` feature (and the `[profile.*.package.guest]`
 # overrides still apply); excluding it only drops it from member operations.
-exclude = ["native/guest"]
+# `native/guest-ffi` is the C-ABI cdylib (its own workspace root); it is never a
+# Cargo dependency of this crate — it is built separately and linked — so exclude
+# it too, keeping parent `--workspace`/`fmt --all` out of it.
+exclude = ["native/guest", "native/guest-ffi"]
 
 # docs.rs builds offline (build.rs detects the DOCS_RS env var and skips fetching
 # the wasm) with default features only — the `native` feature needs the generated
@@ -43,6 +46,14 @@ guest = { path = "native/guest", optional = true }
 # unlocks `Module::new_native()`. `Module::new()` still uses wasmtime, so a build
 # with this feature can construct both engines (used by the differential tests).
 native = ["dep:guest"]
+# The native engine reached through a C-ABI cdylib instead of the `guest`
+# path-dependency. Unlocks `Module::new_native_ffi()` and links a prebuilt
+# `guest-ffi` shared library. Unlike `native`, this does NOT pull the `guest`
+# crate into this build — the optimized object code lives in the linked cdylib,
+# which `build.rs` resolves from `GUEST_FFI_LIB` or downloads from a Release.
+# A cdylib links cleanly under any consumer rustc (its `std` stays internal); see
+# docs/NATIVE.md.
+native-ffi = []
 
 [build-dependencies]
 sha2 = "0.11"
@@ -52,6 +63,9 @@ sha2 = "0.11"
 # `.cwasm` compatibility check hashes the enabled wasm proposals, so a feature
 # mismatch would make every runtime `deserialize` fail and fall back to JIT.
 wasmtime = "47"
+# Decompresses the prebuilt `guest-ffi` cdylib downloaded from a Release under the
+# `native-ffi` feature (assets are shipped zstd-compressed, ~20MB vs ~56MB raw).
+zstd = "0.13"
 
 [dev-dependencies]
 criterion = "0.8"
