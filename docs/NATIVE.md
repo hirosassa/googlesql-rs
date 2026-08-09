@@ -133,7 +133,7 @@ executable (with an `@loader_path`/`$ORIGIN` rpath).
 A target absent from the pin table in `build_helpers.rs`, or one whose pin is still the
 `PENDING_RELEASE` sentinel, has no usable download: the build fails with a clear message and
 you must build from source and set `GUEST_FFI_LIB`. Shipped targets: `aarch64-apple-darwin`,
-`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`.
+`x86_64-unknown-linux-gnu`.
 
 **Publishing.** `.github/workflows/native-ffi-release.yml` (triggered by pushing a
 `native-ffi-v*` tag) rebuilds the cdylib for every target from the pinned inputs — the same

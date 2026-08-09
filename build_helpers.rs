@@ -17,7 +17,6 @@
 /// and must be built from source.
 const NATIVE_FFI_SHA256: &[(&str, &str)] = &[
     ("aarch64-apple-darwin", NATIVE_FFI_SHA_PENDING),
-    ("x86_64-apple-darwin", NATIVE_FFI_SHA_PENDING),
     ("x86_64-unknown-linux-gnu", NATIVE_FFI_SHA_PENDING),
 ];
 
