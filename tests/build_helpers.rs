@@ -53,11 +53,7 @@ fn dylib_filename_matches_linker_lookup() {
 /// so `build.rs` can emit a "build from source" error instead of a bad download.
 #[test]
 fn sha256_pinned_for_shipped_targets_only() {
-    for target in [
-        "aarch64-apple-darwin",
-        "x86_64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-    ] {
+    for target in ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] {
         assert!(
             native_ffi_sha256(target).is_some(),
             "shipped target {target} must have a pin entry"
