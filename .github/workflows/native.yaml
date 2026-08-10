@@ -6,9 +6,17 @@ name: native
 # rather than committed. Runs on demand and on PRs that touch the native wiring.
 on:
   workflow_dispatch:
-  pull_request:
+  # Seed the cache on the default branch: GitHub Actions caches are branch-scoped,
+  # and a PR can only restore caches from its own branch or the base/default
+  # branch. Without a run on `main`, every PR starts cold ("No cache found").
+  # Running the same path-filtered job on push to `main` populates a cache the
+  # restore-key prefix shares, so later PRs hit it. (Saving is gated to `main`
+  # via `save-if` on the rust-cache steps, so PRs restore-only.)
+  push:
     branches: [ main ]
-    paths:
+    # Anchor the shared path filter here (the first occurrence), aliased by
+    # `pull_request` below. An anchor must be defined before it is referenced.
+    paths: &native_paths
       - 'src/native_backend.rs'
       - 'src/runtime.rs'
       - 'src/lib.rs'
@@ -35,6 +43,9 @@ on:
       - 'tests/build_helpers.rs'
       - 'scripts/update-native-ffi-pins.sh'
       - '.github/workflows/native-ffi-release.yml'
+  pull_request:
+    branches: [ main ]
+    paths: *native_paths
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,6 +91,10 @@ jobs:
           # default matrix's cache. wasm2rs's revision changes the generated
           # sources, so key on it to rebuild the guest when the generator moves.
           prefix-key: "native-${{ env.WASM2RS_REF }}"
+          # Only the `main` run writes the cache; PRs restore it read-only. This
+          # avoids per-PR-branch cache entries (which no other PR can restore
+          # anyway) and keeps the shared, PR-restorable cache seeded from `main`.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Fetch the pinned googlesql.wasm (same version the build downloads)
         working-directory: googlesql-rs
@@ -241,6 +256,9 @@ jobs:
             googlesql-rs
             googlesql-rs/native/guest-ffi
           prefix-key: "native-ffi-${{ env.WASM2RS_REF }}"
+          # Only the `main` run writes the cache; PRs restore it read-only (see
+          # the `native` job above for the rationale).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Fetch the pinned googlesql.wasm
         working-directory: googlesql-rs
