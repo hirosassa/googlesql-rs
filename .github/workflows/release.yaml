@@ -28,18 +28,23 @@ jobs:
       # never on crates.io, so `cargo publish` cannot ship it: it rejects a
       # path dependency without a version, and crates.io requires every
       # dependency to be a published crate. `native` can only ever work when
-      # building from source anyway, so drop it from the *published* manifest
-      # (the repo keeps it for local dev and the `native` CI job). The
-      # `native-ffi` engine has no such dependency and stays published.
-      - name: Strip the source-only `native` feature for crates.io
+      # building from source anyway, so drop its `guest` dependency from the
+      # *published* manifest (the repo keeps it for local dev and the `native`
+      # CI job). Keep the `native` feature *defined* (as an empty feature) so the
+      # `#[cfg(feature = "native")]` items throughout the crate stay a known cfg
+      # value — otherwise `-D warnings` fails the publish verify build on
+      # `unexpected_cfgs`. The `native-ffi` engine has no such dependency and
+      # stays published.
+      - name: Strip the source-only `native` dependency for crates.io
         run: |
           set -euo pipefail
           sed -i \
             -e '\#^guest = { path = "native/guest"#d' \
-            -e '/^native = \["dep:guest"\]/d' \
+            -e 's/^native = \["dep:guest"\]/native = []/' \
             Cargo.toml
-          # Fail loudly if the lines the publish depends on removing are still
-          # present (e.g. the manifest was reformatted and the patterns drifted).
+          # Fail loudly if the entries the publish depends on rewriting are still
+          # in their original form (e.g. the manifest was reformatted and the
+          # patterns drifted).
           if grep -qE '^guest = \{ path = "native/guest"|^native = \["dep:guest"\]' Cargo.toml; then
             echo "error: failed to strip the native/guest entries from Cargo.toml" >&2
             exit 1
