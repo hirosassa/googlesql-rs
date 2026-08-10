@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+#### Native execution backends (optional)
+
+- **`native`** — `Module::new_native` runs the module through the
+  wasm2rs-transpiled guest compiled into your build, with no wasmtime runtime.
+  The transpiled sources are large and provisioned separately; see
+  [`docs/NATIVE.md`](docs/NATIVE.md).
+- **`native-ffi`** — `Module::new_native_ffi` links a prebuilt C-ABI `cdylib`
+  fetched from a GitHub Release (zstd-compressed, SHA256-verified) instead of
+  compiling the guest, avoiding the multi-minute build. Prebuilt for
+  `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`; any other target builds
+  the `cdylib` from source via `GUEST_FFI_LIB`.
+
+The public API is identical across engines — the backend choice is invisible
+past construction.
+
+### Changed
+
+- Precompile the bundled `googlesql.wasm` to a `.cwasm` at build time and
+  deserialize it at startup instead of JIT-compiling on first use.
+- Abstract the wasm engine behind an internal `GuestInstance` trait, isolating
+  the wasmtime implementation and making the alternate backends possible.
+- Parameterize the benchmarks by backend.
+- Bump dependencies: `wasmtime-wasi` 47.0.3, `sha2` 0.11, and `criterion` 0.8.2.
+
+### Fixed
+
+- Free the wasm response buffer even when reading the response fails, so a
+  failed read no longer leaks guest memory.
+
 ## [0.2.0] - 2026-08-01
 
 ### Added

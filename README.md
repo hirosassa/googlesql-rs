@@ -277,9 +277,10 @@ identical, so the engine choice is invisible past construction.
 - **`native-ffi`** adds `Module::new_native_ffi`, linking a prebuilt C-ABI shared library
   (a `cdylib`) instead of compiling that crate — `build.rs` downloads the optimized library
   for your target from a GitHub Release (zstd-compressed, SHA256-verified) and links it in
-  seconds. Point `GUEST_FFI_LIB` at a locally built library to skip the download. Because a
-  `cdylib` keeps its bundled `std` internal, it links cleanly under any rustc version. See
-  [`docs/NATIVE.md`](docs/NATIVE.md).
+  seconds. Prebuilt for `aarch64-apple-darwin` (Apple Silicon) and `x86_64-unknown-linux-gnu`;
+  on any other target, build the `cdylib` from source and point `GUEST_FFI_LIB` at it (which
+  also skips the download on a shipped target). Because a `cdylib` keeps its bundled `std`
+  internal, it links cleanly under any rustc version. See [`docs/NATIVE.md`](docs/NATIVE.md).
 
 ```sh
 # Prebuilt native engine, no multi-minute compile (downloads the cdylib for your target):
