@@ -24,7 +24,7 @@ const WASM_URL: &str =
 /// Bumped whenever the cdylib is regenerated (new googlesql.wasm or a change to
 /// the `native/guest-ffi` wrapper), in lockstep with the pins in
 /// `build_helpers.rs`.
-const NATIVE_FFI_TAG: &str = "native-ffi-v0.1.0";
+const NATIVE_FFI_TAG: &str = "native-ffi-v0.1.1";
 
 /// Base URL the per-target `guest-ffi` cdylib assets are downloaded from; the
 /// full URL is `{base}/{tag}/{asset}`. Overridable via `GUEST_FFI_URL_BASE`
