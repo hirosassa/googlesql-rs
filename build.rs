@@ -86,8 +86,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// 3. Download the target's asset from the `native-ffi-v*` Release, decompress
 ///    it, and verify its SHA256 before caching it in `OUT_DIR`.
 ///
-/// In every case an `rpath` to the chosen directory is baked in so the linked
-/// binary finds the shared library at runtime without a `DYLD_/LD_LIBRARY_PATH`.
+/// In every case the resolved directory is baked as an `-rpath` (so *this
+/// crate's own* native-ffi tests/examples find the cdylib) and also handed to
+/// consumers via `DEP_GUEST_FFI_LIBDIR` (this crate's `links = "guest_ffi"`).
+/// A build script's `rustc-link-arg` reaches only its own crate's targets,
+/// never a downstream binary's, so a consumer resolves the library from the
+/// metadata with its own `-rpath` (see docs/NATIVE.md).
 fn link_guest_ffi() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-env-changed=GUEST_FFI_LIB");
     println!("cargo::rerun-if-env-changed=GUEST_FFI_URL_BASE");
@@ -120,16 +124,24 @@ fn link_guest_ffi() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Emits the search-path, link, and (non-Windows) `rpath` directives that make
-/// the linker resolve `guest_ffi` from `dir` and the binary find it at runtime.
+/// Emits the search-path and link directives that make the linker resolve
+/// `guest_ffi` from `dir`, an `-rpath` to it, and publishes `dir` to consumers
+/// as `DEP_GUEST_FFI_LIBDIR` (via this crate's `links = "guest_ffi"`).
+///
+/// The `-rpath` serves only *this crate's own* targets — its `native-ffi`
+/// integration tests and examples, which link the cdylib and must find it at
+/// run time. A build script's `rustc-link-arg` never crosses into a downstream
+/// binary's link, so a consumer cannot rely on it: it reads
+/// `DEP_GUEST_FFI_LIBDIR` in its own build script and emits its own `-rpath`
+/// (see docs/NATIVE.md). `-rpath` is a GNU/Mach-O concept; a Windows DLL is
+/// found by its own search rules, so it is skipped there.
 fn emit_guest_ffi_link(dir: &str, target: &str) {
     println!("cargo::rustc-link-search=native={dir}");
     println!("cargo::rustc-link-lib=dylib=guest_ffi");
-    // `-rpath` is a GNU/Mach-O linker concept; on Windows a DLL is found via its
-    // own search rules (next to the exe / on PATH), not an embedded run path.
     if !target.contains("-windows-") {
         println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
     }
+    println!("cargo::metadata=libdir={dir}");
 }
 
 /// Ensures `dest` holds the decompressed cdylib whose SHA256 is `expected_sha`,

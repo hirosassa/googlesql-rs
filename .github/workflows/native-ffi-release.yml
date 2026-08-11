@@ -130,6 +130,35 @@ jobs:
         working-directory: googlesql-rs
         run: cargo build --release --manifest-path native/guest-ffi/Cargo.toml
 
+      - name: Verify the cdylib is relocatable (@rpath install_name / bare soname)
+        working-directory: googlesql-rs
+        run: |
+          set -euo pipefail
+          dylib="native/guest-ffi/target/release/${{ matrix.dylib }}"
+          ext="${{ matrix.dylib }}"; ext="${ext##*.}"
+          if [ "$ext" = "dylib" ]; then
+            # Mach-O: LC_ID_DYLIB must be @rpath-relative, never an absolute build
+            # path (a consumer copies this into its LC_LOAD_DYLIB verbatim).
+            # `tail -1` assumes a single-arch dylib (each target builds one arch);
+            # a fat binary would print a per-arch section and need per-slice checks.
+            id="$(otool -D "$dylib" | tail -1)"
+            echo "install_name: $id"
+            if [ "$id" != "@rpath/libguest_ffi.dylib" ]; then
+              echo "error: install_name is '$id', expected '@rpath/libguest_ffi.dylib'" >&2
+              echo "       native/guest-ffi/build.rs must set -Wl,-install_name,@rpath/..." >&2
+              exit 1
+            fi
+          else
+            # ELF: DT_SONAME must be the bare leaf so DT_NEEDED stays relocatable.
+            soname="$(readelf -d "$dylib" | sed -n 's/.*SONAME.*\[\(.*\)\]/\1/p')"
+            echo "soname: ${soname:-<none>}"
+            if [ "$soname" != "libguest_ffi.so" ]; then
+              echo "error: SONAME is '${soname:-<none>}', expected 'libguest_ffi.so'" >&2
+              echo "       native/guest-ffi/build.rs must set -Wl,-soname,libguest_ffi.so" >&2
+              exit 1
+            fi
+          fi
+
       - name: Compress and checksum the cdylib
         id: asset
         working-directory: googlesql-rs
