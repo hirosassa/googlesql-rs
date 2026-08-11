@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-11
+
+### Fixed
+
+- **`native-ffi`**: the prebuilt C-ABI `cdylib` is now relocatable. Its Mach-O
+  install name is `@rpath/libguest_ffi.dylib` (and its ELF `SONAME` the bare
+  `libguest_ffi.so`) instead of an absolute build-tree path, so a consumer can
+  ship the library next to its binary and resolve it via an rpath. `build.rs`
+  now publishes the resolved library directory to dependents as
+  `DEP_GUEST_FFI_LIBDIR` for that purpose; see
+  [`docs/NATIVE.md`](docs/NATIVE.md) for the consumer-side `build.rs` snippet.
+- **`native-ffi`**: refresh the pinned prebuilt cdylibs to `native-ffi-v0.1.1`,
+  the first Release built with the relocatable install name above.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added
