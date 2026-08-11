@@ -8,6 +8,13 @@ description = "Rust bindings for GoogleSQL (ZetaSQL) via a prebuilt WebAssembly 
 license = "Apache-2.0"
 repository = "https://github.com/hirosassa/googlesql-rs"
 readme = "README.md"
+# Under `native-ffi` this crate links the prebuilt `guest_ffi` C-ABI cdylib.
+# Declaring it via `links` both dedups that native library across the graph and
+# lets `build.rs` hand the resolved library directory to consumers as
+# `DEP_GUEST_FFI_LIBDIR`, which they turn into an `-rpath` so their binaries and
+# tests find the cdylib at runtime (see docs/NATIVE.md). Harmless for the
+# default wasmtime build, which emits no link directives.
+links = "guest_ffi"
 keywords = ["googlesql", "zetasql", "sql", "parser", "wasm"]
 categories = ["database", "parser-implementations", "api-bindings"]
 # Keep development-only files out of the published crate.

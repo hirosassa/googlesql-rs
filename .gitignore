@@ -20,6 +20,7 @@
 /native/guest-ffi/*
 !/native/guest-ffi/Cargo.toml
 !/native/guest-ffi/lib.rs
+!/native/guest-ffi/build.rs
 
 # The prebuilt guest tarball scripts/pack-native-guest.sh emits (published to a
 # Release, never committed).

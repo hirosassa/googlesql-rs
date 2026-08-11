@@ -123,12 +123,40 @@ GUEST_FFI_LIB=native/guest-ffi/target/release cargo build --release --features n
    linking it. `GUEST_FFI_URL_BASE` overrides the download base (a mirror, or a `file://`
    directory for offline builds).
 
-An `rpath` to the chosen directory is baked in so the binary finds the shared library at
-runtime. Note the relocatability limitation: on the download path that directory is `OUT_DIR`
-(under `target/`), so a binary built with `native-ffi` is **not** self-contained — moving it,
-`cargo install`, or `cargo clean` breaks the link. For a relocatable binary, keep `OUT_DIR`
-in place, or use the `GUEST_FFI_LIB` path and ship `libguest_ffi.{dylib,so}` alongside the
-executable (with an `@loader_path`/`$ORIGIN` rpath).
+The cdylib is built with an `@rpath/libguest_ffi.dylib` install name (a bare `libguest_ffi.so`
+`SONAME` on ELF), so a consumer records a *relocatable* reference to it rather than the build
+machine's absolute path. Resolving that reference at run time is the **consumer's**
+responsibility: a build script's `-rpath` reaches only its own crate's link, never a
+downstream binary's, so this crate cannot bake the rpath in for you. Instead it publishes the
+resolved directory as `DEP_GUEST_FFI_LIBDIR` (via `links = "guest_ffi"`); add a build script to
+the crate that produces the final binary that turns it into the run-time search paths:
+
+```rust
+// build.rs in the crate that builds the final binary (e.g. a CLI).
+fn main() {
+    // Development (`cargo run`/`cargo test`): load the cdylib from wherever
+    // googlesql resolved it — OUT_DIR on the download path, or your GUEST_FFI_LIB.
+    if let Ok(dir) = std::env::var("DEP_GUEST_FFI_LIBDIR") {
+        println!("cargo::rustc-link-arg=-Wl,-rpath,{dir}");
+    }
+    // Shipped binary: load a copy of libguest_ffi.{dylib,so} placed next to the
+    // executable (e.g. in a release tarball).
+    let origin = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        "@executable_path"
+    } else {
+        "$ORIGIN"
+    };
+    println!("cargo::rustc-link-arg=-Wl,-rpath,{origin}");
+}
+```
+
+`DEP_GUEST_FFI_LIBDIR` is only exposed to a **direct** dependent of `googlesql`, so the crate
+that builds the final binary must depend on `googlesql` directly (not merely transitively) to
+receive it. With that build script, a `native-ffi` binary works in development *and* as a
+relocatable artifact: ship `libguest_ffi.{dylib,so}` next to the executable and it loads via
+the `@executable_path`/`$ORIGIN` rpath. Note that `cargo install` copies only the binary (not the
+cdylib), so distribute the two together via a tarball/package rather than `cargo install`.
+Without such a build script the binary only runs where the build-time directory still exists.
 
 A target absent from the pin table in `build_helpers.rs`, or one whose pin is still the
 `PENDING_RELEASE` sentinel, has no usable download: the build fails with a clear message and
