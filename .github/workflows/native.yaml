@@ -78,6 +78,20 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
 
+      - name: Enable rustc's parallel frontend
+        # The generated `guest` crate is ~2.6M LOC, and its single-threaded
+        # type/borrow check dominates every native build here. `-Zthreads` runs
+        # that frontend across all cores (locally ~776s -> ~362s); it only
+        # parallelises the frontend, so codegen output is byte-identical and the
+        # differential tests below stay valid. The flag is nightly-only, so
+        # RUSTC_BOOTSTRAP=1 opts stable into it. Written to $GITHUB_ENV so every
+        # cargo step in this job inherits it.
+        run: |
+          {
+            echo "RUSTC_BOOTSTRAP=1"
+            echo "RUSTFLAGS=-Zthreads=$(nproc)"
+          } >>"$GITHUB_ENV"
+
       - name: Install wasm-tools
         uses: taiki-e/install-action@v2
         with:
@@ -243,6 +257,20 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
+
+      - name: Enable rustc's parallel frontend
+        # The generated `guest` crate is ~2.6M LOC, and its single-threaded
+        # type/borrow check dominates every native build here. `-Zthreads` runs
+        # that frontend across all cores (locally ~776s -> ~362s); it only
+        # parallelises the frontend, so codegen output is byte-identical and the
+        # differential tests below stay valid. The flag is nightly-only, so
+        # RUSTC_BOOTSTRAP=1 opts stable into it. Written to $GITHUB_ENV so every
+        # cargo step in this job inherits it.
+        run: |
+          {
+            echo "RUSTC_BOOTSTRAP=1"
+            echo "RUSTFLAGS=-Zthreads=$(nproc)"
+          } >>"$GITHUB_ENV"
 
       - name: Install wasm-tools
         uses: taiki-e/install-action@v2

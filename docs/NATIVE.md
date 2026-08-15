@@ -57,6 +57,20 @@ path-dependency (and a fresh checkout / default build works) without the generat
 present. `scripts/gen-native-dispatch.py` emits the 26,316-arm `(svc,mid) → func{N}` table
 plus the by-name table from the wasm export section.
 
+### Faster builds (parallel frontend)
+
+The generated `guest` crate is ~2.6M LOC and its single-threaded type/borrow check
+dominates a native build. `-Zthreads` runs that frontend across all cores (locally the
+`guest` compile drops ~776s → ~362s). It parallelises only the frontend, so codegen is
+byte-identical to a single-threaded build (runtime-neutral — verified by the native
+benches). The flag is nightly-only, so `RUSTC_BOOTSTRAP=1` opts stable into it:
+
+```bash
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zthreads=$(nproc)" cargo build --release --features native
+```
+
+The `native` CI jobs set the same env, so their builds get the win too.
+
 ## Using the prebuilt guest (no toolchain)
 
 Generating the guest needs a `wasm2rs` checkout, `wasm-tools`, and `python3`. To skip that,
