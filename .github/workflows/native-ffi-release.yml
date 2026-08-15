@@ -76,6 +76,21 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Enable rustc's parallel frontend
+        # The generated `guest` crate is ~2.6M LOC; its single-threaded
+        # type/borrow check dominates this build. `-Zthreads` parallelises only
+        # the frontend across all cores, so the shipped cdylib is byte-identical
+        # to a single-threaded build (verified runtime-neutral by the native
+        # benches). Nightly-only, so RUSTC_BOOTSTRAP=1 opts stable in; `nproc`
+        # falls back to `sysctl` on the macOS runners. Inherited by every later
+        # cargo step via $GITHUB_ENV.
+        run: |
+          cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          {
+            echo "RUSTC_BOOTSTRAP=1"
+            echo "RUSTFLAGS=-Zthreads=$cores"
+          } >>"$GITHUB_ENV"
+
       - name: Install wasm-tools
         uses: taiki-e/install-action@v2
         with:
