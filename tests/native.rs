@@ -5,9 +5,11 @@
 //! `pub`. It complements the in-crate differential tests (which reach the native
 //! engine through crate-internal paths) by pinning the public surface itself.
 //!
-//! Only built under the `native` feature, which pulls in the generated `guest`
-//! crate; the default build and docs.rs never see this file.
-#![cfg(feature = "native")]
+//! Built only when both `native` (the engine under test, which pulls in the
+//! generated `guest` crate) and `wasmtime` (the baseline it is compared against
+//! via `Module::new`) are enabled; run it with `--features wasmtime,native`.
+//! docs.rs and the single-backend builds never see this file.
+#![cfg(all(feature = "native", feature = "wasmtime"))]
 #![allow(
     clippy::expect_used,
     reason = "test code: a failed setup step should surface as a panic"

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The default execution backend is now `native-ffi`** (a prebuilt C-ABI
+  cdylib) instead of wasmtime, and **the wasmtime engine is now optional**,
+  gated behind a new `wasmtime` feature. A default `cargo add googlesql` no
+  longer pulls the wasmtime/cranelift dependency tree; it links the prebuilt
+  cdylib instead. `Module::new` now returns whichever engine the enabled
+  features select — wasmtime when the `wasmtime` feature is on (it takes
+  precedence), otherwise the `native-ffi` cdylib, otherwise the `native`
+  (wasm2rs) engine.
+  - **Breaking for two setups.** (1) Builds that relied on `Module::new` being
+    wasmtime without enabling a feature must now add `--features wasmtime` (or
+    `--no-default-features --features wasmtime`). (2) The default now requires a
+    prebuilt cdylib: it ships for `aarch64-apple-darwin` and
+    `x86_64-unknown-linux-gnu`; on any other target either build the cdylib from
+    source and set `GUEST_FFI_LIB`, or switch to `--no-default-features
+    --features wasmtime`.
+  - docs.rs documents the `wasmtime` and `native-ffi` backends (via
+    `package.metadata.docs.rs`), since its sandbox cannot fetch the default
+    cdylib.
+
 ## [0.3.1] - 2026-08-11
 
 ### Fixed

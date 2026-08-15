@@ -227,7 +227,10 @@ impl GuestInstance for NativeInstance {
     }
 }
 
-#[cfg(test)]
+// Differential tests need the wasmtime baseline (`Module::new`) to compare
+// against, so they compile only when `wasmtime` is enabled alongside `native`
+// (run with `--features native,wasmtime`).
+#[cfg(all(test, feature = "wasmtime"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 mod tests {
     use crate::Module;

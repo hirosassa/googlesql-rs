@@ -21,7 +21,10 @@ jobs:
           rustup default stable
 
       - name: Run cargo test
-        run: cargo test --release
+        # Pinned to the wasmtime engine: the default `native-ffi` backend would
+        # link a cdylib this job neither builds nor downloads. The default path
+        # is covered in the `native` workflow.
+        run: cargo test --release --no-default-features --features wasmtime
 
       # The source-compiled `native` feature depends on the generated `guest`
       # path-crate (~122MB, gitignored, regenerated per build). That crate is
@@ -55,4 +58,9 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         # --allow-dirty: the strip step above intentionally edits Cargo.toml in
         # the checkout without committing it.
-        run: cargo publish --allow-dirty
+        #
+        # The verify build is pinned to the wasmtime engine so it does not depend
+        # on downloading the native-ffi cdylib during publish. This only affects
+        # verification: the uploaded manifest is unchanged, so the published crate
+        # still ships `default = ["native-ffi"]` for consumers.
+        run: cargo publish --allow-dirty --no-default-features --features wasmtime

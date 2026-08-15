@@ -2,8 +2,9 @@
 
 Target: replace the wasmtime engine with **googlesql.wasm transpiled to standalone
 Rust** by [`wasm2rs`](https://github.com/hirosassa/wasm2rs), linked directly with no
-wasm runtime and no JIT. This is the opt-in `native` engine of the two-backend
-roadmap; the default engine stays wasmtime.
+wasm runtime and no JIT. This is the source-compiled `native` engine; its prebuilt
+sibling, `native-ffi`, is now the crate's **default** backend, while `wasmtime` is
+the opt-in portable engine.
 
 ## Conclusion: viable — proven byte-for-byte against wasmtime for parse, format, and analyze
 
@@ -13,8 +14,9 @@ wasmtime and produces **identical results** across the parser, formatter, and an
 The analyzer's timezone dependency is resolved by rooting the guest's single WASI preopen
 at `/` (see *Timezone*), matching the wasmtime backend's read-only `/` preopen.
 
-The engine is wired behind the opt-in `native` cargo feature (`Module::new_native`); the
-default build is unchanged and uses wasmtime only.
+The engine is wired behind the `native` cargo feature (`Module::new_native`). The default
+build uses the prebuilt `native-ffi` cdylib of the same engine; enable `wasmtime` for the
+runtime engine (it takes precedence for `Module::new` when both are on).
 
 ## Architecture
 

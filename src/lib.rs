@@ -50,12 +50,15 @@
 //!
 //! # Backends
 //!
-//! By default [`Module::new`] runs the module on wasmtime. The optional `native`
-//! feature adds `Module::new_native` (built only under that feature), which drives the same module through
-//! standalone Rust transpiled from the wasm (no runtime) — every other method is
-//! backend-agnostic, so only construction differs. The transpiled `guest` crate
-//! is large and not committed; see `docs/NATIVE.md` for provisioning it and
-//! building with `--features native`.
+//! [`Module::new`] constructs the default engine. Which engine that is depends on
+//! the enabled features: with the default `native-ffi` feature it links a
+//! prebuilt C-ABI cdylib (no wasm runtime); with the `wasmtime` feature it runs
+//! the module on wasmtime, which takes priority when both are enabled. The
+//! optional `native` feature additionally exposes `Module::new_native` (the same
+//! engine as `native-ffi`, but compiled from transpiled Rust rather than linked
+//! as a cdylib). Every method past construction is backend-agnostic, so only
+//! construction differs. See `docs/NATIVE.md` for the native backends, including
+//! provisioning the large transpiled `guest` crate for `--features native`.
 #![warn(missing_docs)]
 
 mod analyzer;
@@ -71,7 +74,17 @@ mod parser;
 mod pb;
 mod resolved;
 mod runtime;
+#[cfg(feature = "wasmtime")]
 mod wasmtime_backend;
+
+// At least one execution backend must be selected, otherwise `Module::new` has
+// no engine to construct. The default feature set enables `native-ffi`; a build
+// with `--no-default-features` must opt back into one of the backends.
+#[cfg(not(any(feature = "wasmtime", feature = "native-ffi", feature = "native")))]
+compile_error!(
+    "no execution backend enabled: turn on one of the `native-ffi` (default), \
+     `wasmtime`, or `native` features"
+);
 
 pub use analyzer::{
     Catalog, ColumnDef, ColumnType, ConstantDef, ConstantValue, EnumDef, EnumValue, FunctionDef,

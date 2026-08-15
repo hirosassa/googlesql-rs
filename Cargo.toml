@@ -32,14 +32,25 @@ exclude = [".github/", ".workspace_cache/", "codecov.yml"]
 # it too, keeping parent `--workspace`/`fmt --all` out of it.
 exclude = ["native/guest", "native/guest-ffi"]
 
-# docs.rs builds offline (build.rs detects the DOCS_RS env var and skips fetching
-# the wasm) with default features only — the `native` feature needs the generated
-# `guest` crate that docs.rs cannot produce, so it is intentionally not documented
-# there. Default features is docs.rs's default, so no metadata table is needed.
+# docs.rs builds offline, but the default feature is now `native-ffi`, which
+# links a prebuilt cdylib fetched from a GitHub Release — a network operation
+# that docs.rs's sandbox blocks. So document an explicit feature set instead of
+# the default: `wasmtime` (whose wasm fetch build.rs already skips under DOCS_RS)
+# plus `native-ffi` for its constructor's docs (build.rs skips the cdylib link
+# under DOCS_RS too, and `cargo doc` never links, so the missing cdylib is fine).
+# The `native` feature is still omitted: it needs the generated `guest` crate
+# docs.rs cannot produce.
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["wasmtime", "native-ffi"]
 
 [dependencies]
-wasmtime = "47"
-wasmtime-wasi = "47"
+# The wasmtime engine is now optional, gated behind the `wasmtime` feature. The
+# published default is `native-ffi` (a prebuilt cdylib), so a plain `cargo add`
+# no longer pulls the heavy wasmtime/cranelift tree; opt into `wasmtime` to use
+# the JIT/interpreter engine (or to run the differential tests against it).
+wasmtime = { version = "47", optional = true }
+wasmtime-wasi = { version = "47", optional = true }
 thiserror = "2"
 # The `native` backend: googlesql.wasm transpiled to standalone Rust by wasm2rs
 # and linked directly (no wasm runtime). The generated crate is huge (~122MB /
@@ -49,9 +60,20 @@ thiserror = "2"
 guest = { path = "native/guest", optional = true }
 
 [features]
-# Additive: enabling `native` compiles the wasm2rs backend alongside wasmtime and
-# unlocks `Module::new_native()`. `Module::new()` still uses wasmtime, so a build
-# with this feature can construct both engines (used by the differential tests).
+# The published default. Reaches the native engine through a prebuilt C-ABI
+# cdylib and does NOT pull the wasmtime tree, so the default build is light. See
+# the `native-ffi` entry below for how the cdylib is resolved.
+default = ["native-ffi"]
+# The wasmtime engine (JIT/interpreter). Optional since the default backend is
+# `native-ffi`. Enabling it unlocks `Module::new()`'s wasmtime path (see the cfg
+# dispatch in `src/runtime.rs`) and is what the differential tests compare the
+# native backends against, so those runs enable it alongside `native`/
+# `native-ffi` (e.g. `--features wasmtime,native-ffi`).
+wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
+# Additive: enabling `native` compiles the wasm2rs backend and unlocks
+# `Module::new_native()`. Independent of `wasmtime` — combine the two
+# (`--features native,wasmtime`) to construct both engines for the differential
+# tests.
 native = ["dep:guest"]
 # The native engine reached through a C-ABI cdylib instead of the `guest`
 # path-dependency. Unlocks `Module::new_native_ffi()` and links a prebuilt
@@ -69,7 +91,10 @@ sha2 = "0.11"
 # same version and default features as the runtime `wasmtime` dependency: the
 # `.cwasm` compatibility check hashes the enabled wasm proposals, so a feature
 # mismatch would make every runtime `deserialize` fail and fall back to JIT.
-wasmtime = "47"
+# Optional and gated by the `wasmtime` feature (via `dep:wasmtime`), so the
+# default `native-ffi`-only build never compiles the wasmtime tree at build time
+# either; build.rs only touches it under `#[cfg(feature = "wasmtime")]`.
+wasmtime = { version = "47", optional = true }
 # Decompresses the prebuilt `guest-ffi` cdylib downloaded from a Release under the
 # `native-ffi` feature (assets are shipped zstd-compressed, ~20MB vs ~56MB raw).
 zstd = "0.13"
