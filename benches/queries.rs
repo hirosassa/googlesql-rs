@@ -6,13 +6,13 @@
 //! `analyzer` group — especially `resolved_tree`, which walks every resolved
 //! node — is the one to watch when the ABI or the traversal changes.
 //!
-//! Every group runs against each available backend, labelled `wasmtime`,
-//! `native` (under `--features native`), and `native-ffi` (under
-//! `--features native-ffi`), so criterion reports them side by side:
-//! `cargo bench --features native` compares the wasmtime engine against the
-//! wasm2rs-transpiled native engine on identical work, and `--features
-//! native-ffi` adds the same engine reached through the C-ABI staticlib. Without
-//! any feature only the `wasmtime` arm builds.
+//! Every group runs against each enabled backend, labelled `wasmtime` (under
+//! `--features wasmtime`), `native` (under `--features native`), and
+//! `native-ffi` (the default), so criterion reports them side by side:
+//! `cargo bench --features wasmtime,native` compares the wasmtime engine against
+//! the wasm2rs-transpiled native engine on identical work, and `--features
+//! wasmtime,native-ffi` adds the same engine reached through the C-ABI cdylib.
+//! The default `cargo bench` benchmarks the `native-ffi` arm alone.
 //!
 //! Run with `cargo bench`; these are excluded from `cargo test` (the
 //! `[[bench]]` target uses `harness = false`) and from CI's test run.
@@ -31,15 +31,21 @@ use googlesql::{ColumnDef, ColumnType, Module, TableDef};
 /// A benchmarked engine: a display label paired with a `Module` constructor.
 type Backend = (&'static str, fn() -> Module);
 
-/// The engines to benchmark: always wasmtime; the native (wasm2rs) engine too
-/// when the `native` feature is enabled. Each entry pairs a label with a
-/// constructor, so every group runs the same work through both backends.
+/// The engines to benchmark, one per enabled backend feature: `wasmtime`, the
+/// native (wasm2rs) engine, and the `native-ffi` (default) engine. Each entry
+/// pairs a label with a constructor, so every group runs the same work through
+/// each backend that is compiled in.
+#[allow(
+    unused_mut,
+    clippy::vec_init_then_push,
+    reason = "which arms are pushed depends on the enabled backend features; a \
+              single-feature build pushes just once, but there is no always-present \
+              backend to seed the vec with"
+)]
 fn backends() -> Vec<Backend> {
-    #[allow(
-        unused_mut,
-        reason = "mutated only under the `native`/`native-ffi` features; immutable otherwise"
-    )]
-    let mut engines: Vec<Backend> = vec![("wasmtime", || Module::new().unwrap())];
+    let mut engines: Vec<Backend> = Vec::new();
+    #[cfg(feature = "wasmtime")]
+    engines.push(("wasmtime", || Module::new().unwrap()));
     #[cfg(feature = "native")]
     engines.push(("native", || Module::new_native().unwrap()));
     #[cfg(feature = "native-ffi")]

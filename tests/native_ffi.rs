@@ -6,9 +6,11 @@
 //! particular drives the WASI/timezone path across the C ABI, which is the part
 //! most likely to break at the boundary.
 //!
-//! Only built under the `native-ffi` feature, which links the prebuilt
-//! `libguest_ffi.a`; the default build and docs.rs never see this file.
-#![cfg(feature = "native-ffi")]
+//! Built only when both `native-ffi` (the engine under test) and `wasmtime` (the
+//! baseline it is compared against via `Module::new`) are enabled; run it with
+//! `--features wasmtime,native-ffi`. docs.rs and the single-backend builds never
+//! see this file.
+#![cfg(all(feature = "native-ffi", feature = "wasmtime"))]
 #![allow(
     clippy::expect_used,
     reason = "test code: a failed setup step should surface as a panic"

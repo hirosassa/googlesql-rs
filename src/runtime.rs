@@ -173,10 +173,39 @@ impl Drop for Handle {
 }
 
 impl Module {
-    /// Loads the prebuilt wasm on the default engine and returns a fully
-    /// initialized instance.
+    /// Loads the default engine and returns a fully initialized instance.
+    ///
+    /// The engine is selected at compile time from the enabled features:
+    /// `wasmtime` takes precedence when present (so the differential tests keep a
+    /// wasmtime baseline to compare against), otherwise the `native-ffi` cdylib
+    /// engine, otherwise the `native` (wasm2rs) engine. Every method past
+    /// construction is backend-agnostic, so the choice is invisible here.
+    #[cfg(feature = "wasmtime")]
     pub fn new() -> Result<Self, Error> {
         Self::from_backend(Box::new(crate::wasmtime_backend::WasmtimeInstance::new()?))
+    }
+
+    /// Loads the default engine (the `native-ffi` cdylib, as `wasmtime` is not
+    /// enabled) and returns a fully initialized instance. See the `wasmtime`
+    /// variant of this method for how the default engine is chosen.
+    #[cfg(all(not(feature = "wasmtime"), feature = "native-ffi"))]
+    pub fn new() -> Result<Self, Error> {
+        Self::from_backend(Box::new(
+            crate::native_ffi_backend::NativeFfiInstance::new()?
+        ))
+    }
+
+    /// Loads the default engine (the `native` wasm2rs engine, as neither
+    /// `wasmtime` nor `native-ffi` is enabled) and returns a fully initialized
+    /// instance. See the `wasmtime` variant of this method for how the default
+    /// engine is chosen.
+    #[cfg(all(
+        not(feature = "wasmtime"),
+        not(feature = "native-ffi"),
+        feature = "native"
+    ))]
+    pub fn new() -> Result<Self, Error> {
+        Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
     }
 
     /// Loads the wasm2rs-transpiled native engine and returns a fully
@@ -197,19 +226,25 @@ impl Module {
         Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
     }
 
-    /// Loads the native engine through the C-ABI staticlib and returns a fully
-    /// initialized instance. **PoC** (`native-ffi` feature).
+    /// Loads the native engine through the C-ABI cdylib and returns a fully
+    /// initialized instance (`native-ffi` feature, the default backend).
     ///
-    /// Behaves exactly like [`new_native`](Self::new_native) — the same wasm2rs
-    /// engine, byte-for-byte — but reaches it by linking a prebuilt
-    /// `libguest_ffi.a` over a C ABI rather than compiling the `guest` crate into
-    /// this build. That makes the optimized object code distributable as a
+    /// Identical in effect to [`new`](Self::new) whenever `native-ffi` is the
+    /// selected default (i.e. the `wasmtime` feature is off); the explicit name is
+    /// kept so the differential tests can construct this engine while `new` still
+    /// resolves to the wasmtime baseline.
+    ///
+    /// Behaves exactly like `new_native` (under the `native` feature) — the same
+    /// wasm2rs engine, byte-for-byte — but reaches it by linking a prebuilt
+    /// `libguest_ffi` cdylib over a C ABI rather than compiling the `guest` crate
+    /// into this build. That makes the optimized object code distributable as a
     /// Release asset without the rustc-version coupling an `rlib` imposes; the
     /// trade-off is a small FFI shim (`native_ffi_backend`). Every method past
     /// construction is backend-agnostic, so the engine choice is invisible.
     ///
-    /// The archive is provisioned separately (built from `native/guest-ffi`,
-    /// located via `GUEST_FFI_LIB`); see `docs/NATIVE.md`.
+    /// The cdylib is provisioned separately (downloaded from a `native-ffi-v*`
+    /// Release, or built from `native/guest-ffi` and located via
+    /// `GUEST_FFI_LIB`); see `docs/NATIVE.md`.
     #[cfg(feature = "native-ffi")]
     pub fn new_native_ffi() -> Result<Self, Error> {
         Self::from_backend(Box::new(
@@ -219,10 +254,11 @@ impl Module {
 
     /// Builds a `Module` around an already-initialized engine backend.
     ///
-    /// The single seam through which an engine is injected: `new` supplies the
-    /// wasmtime backend today, and the native wasm2rs engine (`new_native`, under
-    /// the `native` feature) plugs in here behind the same [`GuestInstance`] trait
-    /// without touching any of the state below.
+    /// The single seam through which an engine is injected: `new` supplies
+    /// whichever backend the enabled features select, and the explicit
+    /// constructors (`new_native`, `new_native_ffi`) plug their engines in here
+    /// behind the same [`GuestInstance`] trait without touching any of the state
+    /// below.
     fn from_backend(backend: Box<dyn GuestInstance>) -> Result<Self, Error> {
         Ok(Self {
             backend,

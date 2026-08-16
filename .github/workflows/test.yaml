@@ -49,19 +49,20 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run cargo clippy
-        # Default features only. The opt-in `native` feature pulls in the
-        # ~122MB wasm2rs-generated `guest` crate, which is not present on a fresh
-        # checkout (only its manifest is committed); it is linted and tested in
-        # the dedicated `native` workflow instead.
-        run: cargo clippy --all-targets -- -D warnings -W clippy::nursery
+        # Pinned to the `wasmtime` engine (the published default is now the
+        # `native-ffi` cdylib, which this offline job cannot link). The `native`
+        # and `native-ffi` backends — and their differential tests against
+        # wasmtime — are linted and tested in the dedicated `native` workflow.
+        run: cargo clippy --all-targets --no-default-features --features wasmtime -- -D warnings -W clippy::nursery
 
       - name: Run cargo doc
-        run: cargo doc --no-deps
+        # Match docs.rs's feature set so doc-comment breakage surfaces here first.
+        run: cargo doc --no-deps --no-default-features --features wasmtime
         env:
           RUSTDOCFLAGS: "-D warnings"
 
       - name: Run cargo test
-        run: cargo test --release
+        run: cargo test --release --no-default-features --features wasmtime
 
   coverage:
     runs-on: ubuntu-latest
@@ -98,7 +99,11 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate code coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        # Cover the crate on the wasmtime engine: it is the reference backend and
+        # its Rust source (unlike the native-ffi cdylib's opaque object code) is
+        # what coverage can meaningfully instrument. `native-ffi` is the default,
+        # so opt out of it explicitly here.
+        run: cargo llvm-cov --workspace --no-default-features --features wasmtime --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

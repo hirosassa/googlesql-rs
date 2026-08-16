@@ -16,7 +16,10 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 /// Version and integrity metadata for the bundled googlesql.wasm (goccy/googlesql-wasm).
+/// Only referenced by the wasmtime backend's build steps.
+#[cfg(feature = "wasmtime")]
 const WASM_SHA256: &str = "5f14b3a74a9bb4e333b03e8420b11b633a1b77379053f02e44235abed08ae407";
+#[cfg(feature = "wasmtime")]
 const WASM_URL: &str =
     "https://github.com/goccy/googlesql-wasm/releases/download/v0.3.4/googlesql.wasm";
 
@@ -41,17 +44,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-env-changed=GOOGLESQL_WASM");
     println!("cargo::rerun-if-env-changed=DOCS_RS");
 
-    // Under the `native-ffi` feature, link the prebuilt C-ABI shared library
-    // (`libguest_ffi.{dylib,so}` / `guest_ffi.dll`, built separately from
-    // `native/guest-ffi`). `GUEST_FFI_LIB` points at the directory holding it —
-    // the local stand-in for what a Release download would provide, mirroring the
-    // wasm's fetch-then-use model above. A cdylib (not a staticlib) keeps its
-    // bundled `std` internal, so a consumer built with a different rustc links
-    // cleanly instead of hitting a duplicate `rust_eh_personality`.
-    if env::var_os("CARGO_FEATURE_NATIVE_FFI").is_some() {
+    // Under the `native-ffi` feature (the default), link the prebuilt C-ABI
+    // shared library (`libguest_ffi.{dylib,so}` / `guest_ffi.dll`, built
+    // separately from `native/guest-ffi`). `GUEST_FFI_LIB` points at the
+    // directory holding it — the local stand-in for what a Release download would
+    // provide, mirroring the wasm's fetch-then-use model below. A cdylib (not a
+    // staticlib) keeps its bundled `std` internal, so a consumer built with a
+    // different rustc links cleanly instead of hitting a duplicate
+    // `rust_eh_personality`.
+    //
+    // docs.rs builds offline and only generates docs (it never links a binary),
+    // so skip the Release download there — `cargo doc` resolves the module's
+    // `extern "C"` symbols lazily, not at doc time. This is what lets the crate
+    // keep `native-ffi` in its docs.rs feature set without a network fetch.
+    //
+    // Guarded by the `CARGO_FEATURE_NATIVE_FFI` env var (not `#[cfg]`) so the
+    // function — and the `build_helpers.rs` lookups it calls — stays compiled and
+    // reachable under any feature set, keeping the shared helpers free of
+    // dead-code warnings when `native-ffi` is off (e.g. the wasmtime-only build).
+    if env::var_os("CARGO_FEATURE_NATIVE_FFI").is_some() && env::var_os("DOCS_RS").is_none() {
         link_guest_ffi()?;
     }
 
+    // The wasm engine, its precompiled `.cwasm`, and the paths pointing at them
+    // are wasmtime-specific — only compiled and prepared under that feature.
+    #[cfg(feature = "wasmtime")]
+    prepare_wasm()?;
+
+    Ok(())
+}
+
+/// Resolves, verifies, and precompiles the bundled googlesql.wasm for the
+/// wasmtime backend, exposing the artifact paths `wasmtime_backend` reads via
+/// `env!`. Only built under the `wasmtime` feature.
+#[cfg(feature = "wasmtime")]
+fn prepare_wasm() -> Result<(), Box<dyn Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let dest = out_dir.join("googlesql.wasm");
     let cwasm_dest = out_dir.join("googlesql.cwasm");
@@ -188,6 +215,7 @@ fn ensure_guest_ffi_dylib(
 /// runtime's `deserialize` rejects the artifact and falls back to JIT. A failure
 /// here is fatal: the artifact is required, and the runtime test asserts it
 /// deserializes.
+#[cfg(feature = "wasmtime")]
 fn precompile_cwasm(wasm: &[u8], dest: &Path) -> Result<(), Box<dyn Error>> {
     let engine = wasmtime::Engine::default();
     let cwasm = engine
@@ -198,6 +226,7 @@ fn precompile_cwasm(wasm: &[u8], dest: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 /// Resolves the wasm bytes according to the priority order (verification is left to the caller).
+#[cfg(feature = "wasmtime")]
 fn resolve_wasm_bytes(dest: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     if let Ok(local) = env::var("GOOGLESQL_WASM") {
         let bytes =
@@ -231,6 +260,7 @@ fn download_with_curl(url: &str, dest: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 /// Verifies that the SHA256 of the bundled googlesql.wasm matches its pin.
+#[cfg(feature = "wasmtime")]
 fn verify_sha256(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     verify_sha256_against("googlesql.wasm", bytes, WASM_SHA256)
 }

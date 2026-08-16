@@ -7,17 +7,20 @@
 
 Rust bindings for GoogleSQL (ZetaSQL).
 
-Drives the prebuilt WebAssembly module published by
-[goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm) on top of
-[wasmtime](https://wasmtime.dev/), giving you GoogleSQL's parser, formatter, and
-analyzer without requiring a massive C++ / Bazel toolchain.
+Drives the prebuilt GoogleSQL engine published by
+[goccy/googlesql-wasm](https://github.com/goccy/googlesql-wasm), giving you
+GoogleSQL's parser, formatter, and analyzer without requiring a massive C++ /
+Bazel toolchain. By default it links a prebuilt native library (`native-ffi`)
+with no wasm runtime; enable the `wasmtime` feature to run the same module on
+[wasmtime](https://wasmtime.dev/) instead.
 
 ## Features
 
-- **No C++ build required** — just run the pre-compiled WASM artifact of GoogleSQL
-- **No cgo-style FFI needed** — the default build has no hand-written FFI; `unsafe` is denied crate-wide, allowed only at a few audited spots (each with a documented reason)
-- `googlesql.wasm` is automatically fetched from GitHub Releases at build time (with SHA256 verification)
-- **Optional native engines** — opt into a prebuilt C-ABI library (`native-ffi`) or a source-compiled backend (`native`) for wasmtime-free execution ([details](#native-backends-optional))
+- **No C++ build required** — just link (or run) the pre-compiled artifact of GoogleSQL
+- **Light default build** — the default `native-ffi` backend links a prebuilt C-ABI library instead of pulling the wasmtime/cranelift dependency tree; opt into `wasmtime` when you want the runtime engine
+- **Prebuilt artifacts fetched at build time** — the `native-ffi` cdylib (default) or `googlesql.wasm` (under `wasmtime`) is downloaded from GitHub Releases with SHA256 verification
+- `unsafe` is denied crate-wide, allowed only at a few audited spots (each with a documented reason) — the `native-ffi` FFI shim is the main one
+- **Alternate engines** — the `wasmtime` runtime engine or a fully source-compiled backend (`native`) ([details](#execution-backends))
 
 ## Usage
 
@@ -257,34 +260,52 @@ cargo run --example error_location
 
 ## Building
 
-The first build downloads `googlesql.wasm` (~14 MB).
-For offline environments or a locally available wasm file, you can override the path via an environment variable.
+The first build downloads the prebuilt artifact for the selected backend: the
+`native-ffi` cdylib by default (~20 MB compressed), or `googlesql.wasm` (~14 MB)
+under the `wasmtime` feature. Both are cached and SHA256-verified. For offline
+environments or a locally available file, override the source via an environment
+variable:
 
 ```sh
-# Use a local wasm file (skips the download)
-GOOGLESQL_WASM=/path/to/googlesql.wasm cargo build
+# wasmtime backend: use a local wasm file (skips the download)
+GOOGLESQL_WASM=/path/to/googlesql.wasm cargo build --no-default-features --features wasmtime
+
+# native-ffi backend (default): use a locally built cdylib (skips the download)
+GUEST_FFI_LIB=/path/to/cdylib/dir cargo build
 ```
 
-### Native backends (optional)
+See [Execution backends](#execution-backends) below for choosing an engine.
 
-By default the module runs on wasmtime (`Module::new`). Two optional features drive the same
-module through standalone Rust transpiled from the wasm with no runtime; every other method is
-identical, so the engine choice is invisible past construction.
+### Execution backends
 
-- **`native`** adds `Module::new_native`, compiling the transpiled `guest` crate into your
-  build. The transpiled code is large and not committed, so provision it first — see
-  [`docs/NATIVE.md`](docs/NATIVE.md).
-- **`native-ffi`** adds `Module::new_native_ffi`, linking a prebuilt C-ABI shared library
-  (a `cdylib`) instead of compiling that crate — `build.rs` downloads the optimized library
-  for your target from a GitHub Release (zstd-compressed, SHA256-verified) and links it in
-  seconds. Prebuilt for `aarch64-apple-darwin` (Apple Silicon) and `x86_64-unknown-linux-gnu`;
-  on any other target, build the `cdylib` from source and point `GUEST_FFI_LIB` at it (which
-  also skips the download on a shipped target). Because a `cdylib` keeps its bundled `std`
-  internal, it links cleanly under any rustc version. See [`docs/NATIVE.md`](docs/NATIVE.md).
+`Module::new` constructs the default engine; the specific engine is chosen at compile time
+from the enabled features. Every other method is identical across engines, so the choice is
+invisible past construction. `wasmtime` takes precedence when enabled, so a build with both
+features keeps `Module::new` on wasmtime while `Module::new_native_ffi` reaches the cdylib
+engine (this is how the differential tests compare them).
+
+- **`native-ffi`** (the default) links a prebuilt C-ABI shared library (a `cdylib`) with no
+  wasm runtime, and also unlocks `Module::new_native_ffi`. `build.rs` downloads the optimized
+  library for your target from a GitHub Release (zstd-compressed, SHA256-verified) and links it
+  in seconds. Prebuilt for `aarch64-apple-darwin` (Apple Silicon) and `x86_64-unknown-linux-gnu`;
+  **on any other target** (Windows, x86_64 macOS, aarch64 Linux, …) build the `cdylib` from
+  source and point `GUEST_FFI_LIB` at it, or disable the default and use `wasmtime` instead.
+  Because a `cdylib` keeps its bundled `std` internal, it links cleanly under any rustc version.
+  See [`docs/NATIVE.md`](docs/NATIVE.md).
+- **`wasmtime`** runs the module on [wasmtime](https://wasmtime.dev/), fetching `googlesql.wasm`
+  at build time. It is the portable engine — works on every target and needs no prebuilt
+  library — at the cost of pulling the wasmtime/cranelift dependency tree.
+- **`native`** adds `Module::new_native`, the same engine as `native-ffi` but compiled from the
+  transpiled `guest` crate into your build rather than linked as a cdylib. The transpiled code is
+  large and not committed, so provision it first — see [`docs/NATIVE.md`](docs/NATIVE.md).
 
 ```sh
-# Prebuilt native engine, no multi-minute compile (downloads the cdylib for your target):
-cargo build --release --features native-ffi
+# Default: prebuilt native engine, no multi-minute compile, no wasmtime tree
+# (downloads the cdylib for your target):
+cargo build --release
+
+# Portable wasmtime engine instead (e.g. on a target with no prebuilt cdylib):
+cargo build --release --no-default-features --features wasmtime
 ```
 
 For details on the internal architecture and the WASM host ABI, see [`docs/SPIKE.md`](docs/SPIKE.md).

@@ -131,16 +131,21 @@ jobs:
 
       - name: Clippy (native backend)
         working-directory: googlesql-rs
-        run: cargo clippy --all-targets --features native -- -D warnings -W clippy::nursery
+        # `--no-default-features` drops the default `native-ffi` backend (whose
+        # cdylib this job does not build), then enables the wasm2rs `native`
+        # engine plus the `wasmtime` baseline its differential tests compare
+        # against.
+        run: cargo clippy --all-targets --no-default-features --features native,wasmtime -- -D warnings -W clippy::nursery
 
       - name: Differential tests vs wasmtime
         working-directory: googlesql-rs
         # The in-crate differential tests, then the public-API smoke test in
         # tests/native.rs (the `native_backend::` name filter above does not
-        # select integration targets, so it runs as a separate invocation).
+        # select integration targets, so it runs as a separate invocation). Both
+        # need the `wasmtime` baseline alongside `native`.
         run: |
-          cargo test --features native --lib 'native_backend::'
-          cargo test --features native --test native
+          cargo test --no-default-features --features native,wasmtime --lib 'native_backend::'
+          cargo test --no-default-features --features native,wasmtime --test native
 
   prebuilt:
     name: native prebuilt (fetch roundtrip)
@@ -240,6 +245,12 @@ jobs:
   native-ffi:
     name: native-ffi backend (C-ABI cdylib)
     runs-on: ubuntu-latest
+    # `native-ffi` is the default feature, so every main-crate `cargo` step below
+    # resolves the cdylib; point them all at the dev-profile build produced in
+    # this job. The download-path step unsets this deliberately to exercise the
+    # fetch → verify → link chain instead.
+    env:
+      GUEST_FFI_LIB: ${{ github.workspace }}/googlesql-rs/native/guest-ffi/target/debug
     steps:
       - name: Checkout googlesql-rs
         uses: actions/checkout@v7
@@ -316,15 +327,13 @@ jobs:
 
       - name: Clippy (native-ffi backend)
         working-directory: googlesql-rs
-        env:
-          GUEST_FFI_LIB: ${{ github.workspace }}/googlesql-rs/native/guest-ffi/target/debug
-        run: cargo clippy --all-targets --features native-ffi -- -D warnings -W clippy::nursery
+        # `native-ffi` is on by default; add the `wasmtime` baseline so the
+        # differential test target (tests/native_ffi.rs) is linted too.
+        run: cargo clippy --all-targets --features wasmtime -- -D warnings -W clippy::nursery
 
       - name: Differential test vs wasmtime (GUEST_FFI_LIB override)
         working-directory: googlesql-rs
-        env:
-          GUEST_FFI_LIB: ${{ github.workspace }}/googlesql-rs/native/guest-ffi/target/debug
-        run: cargo test --features native-ffi --test native_ffi
+        run: cargo test --features wasmtime --test native_ffi
 
       # Exercise the download path build.rs takes for a released consumer: lay the
       # compressed cdylib out as a `file://` Release, pin its checksum, and link
@@ -348,4 +357,4 @@ jobs:
           # download path (no GUEST_FFI_LIB in the environment).
           echo "${host} ${sha}" | scripts/update-native-ffi-pins.sh "$tag"
           env -u GUEST_FFI_LIB GUEST_FFI_URL_BASE="file://$rel" \
-            cargo test --features native-ffi --test native_ffi
+            cargo test --features wasmtime --test native_ffi
