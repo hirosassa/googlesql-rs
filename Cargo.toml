@@ -97,7 +97,7 @@ sha2 = "0.11"
 wasmtime = { version = "47", optional = true }
 # Decompresses the prebuilt `guest-ffi` cdylib downloaded from a Release under the
 # `native-ffi` feature (assets are shipped zstd-compressed, ~20MB vs ~56MB raw).
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 criterion = "0.8"
