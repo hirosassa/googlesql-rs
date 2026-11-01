@@ -48,7 +48,7 @@ jobs:
             dylib: libguest_ffi.so
     steps:
       - name: Checkout googlesql-rs
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: googlesql-rs
 
@@ -65,7 +65,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Checkout wasm2rs (pinned ref)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: hirosassa/wasm2rs
           ref: ${{ steps.pins.outputs.wasm2rs_ref }}
@@ -92,7 +92,7 @@ jobs:
           } >>"$GITHUB_ENV"
 
       - name: Install wasm-tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: wasm-tools
 
@@ -209,7 +209,7 @@ jobs:
           gh release upload "$tag" "/tmp/${{ steps.asset.outputs.asset }}" --clobber
 
       - name: Upload the pin line as an artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pin-${{ matrix.target }}
           path: /tmp/pins/${{ matrix.target }}.txt
@@ -220,10 +220,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout googlesql-rs
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download all pin artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pin-*
           path: pins

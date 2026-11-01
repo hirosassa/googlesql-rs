@@ -8,8 +8,15 @@ updates:
     open-pull-requests-limit: 10
 
   # GitHub Actions used by the workflows in .github/workflows.
+  # Actions are pinned to a full commit SHA (with a `# vX.Y.Z` comment);
+  # Dependabot bumps the SHA and keeps the comment in sync.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # Batch all action bumps into a single PR to reduce review churn.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
