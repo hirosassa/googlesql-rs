@@ -2,8 +2,8 @@
 name = "googlesql"
 version = "0.4.0"
 edition = "2024"
-# Driven by the wasmtime 47 dependency tree, whose crates require Rust 1.94.
-rust-version = "1.94"
+# Driven by the wasmtime 50 dependency tree, whose crates require Rust 1.97.
+rust-version = "1.97"
 description = "Rust bindings for GoogleSQL (ZetaSQL) via a prebuilt WebAssembly module"
 license = "Apache-2.0"
 repository = "https://github.com/hirosassa/googlesql-rs"
@@ -49,8 +49,8 @@ features = ["wasmtime", "native-ffi"]
 # published default is `native-ffi` (a prebuilt cdylib), so a plain `cargo add`
 # no longer pulls the heavy wasmtime/cranelift tree; opt into `wasmtime` to use
 # the JIT/interpreter engine (or to run the differential tests against it).
-wasmtime = { version = "47", optional = true }
-wasmtime-wasi = { version = "47", optional = true }
+wasmtime = { version = "50", optional = true }
+wasmtime-wasi = { version = "50", optional = true }
 thiserror = "2"
 # The `native` backend: googlesql.wasm transpiled to standalone Rust by wasm2rs
 # and linked directly (no wasm runtime). The generated crate is huge (~122MB /
@@ -94,7 +94,7 @@ sha2 = "0.11"
 # Optional and gated by the `wasmtime` feature (via `dep:wasmtime`), so the
 # default `native-ffi`-only build never compiles the wasmtime tree at build time
 # either; build.rs only touches it under `#[cfg(feature = "wasmtime")]`.
-wasmtime = { version = "47", optional = true }
+wasmtime = { version = "50", optional = true }
 # Decompresses the prebuilt `guest-ffi` cdylib downloaded from a Release under the
 # `native-ffi` feature (assets are shipped zstd-compressed, ~20MB vs ~56MB raw).
 zstd = "0.14"

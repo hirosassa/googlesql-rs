@@ -20,7 +20,7 @@ use wasmtime::{
     TypedFunc, Val, ValType,
 };
 use wasmtime_wasi::p1::WasiP1Ctx;
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
+use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::backend::GuestInstance;
 use crate::error::Error;
@@ -137,15 +137,10 @@ impl WasmtimeInstance {
                 clippy::let_underscore_must_use,
                 reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
             )]
-            let _ = builder.preopened_dir(
-                &real,
-                "/usr/share/zoneinfo",
-                DirPerms::READ,
-                FilePerms::READ,
-            );
+            let _ = builder.preopened_dir(&real, "/usr/share/zoneinfo", FsPerms::ReadOnly);
         }
         let wasi = builder
-            .preopened_dir("/", "/", DirPerms::READ, FilePerms::READ)
+            .preopened_dir("/", "/", FsPerms::ReadOnly)
             .map_err(|e| Error::Instantiate(format!("preopen /: {e}")))?
             .build_p1();
         let mut store = Store::new(engine, HostState { wasi });
