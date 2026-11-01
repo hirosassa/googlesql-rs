@@ -13,6 +13,8 @@
 //! only on the engine-agnostic [`GuestInstance`] trait.
 
 use std::collections::HashMap;
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use wasmtime::{
@@ -113,6 +115,104 @@ pub struct WasmtimeInstance {
     export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
 }
 
+/// Guest path at which the tz database is exposed inside the sandbox.
+///
+/// cctz (reached through absl's `FindTimeZoneByName` on the analyzer path)
+/// resolves named zones under `TZDIR`; this is the path the wasm build expects.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+const GUEST_TZDIR: &str = "/usr/share/zoneinfo";
+
+/// Version marker file in a materialized tz database directory.
+///
+/// Written last, containing the tz database version: a directory whose marker
+/// is absent or stale is a half-written leftover from a crashed process and is
+/// rebuilt from scratch.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+const TZDB_MARKER: &str = ".complete";
+
+/// Materialized bundled tz database, resolved at most once per process.
+///
+/// `Ok` holds the leaked directory path (deliberately kept for the process's
+/// whole lifetime); `Err` caches why materialization failed, so repeated
+/// instance construction neither retries a doomed write nor loses the reason.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+static BUNDLED_TZDB: OnceLock<Result<&'static Path, String>> = OnceLock::new();
+
+/// Returns the directory of the bundled tz database, materializing it on first
+/// use.
+///
+/// Time zone policy for the analyzer (cctz resolves named zones under `TZDIR`):
+/// Windows always bundles — its hosts have no `/usr/share/zoneinfo` at all, and
+/// that absence made every analyze call trap (wasm `unreachable` in cctz) —
+/// while unix defaults to the host database, whose local modifications are
+/// honored, and opts into this hermetic path with the `bundled-tzdb` feature:
+/// every host then analyzes the same tz data, whatever it ships locally.
+///
+/// Concretely, the [`tzdb`](https://docs.rs/tzdb) crate ships the IANA database
+/// in the binary; this writes each zone out as a TZif file under
+/// `<temp>/googlesql-tzdb/<tz version>/` once per version (guarded by the
+/// [`TZDB_MARKER`] file) and the directory is preopened at the guest path.
+///
+/// The error names the materialization action so the caller can report (and
+/// survive) an unwritable temp dir; see `WasmtimeInstance::new` for the
+/// host-path fallback that keeps previously-working platforms working.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn bundled_tzdb_dir() -> Result<&'static Path, String> {
+    BUNDLED_TZDB.get_or_init(materialize_bundled_tzdb).clone()
+}
+
+/// Writes every bundled zone out as a TZif file under
+/// `<temp>/googlesql-tzdb/<tz version>/` and returns that directory.
+///
+/// All zones are written before the [`TZDB_MARKER`] version file, so the
+/// directory is complete or obviously not; concurrent first uses either write
+/// identical bytes or reuse a complete earlier run.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn materialize_bundled_tzdb() -> Result<&'static Path, String> {
+    let dir = std::env::temp_dir()
+        .join("googlesql-tzdb")
+        .join(tzdb::VERSION);
+    let marker = dir.join(TZDB_MARKER);
+    let complete = std::fs::read_to_string(&marker).is_ok_and(|done| done == tzdb::VERSION);
+    if !complete {
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            format!(
+                "materialize the bundled tz database: create {}: {error}",
+                dir.display()
+            )
+        })?;
+        for &name in tzdb::TZ_NAMES {
+            let zone = dir.join(name);
+            std::fs::create_dir_all(zone.parent().unwrap_or(&dir)).map_err(|error| {
+                format!(
+                    "materialize the bundled tz database: create {}: {error}",
+                    zone.display()
+                )
+            })?;
+            let bytes = tzdb::raw_tz_by_name(name).ok_or_else(|| {
+                format!(
+                    "materialize the bundled tz database: zone {name} missing from bundled data"
+                )
+            })?;
+            std::fs::write(&zone, bytes).map_err(|error| {
+                format!(
+                    "materialize the bundled tz database: write {}: {error}",
+                    zone.display()
+                )
+            })?;
+        }
+        std::fs::write(&marker, tzdb::VERSION).map_err(|error| {
+            format!(
+                "materialize the bundled tz database: write {}: {error}",
+                marker.display()
+            )
+        })?;
+    }
+    // One leaked PathBuf per process: the path is handed to wasmtime and outlives
+    // this call by construction (the static caches it for the process lifetime).
+    Ok(Box::leak(dir.into_boxed_path()))
+}
+
 impl WasmtimeInstance {
     /// Loads the shared compiled wasm and returns a fully initialized instance.
     pub(crate) fn new() -> Result<Self, Error> {
@@ -126,18 +226,56 @@ impl WasmtimeInstance {
 
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stderr();
-        // Resolve the host tz database (may be a chain of symlinks on macOS) and
-        // preopen the real directory directly at the guest path cctz expects, so
-        // absl's FindTimeZoneByName works without in-sandbox symlink traversal.
-        if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
-            builder.env("TZDIR", "/usr/share/zoneinfo");
-            // Best-effort: the required "/" preopen below also covers zoneinfo,
-            // so failing to preopen it directly is tolerable and discarded.
-            #[allow(
-                clippy::let_underscore_must_use,
-                reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
-            )]
-            let _ = builder.preopened_dir(&real, "/usr/share/zoneinfo", FsPerms::ReadOnly);
+        // Time zone database provisioning for the analyzer (cctz resolves named
+        // zones under `TZDIR`), split by platform:
+        // - Windows always gets the bundled database (see `bundled_tzdb_dir`):
+        //   the host has no /usr/share/zoneinfo at all, and its absence made
+        //   every analyze call trap (cctz aborts with wasm `unreachable` when
+        //   the database is unreachable).
+        // - unix defaults to the host's own database (the arm below), honoring
+        //   locally-modified zoneinfo; the `bundled-tzdb` feature opts into the
+        //   hermetic bundled database so every host analyzes the same tz data.
+        #[cfg(any(windows, feature = "bundled-tzdb"))]
+        {
+            builder.env("TZDIR", GUEST_TZDIR);
+            let tzdir = match bundled_tzdb_dir() {
+                Ok(dir) => Some(PathBuf::from(dir)),
+                Err(error) => {
+                    // Last resort — the previous unix behavior: preopen the
+                    // host's own database so unix setups keep working when the
+                    // temp dir cannot be written.
+                    eprintln!("googlesql: {error}; falling back to host {GUEST_TZDIR}");
+                    std::fs::canonicalize(GUEST_TZDIR).ok()
+                }
+            };
+            if let Some(dir) = tzdir {
+                // Best-effort: the required "/" preopen below also covers the tz
+                // directory, so failing to preopen it directly is tolerable and
+                // discarded.
+                #[allow(
+                    clippy::let_underscore_must_use,
+                    reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
+                )]
+                let _ = builder.preopened_dir(dir, GUEST_TZDIR, FsPerms::ReadOnly);
+            }
+        }
+        #[cfg(all(unix, not(feature = "bundled-tzdb")))]
+        {
+            // Resolve the host tz database (may be a chain of symlinks on
+            // macOS) and preopen the real directory directly at the guest path
+            // cctz expects, so absl's FindTimeZoneByName works without
+            // in-sandbox symlink traversal.
+            if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
+                builder.env("TZDIR", "/usr/share/zoneinfo");
+                // Best-effort: the required "/" preopen below also covers
+                // zoneinfo, so failing to preopen it directly is tolerable and
+                // discarded.
+                #[allow(
+                    clippy::let_underscore_must_use,
+                    reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
+                )]
+                let _ = builder.preopened_dir(&real, "/usr/share/zoneinfo", FsPerms::ReadOnly);
+            }
         }
         let wasi = builder
             .preopened_dir("/", "/", FsPerms::ReadOnly)
