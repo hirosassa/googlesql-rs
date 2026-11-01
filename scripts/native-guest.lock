@@ -9,14 +9,14 @@
 # regenerating from the same inputs yields the same digest.
 #
 # Generated from:
-#   googlesql.wasm  v0.3.4  (the SHA-pinned module resolved by build.rs)
-#   wasm2rs         a5e0502ac691c87769ed08a813646bb8b0d7fbe9
+#   googlesql.wasm  v0.4.0  (the SHA-pinned module resolved by build.rs)
+#   wasm2rs         v0.2.0 (5d3e4d47e75add758bfeb38a7967b7d78aec8f55)
 #
 # When either input moves, regenerate, update CONTENT_SHA256 (and RELEASE_TAG /
 # TARBALL_URL), and republish with .github/workflows/release-native-guest.yaml.
-WASM_VERSION=v0.3.4
-WASM2RS_REF=a5e0502ac691c87769ed08a813646bb8b0d7fbe9
-CONTENT_SHA256=3684479940f5cb03088d500e36159bbf54be9fcfb94b844e89992cb0a3721b0c
-RELEASE_TAG=native-guest-v0.3.4-a5e0502
+WASM_VERSION=v0.4.0
+WASM2RS_REF=5d3e4d47e75add758bfeb38a7967b7d78aec8f55
+CONTENT_SHA256=436152c3ffbc33b26d47370b7efb4eb4f89858a0b33750f7df25ef15f35f612e
+RELEASE_TAG=native-guest-v0.4.0-5d3e4d4
 TARBALL_NAME=native-guest.tar.gz
-TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.3.4-a5e0502/native-guest.tar.gz
+TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.4.0-5d3e4d4/native-guest.tar.gz

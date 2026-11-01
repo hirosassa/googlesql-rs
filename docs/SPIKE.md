@@ -1,6 +1,6 @@
 # Spike: measuring the host ABI of googlesql.wasm
 
-Target artifact: `googlesql.wasm` (13.9MB) from `goccy/googlesql-wasm` release **v0.3.4**
+Target artifact: `googlesql.wasm` (14.0MB) from `goccy/googlesql-wasm` release **v0.4.0**
 Reference implementation: `googlesql_wazero.go` (the wazero host glue, ~340k lines) from the same release.
 
 ## Conclusion: Option A (prebuilt wasm + a Rust WASM runtime) is feasible; the biggest risk (the C++ `env` functions) is resolved
