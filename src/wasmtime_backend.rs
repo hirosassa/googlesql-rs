@@ -392,14 +392,14 @@ mod tests {
     }
 
     /// Repeated RPCs to the same `(svc, mid)` resolve the export exactly once, and
-    /// a distinct `(svc, mid)` adds its own entry. `NewParserOptions` (svc699/mid0)
+    /// a distinct `(svc, mid)` adds its own entry. `NewParserOptions` (svc700/mid0)
     /// and `NewLanguageOptions` (svc678/mid0) both take an empty request, so they
     /// exercise the cache without any request marshaling.
     #[test]
     fn call_rpc_caches_typed_export_per_svc_mid() {
-        const SVC_PARSER_OPTIONS: i32 = 699;
+        const SVC_PARSER_OPTIONS: i32 = 700;
         const MID_NEW_PARSER_OPTIONS: i32 = 0;
-        const SVC_LANGUAGE_OPTIONS: i32 = 678;
+        const SVC_LANGUAGE_OPTIONS: i32 = 679;
         const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 
         let mut inst = WasmtimeInstance::new().expect("instantiate instance");

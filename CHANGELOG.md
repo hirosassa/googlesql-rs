@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bundled `googlesql.wasm` updated from goccy/googlesql-wasm v0.3.4 to v0.4.0,
+  and the native guest is now generated with wasm2rs v0.2.0.
+  - v0.4.0 exports `LenientFormatSql` and `FormatterOptions`, which shifts the
+    wasm ABI: every service id from 634 up moves by one, and the free-function
+    method ids after `FormatSql` (the parser entry points and `Unparse`) move by
+    one. The internal ids were updated to match; there is no public API change.
+  - The prebuilt `native-ffi` cdylib is republished from the new inputs.
+  - `LenientFormatSql` is not exposed yet: the v0.4.0 wasm returns an empty
+    response for it (also reproducible with the upstream Go bindings).
+
 ## [0.4.0] - 2026-08-16
 
 ### Changed

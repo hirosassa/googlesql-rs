@@ -32,7 +32,7 @@ mod dispatch {
 }
 
 /// Host imports the transpiled module leaves to us: the C++ runtime `env`
-/// symbols plus two WASI functions wasm2rs did not wire natively.
+/// symbols (wasm2rs wires every WASI function natively since v0.2.0).
 ///
 /// Zero-sized: it carries no state. `alloc`/`free`/memory live on the
 /// `Instance`, not here, so an import method cannot touch guest memory — the
@@ -45,10 +45,17 @@ struct HostImports;
     reason = "a C++ throw cannot be unwound through native Rust; trapping matches the wasmtime env stub"
 )]
 impl guest::Imports for HostImports {
+    fn import0(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import1(&mut self, _a0: i32) -> i32 {
+        0
+    }
     // `__cxa_throw`: terminate, mirroring the wasmtime stub that returns a trap.
     fn import2(&mut self, _a0: i32, _a1: i32, _a2: i32) {
         panic!("C++ exception thrown in wasm (env::__cxa_throw)");
     }
+    fn import3(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) {}
 
     // `wasmify::callback_invoke`: no callbacks are registered, so 0 = "no handler".
     fn import4(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i64 {
@@ -57,13 +64,6 @@ impl guest::Imports for HostImports {
 
     // All remaining imports return the zero value of their result type, matching
     // the wasmtime `env` stubs (`__cxa_allocate_exception` included: 0).
-    fn import0(&mut self, _a0: i32) -> i32 {
-        0
-    }
-    fn import1(&mut self, _a0: i32) -> i32 {
-        0
-    }
-    fn import3(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) {}
     fn import5(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
@@ -95,38 +95,90 @@ impl guest::Imports for HostImports {
         0
     }
     fn import15(&mut self, _a0: i32, _a1: i32) {}
-    fn import16(&mut self, _a0: i32) -> i32 {
+    fn import16(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
-    fn import17(&mut self, _a0: i32) -> i32 {
-        0
-    }
+    fn import17(&mut self, _a0: i32, _a1: i32, _a2: i32) {}
     fn import18(&mut self, _a0: i32) -> i32 {
         0
     }
-    fn import19(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+    fn import19(
+        &mut self,
+        _a0: i32,
+        _a1: i32,
+        _a2: i32,
+        _a3: i32,
+        _a4: i32,
+        _a5: i32,
+        _a6: i32,
+        _a7: i32,
+        _a8: i32,
+    ) -> i32 {
         0
     }
-    fn import20(&mut self, _a0: i32) {}
-    fn import21(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32, _a5: i32) -> i32 {
+    fn import20(&mut self, _a0: i32, _a1: i32) {}
+    fn import21(&mut self, _a0: i32) -> i32 {
         0
     }
     fn import22(&mut self, _a0: i32) {}
-    fn import23(&mut self, _a0: i32) -> i32 {
+    fn import23(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32, _a5: i32) -> i32 {
         0
     }
-    fn import24(&mut self, _a0: i32) -> i32 {
+    fn import24(&mut self, _a0: i32) {}
+    fn import25(&mut self, _a0: i32) -> i32 {
         0
     }
-    fn import25(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
+    fn import26(&mut self, _a0: i32) -> i32 {
         0
     }
-    // `fd_fdstat_set_flags`: report success.
+    fn import27(&mut self, _a0: i32, _a1: i32) {}
+    fn import28(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+        0
+    }
+    fn import29(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import30(&mut self, _a0: i32, _a1: i32) -> i32 {
+        0
+    }
     fn import31(&mut self, _a0: i32, _a1: i32) -> i32 {
         0
     }
-    // `poll_oneoff`: report success.
-    fn import38(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i32 {
+    fn import32(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import33(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import34(&mut self, _a0: i32, _a1: i32) -> i32 {
+        0
+    }
+    fn import35(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import36(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import37(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import38(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) {}
+    fn import39(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i32 {
+        0
+    }
+    fn import40(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+        0
+    }
+    fn import41(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
+        0
+    }
+    fn import42(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import43(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import44(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
 }
@@ -142,8 +194,8 @@ pub struct NativeInstance {
 
 impl NativeInstance {
     /// Constructs the guest and runs its two-stage initialization, matching the
-    /// wasmtime backend: `_initialize` (func41, WASI-reactor / C++ global ctors)
-    /// then `wasm_init` (func15885, whose returned status is ignored there too).
+    /// wasmtime backend: `_initialize` (func60, WASI-reactor / C++ global ctors)
+    /// then `wasm_init` (func15923, whose returned status is ignored there too).
     ///
     /// The preopen root is "/" — the same read-only filesystem guarantee the
     /// wasmtime backend gives (it preopens "/"). The analyzer's `AnalyzerOptions`
@@ -153,22 +205,22 @@ impl NativeInstance {
     /// under wasmtime. Without it the guest traps when cctz's read is refused.
     pub(crate) fn new() -> Result<Self, Error> {
         let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
-        instance.func41();
-        let _status: i32 = instance.func15885();
+        instance.func60();
+        let _status: i32 = instance.func15923();
         Ok(Self { instance })
     }
 }
 
 impl GuestInstance for NativeInstance {
-    // `wasm_alloc` (func42) and `wasm_free` (func43): u32<->i32 is a pure
+    // `wasm_alloc` (func61) and `wasm_free` (func62): u32<->i32 is a pure
     // reinterpretation of the same 32 bits (guest pointers, not values), so
     // `cast_signed`/`cast_unsigned` are exact and avoid a lossy `as`.
     fn alloc(&mut self, len: u32) -> Result<u32, Error> {
-        Ok(self.instance.func42(len.cast_signed()).cast_unsigned())
+        Ok(self.instance.func61(len.cast_signed()).cast_unsigned())
     }
 
     fn free(&mut self, ptr: u32) -> Result<(), Error> {
-        self.instance.func43(ptr.cast_signed());
+        self.instance.func62(ptr.cast_signed());
         Ok(())
     }
 

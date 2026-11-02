@@ -18,16 +18,16 @@ use sha2::{Digest, Sha256};
 /// Version and integrity metadata for the bundled googlesql.wasm (goccy/googlesql-wasm).
 /// Only referenced by the wasmtime backend's build steps.
 #[cfg(feature = "wasmtime")]
-const WASM_SHA256: &str = "5f14b3a74a9bb4e333b03e8420b11b633a1b77379053f02e44235abed08ae407";
+const WASM_SHA256: &str = "0751f79c143bde851b8c8f4963dbd55d30aa626f63ef4ba3669656241ef57a05";
 #[cfg(feature = "wasmtime")]
 const WASM_URL: &str =
-    "https://github.com/goccy/googlesql-wasm/releases/download/v0.3.4/googlesql.wasm";
+    "https://github.com/goccy/googlesql-wasm/releases/download/v0.4.0/googlesql.wasm";
 
 /// The Release tag whose prebuilt `guest-ffi` cdylib assets this build expects.
 /// Bumped whenever the cdylib is regenerated (new googlesql.wasm or a change to
 /// the `native/guest-ffi` wrapper), in lockstep with the pins in
 /// `build_helpers.rs`.
-const NATIVE_FFI_TAG: &str = "native-ffi-v0.1.1";
+const NATIVE_FFI_TAG: &str = "native-ffi-v0.1.2";
 
 /// Base URL the per-target `guest-ffi` cdylib assets are downloaded from; the
 /// full URL is `{base}/{tag}/{asset}`. Overridable via `GUEST_FFI_URL_BASE`

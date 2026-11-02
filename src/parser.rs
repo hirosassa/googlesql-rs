@@ -1,11 +1,11 @@
 //! High-level API for the GoogleSQL parser.
 //!
 //! Call chain (svc/mid values from `docs/SPIKE.md`):
-//! NewParserOptions(699,0) → ParseStatement(0,10) → ParserOutput.Node(700,3)
-//! → Unparse(0,12). All acquired handles are released after use.
+//! NewParserOptions(700,0) → ParseStatement(0,11) → ParserOutput.Node(701,3)
+//! → Unparse(0,13). All acquired handles are released after use.
 //!
 //! Semicolon-separated scripts run through a second chain that drives
-//! ParseNextStatement(0,8) with a ParseResumeLocation(695,2) until the
+//! ParseNextStatement(0,9) with a ParseResumeLocation(696,2) until the
 //! `at_end_of_input` flag is set.
 
 use crate::ast::AstNode;
@@ -14,24 +14,24 @@ use crate::pb;
 use crate::runtime::Module;
 
 const SVC_PARSER: i32 = 0;
-const MID_PARSE_STATEMENT: i32 = 10;
-const MID_PARSE_EXPRESSION: i32 = 6;
-const MID_PARSE_TYPE: i32 = 11;
-const MID_PARSE_SCRIPT: i32 = 9;
-const MID_PARSE_NEXT_STATEMENT: i32 = 8;
-const MID_PARSE_NEXT_SCRIPT_STATEMENT: i32 = 7;
-const MID_UNPARSE: i32 = 12;
+const MID_PARSE_STATEMENT: i32 = 11;
+const MID_PARSE_EXPRESSION: i32 = 7;
+const MID_PARSE_TYPE: i32 = 12;
+const MID_PARSE_SCRIPT: i32 = 10;
+const MID_PARSE_NEXT_STATEMENT: i32 = 9;
+const MID_PARSE_NEXT_SCRIPT_STATEMENT: i32 = 8;
+const MID_UNPARSE: i32 = 13;
 
-const SVC_PARSER_OPTIONS: i32 = 699;
+const SVC_PARSER_OPTIONS: i32 = 700;
 const MID_NEW_PARSER_OPTIONS: i32 = 0;
 const MID_SET_PARSER_LANGUAGE_OPTIONS: i32 = 11;
 const MID_FREE_PARSER_OPTIONS: i32 = 12;
 
-const SVC_PARSER_OUTPUT: i32 = 700;
+const SVC_PARSER_OUTPUT: i32 = 701;
 const MID_PARSER_OUTPUT_NODE: i32 = 3;
 const MID_FREE_PARSER_OUTPUT: i32 = 9;
 
-const SVC_PARSE_RESUME_LOCATION: i32 = 695;
+const SVC_PARSE_RESUME_LOCATION: i32 = 696;
 const MID_NEW_PARSE_RESUME_LOCATION_FROM_STRING: i32 = 2;
 const MID_FREE_PARSE_RESUME_LOCATION: i32 = 14;
 

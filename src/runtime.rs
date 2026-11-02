@@ -16,7 +16,7 @@ use crate::error::Error;
 use crate::pb;
 
 /// `LanguageOptions` service and method ids (see `spike/wazero.go`).
-const SVC_LANGUAGE_OPTIONS: i32 = 678;
+const SVC_LANGUAGE_OPTIONS: i32 = 679;
 const MID_NEW_LANGUAGE_OPTIONS: i32 = 0;
 const MID_ENABLE_MAXIMUM_LANGUAGE_FEATURES: i32 = 7;
 const MID_SET_SUPPORTS_ALL_STATEMENT_KINDS: i32 = 20;
@@ -671,9 +671,9 @@ impl Module {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code")]
 mod tests {
-    // A `ParserOptions` handle (NewParserOptions = svc699/mid0, freed by mid12)
+    // A `ParserOptions` handle (NewParserOptions = svc700/mid0, freed by mid12)
     // is a convenient real handle to exercise the deferred-free machinery.
-    const SVC_PARSER_OPTIONS: i32 = 699;
+    const SVC_PARSER_OPTIONS: i32 = 700;
     const MID_NEW_PARSER_OPTIONS: i32 = 0;
     const MID_FREE_PARSER_OPTIONS: i32 = 12;
 
