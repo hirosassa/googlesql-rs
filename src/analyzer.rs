@@ -1,7 +1,7 @@
 //! High-level API for the GoogleSQL analyzer.
 //!
 //! Call chain (svc/mid values measured from the wazero reference glue):
-//! NewAnalyzerOptions2(554,1) + NewTypeFactory(1419,0) + NewSimpleCatalog(1347,0)
+//! NewAnalyzerOptions2(554,1) + NewTypeFactory(1420,0) + NewSimpleCatalog(1348,0)
 //! → AnalyzeStatement(0,2). All acquired handles are released after use.
 //!
 //! [`Module::analyze_statement`] resolves against an empty catalog;
