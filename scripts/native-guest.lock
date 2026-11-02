@@ -16,7 +16,7 @@
 # TARBALL_URL), and republish with .github/workflows/release-native-guest.yaml.
 WASM_VERSION=v0.4.0
 WASM2RS_REF=5d3e4d47e75add758bfeb38a7967b7d78aec8f55
-CONTENT_SHA256=436152c3ffbc33b26d47370b7efb4eb4f89858a0b33750f7df25ef15f35f612e
+CONTENT_SHA256=fcba720a0b6f8254b1c77693c6605d3cf5a8d6c35040b137d0abddee419a8ab5
 RELEASE_TAG=native-guest-v0.4.0-5d3e4d4
 TARBALL_NAME=native-guest.tar.gz
 TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.4.0-5d3e4d4/native-guest.tar.gz
