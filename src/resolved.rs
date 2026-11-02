@@ -71,7 +71,7 @@ const TYPE_INTERVAL: &str = "INTERVAL";
 
 /// `ResolvedNode` base class: `GetChildNodes` enumerates any node's children and
 /// `IsExpression` reports whether a node carries a resolved type.
-const SVC_RESOLVED_NODE: i32 = 1167;
+const SVC_RESOLVED_NODE: i32 = 1168;
 const MID_GET_CHILD_NODES: i32 = 9;
 const MID_IS_EXPRESSION: i32 = 17;
 /// `GetParseLocationRangeOrNULL` returns the node's `ParseLocationRange`, or a
@@ -79,34 +79,34 @@ const MID_IS_EXPRESSION: i32 = 17;
 const MID_PARSE_LOCATION_RANGE: i32 = 15;
 
 /// `ParseLocationRange`: `Start`/`End` are the range's `ParseLocationPoint`s.
-const SVC_PARSE_LOCATION_RANGE: i32 = 693;
+const SVC_PARSE_LOCATION_RANGE: i32 = 694;
 const MID_RANGE_START: i32 = 13;
 const MID_RANGE_END: i32 = 8;
 
 /// `ResolvedExpr` base class: `Type` is the expression's resolved type.
-const SVC_RESOLVED_EXPR: i32 = 979;
+const SVC_RESOLVED_EXPR: i32 = 980;
 const MID_EXPR_TYPE: i32 = 12;
 
 /// `ResolvedColumnRef`: `Column` is the `ResolvedColumn` the reference reads;
 /// `IsCorrelated` is whether it reads a column from an enclosing query.
-const SVC_RESOLVED_COLUMN_REF: i32 = 849;
+const SVC_RESOLVED_COLUMN_REF: i32 = 850;
 const MID_COLUMN_REF_COLUMN: i32 = 8;
 const MID_COLUMN_REF_IS_CORRELATED: i32 = 9;
 
 /// `ResolvedCast`: `Expr` is the operand being cast; its resolved type is the
 /// cast's source type, while the cast node's own type is the target type.
-const SVC_RESOLVED_CAST: i32 = 829;
+const SVC_RESOLVED_CAST: i32 = 830;
 const MID_CAST_EXPR: i32 = 8;
 const MID_CAST_RETURN_NULL_ON_ERROR: i32 = 17;
 
 /// `ResolvedParameter`: `Name` is the query parameter's name (e.g. `p` for `@p`).
-const SVC_RESOLVED_PARAMETER: i32 = 1185;
+const SVC_RESOLVED_PARAMETER: i32 = 1186;
 const MID_PARAMETER_NAME: i32 = 9;
 
 /// `ResolvedJoinScan`: `JoinType` is the join's kind, as a
 /// `ResolvedJoinScanEnums::JoinType` (1=INNER, 2=LEFT, 3=RIGHT, 4=FULL);
 /// `HasUsing` is whether the join was written with a `USING` clause.
-const SVC_RESOLVED_JOIN_SCAN: i32 = 1123;
+const SVC_RESOLVED_JOIN_SCAN: i32 = 1124;
 const MID_JOIN_TYPE: i32 = 12;
 const MID_JOIN_SCAN_HAS_USING: i32 = 9;
 const JOIN_TYPE_INNER: i32 = 1;
@@ -115,14 +115,14 @@ const JOIN_TYPE_RIGHT: i32 = 3;
 const JOIN_TYPE_FULL: i32 = 4;
 
 /// `ResolvedOrderByItem`: `IsDescending` is whether the item sorts `DESC`.
-const SVC_RESOLVED_ORDER_BY_ITEM: i32 = 1177;
+const SVC_RESOLVED_ORDER_BY_ITEM: i32 = 1178;
 const MID_IS_DESCENDING: i32 = 11;
 
 /// `ResolvedSetOperationScan`: `OpType` is the set operator, as a
 /// `ResolvedSetOperationScanEnums::SetOperationType` (1=UNION ALL,
 /// 2=UNION DISTINCT, 3=INTERSECT ALL, 4=INTERSECT DISTINCT, 5=EXCEPT ALL,
 /// 6=EXCEPT DISTINCT).
-const SVC_RESOLVED_SET_OPERATION_SCAN: i32 = 1261;
+const SVC_RESOLVED_SET_OPERATION_SCAN: i32 = 1262;
 const MID_OP_TYPE: i32 = 16;
 const OP_TYPE_UNION_ALL: i32 = 1;
 const OP_TYPE_UNION_DISTINCT: i32 = 2;
@@ -133,18 +133,18 @@ const OP_TYPE_EXCEPT_DISTINCT: i32 = 6;
 
 /// `ResolvedAggregateScanBase`: `GroupByList` holds the `ResolvedComputedColumn`s
 /// that define the query's grouping keys.
-const SVC_RESOLVED_AGGREGATE_SCAN_BASE: i32 = 730;
+const SVC_RESOLVED_AGGREGATE_SCAN_BASE: i32 = 731;
 const MID_GROUP_BY_LIST: i32 = 21;
 const MID_AGGREGATE_LIST: i32 = 15;
 
 /// `ResolvedComputedColumn`: `Column` is the `ResolvedColumn` it defines.
-const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 853;
+const SVC_RESOLVED_COMPUTED_COLUMN: i32 = 854;
 const MID_COMPUTED_COLUMN_COLUMN: i32 = 8;
 
 /// `ResolvedColumnDefinition`: `Name` is the declared column name (the `a` in
 /// `CREATE TABLE t (a INT64)`), returned as a string; `Type` is the declared
 /// column type, returned as a `Type` handle rendered via `Type::TypeName`.
-const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 844;
+const SVC_RESOLVED_COLUMN_DEFINITION: i32 = 845;
 const MID_COLUMN_DEFINITION_NAME: i32 = 14;
 const MID_COLUMN_DEFINITION_TYPE: i32 = 27;
 
@@ -153,7 +153,7 @@ const MID_COLUMN_DEFINITION_TYPE: i32 = 27;
 /// 3=OR REPLACE, 4=OR UPDATE); a plain `INSERT` is `OR ERROR`.
 /// `InsertColumnList` is the list of target `ResolvedColumn`s the statement
 /// writes into (the `(id)` in `INSERT INTO t (id) ...`).
-const SVC_RESOLVED_INSERT_STMT: i32 = 1121;
+const SVC_RESOLVED_INSERT_STMT: i32 = 1122;
 const MID_INSERT_MODE: i32 = 26;
 const MID_INSERT_COLUMN_LIST: i32 = 23;
 const INSERT_MODE_OR_ERROR: i32 = 1;
@@ -166,7 +166,7 @@ const INSERT_MODE_OR_UPDATE: i32 = 4;
 /// `ResolvedCreateStatementEnums::CreateMode` (1=CREATE, 2=CREATE OR REPLACE,
 /// 3=CREATE IF NOT EXISTS). The method is on the base service, so it is invoked
 /// with the concrete statement's handle (an upcast).
-const SVC_RESOLVED_CREATE_STATEMENT: i32 = 905;
+const SVC_RESOLVED_CREATE_STATEMENT: i32 = 906;
 const MID_CREATE_MODE: i32 = 9;
 const CREATE_MODE_DEFAULT: i32 = 1;
 const CREATE_MODE_OR_REPLACE: i32 = 2;
@@ -177,7 +177,7 @@ const CREATE_MODE_IF_NOT_EXISTS: i32 = 3;
 /// 2=UPDATE, 3=DELETE); `MatchType` is which rows it applies to, as a
 /// `ResolvedMergeWhenEnums::MatchType` (1=MATCHED, 2=NOT MATCHED BY SOURCE,
 /// 3=NOT MATCHED BY TARGET).
-const SVC_RESOLVED_MERGE_WHEN: i32 = 1159;
+const SVC_RESOLVED_MERGE_WHEN: i32 = 1160;
 const MID_MERGE_ACTION_TYPE: i32 = 8;
 const MID_MERGE_MATCH_TYPE: i32 = 16;
 const MERGE_ACTION_INSERT: i32 = 1;
@@ -189,14 +189,14 @@ const MERGE_MATCH_NOT_MATCHED_BY_TARGET: i32 = 3;
 
 /// `ResolvedLimitOffsetScan`: `Limit`/`Offset` are the row-count expressions
 /// (each a literal or parameter, or a null handle when the clause is absent).
-const SVC_RESOLVED_LIMIT_OFFSET_SCAN: i32 = 1125;
+const SVC_RESOLVED_LIMIT_OFFSET_SCAN: i32 = 1126;
 const MID_LIMIT: i32 = 9;
 const MID_OFFSET: i32 = 12;
 
 /// `ResolvedSubqueryExpr`: `SubqueryType` is the kind of subquery, as a
 /// `ResolvedSubqueryExprEnums::SubqueryType` (1=SCALAR, 2=ARRAY, 3=EXISTS,
 /// 4=IN). Later values (`LIKE ANY/ALL`) name syntax this wasm build rejects.
-const SVC_RESOLVED_SUBQUERY_EXPR: i32 = 1287;
+const SVC_RESOLVED_SUBQUERY_EXPR: i32 = 1288;
 const MID_SUBQUERY_TYPE: i32 = 31;
 const SUBQUERY_TYPE_SCALAR: i32 = 1;
 const SUBQUERY_TYPE_ARRAY: i32 = 2;
@@ -205,35 +205,35 @@ const SUBQUERY_TYPE_IN: i32 = 4;
 
 /// `ResolvedWithEntry`: `WithQueryName` is the CTE alias (the `t` in
 /// `WITH t AS (...)`), returned as a string.
-const SVC_RESOLVED_WITH_ENTRY: i32 = 1327;
+const SVC_RESOLVED_WITH_ENTRY: i32 = 1328;
 const MID_WITH_QUERY_NAME: i32 = 13;
 
 /// `ResolvedWithRefScan`: `WithQueryName` is the CTE name this scan reads (the
 /// `t` in `... SELECT id FROM t`), returned as a string.
-const SVC_RESOLVED_WITH_REF_SCAN: i32 = 1333;
+const SVC_RESOLVED_WITH_REF_SCAN: i32 = 1334;
 const MID_WITH_REF_SCAN_QUERY_NAME: i32 = 11;
 
 /// `ResolvedLiteral`: `Value` is the constant the literal carries;
 /// `HasExplicitType` is whether its type was stated rather than inferred.
-const SVC_RESOLVED_LITERAL: i32 = 1127;
+const SVC_RESOLVED_LITERAL: i32 = 1128;
 const MID_LITERAL_VALUE: i32 = 17;
 const MID_LITERAL_HAS_EXPLICIT_TYPE: i32 = 9;
 
 /// `ResolvedGetStructField`: `FieldIdx` is the zero-based position of the struct
 /// field this node reads.
-const SVC_RESOLVED_GET_STRUCT_FIELD: i32 = 1025;
+const SVC_RESOLVED_GET_STRUCT_FIELD: i32 = 1026;
 const MID_FIELD_IDX: i32 = 10;
 
 /// `ResolvedArrayScan`: `ElementColumn` is the column each array element is
 /// bound to (the `x` in `UNNEST(...) AS x`); `IsOuter` is whether the scan was
 /// written as a `LEFT JOIN` (keeping input rows with empty arrays).
-const SVC_RESOLVED_ARRAY_SCAN: i32 = 809;
+const SVC_RESOLVED_ARRAY_SCAN: i32 = 810;
 const MID_ARRAY_SCAN_ELEMENT_COLUMN: i32 = 16;
 const MID_ARRAY_SCAN_IS_OUTER: i32 = 21;
 
 /// `Value` (zetasql::Value): scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
-const SVC_VALUE: i32 = 1428;
+const SVC_VALUE: i32 = 1429;
 const MID_VALUE_BOOL: i32 = 110;
 const MID_VALUE_DOUBLE: i32 = 114;
 const MID_VALUE_INT64: i32 = 128;
@@ -252,13 +252,13 @@ const MID_VALUE_NUMERIC: i32 = 141;
 const MID_VALUE_DATETIME: i32 = 113;
 const MID_VALUE_TIME: i32 = 147;
 const MID_VALUE_INTERVAL: i32 = 129;
-const SVC_NUMERIC_VALUE: i32 = 690;
+const SVC_NUMERIC_VALUE: i32 = 691;
 const MID_NUMERIC_APPEND_TO_STRING: i32 = 12;
 const SVC_DATETIME_VALUE: i32 = 612;
 const MID_DATETIME_DEBUG_STRING: i32 = 9;
-const SVC_TIME_VALUE: i32 = 1414;
+const SVC_TIME_VALUE: i32 = 1415;
 const MID_TIME_DEBUG_STRING: i32 = 9;
-const SVC_INTERVAL_VALUE: i32 = 674;
+const SVC_INTERVAL_VALUE: i32 = 675;
 const MID_INTERVAL_APPEND_TO_STRING: i32 = 3;
 // Composite value accessors: a nested child's type is not known statically, so
 // the reader routes on `TypeKind` and recurses into the element values.
@@ -271,7 +271,7 @@ const MID_VALUE_RANGE_END: i32 = 118;
 const MID_VALUE_JSON_STRING: i32 = 135;
 const MID_VALUE_TYPE: i32 = 148;
 const MID_VALUE_TYPE_KIND: i32 = 149;
-const SVC_STRUCT_TYPE: i32 = 1388;
+const SVC_STRUCT_TYPE: i32 = 1389;
 const MID_STRUCT_TYPE_FIELD: i32 = 17;
 // `TypeKind` enum values used to route composite values.
 const TYPE_KIND_ARRAY: i32 = 17;
@@ -281,50 +281,50 @@ const TYPE_KIND_RANGE: i32 = 30;
 
 /// `ResolvedFunctionCallBase`: `Function` is the catalog function the call
 /// invokes, and `Function::Name` is its name (e.g. `$add`, `lower`).
-const SVC_RESOLVED_FUNCTION_CALL_BASE: i32 = 1004;
+const SVC_RESOLVED_FUNCTION_CALL_BASE: i32 = 1005;
 const MID_FUNCTION: i32 = 19;
 const MID_ARGUMENT_LIST_SIZE: i32 = 14;
-const SVC_FUNCTION: i32 = 636;
+const SVC_FUNCTION: i32 = 637;
 const MID_FUNCTION_NAME: i32 = 30;
 
 /// `ResolvedNonScalarFunctionCallBase`: `Distinct` is whether the aggregate or
 /// analytic call applies DISTINCT (e.g. `COUNT(DISTINCT x)`). Scalar
 /// `ResolvedFunctionCall`s do not inherit this base.
-const SVC_RESOLVED_NON_SCALAR_FUNCTION_CALL_BASE: i32 = 1169;
+const SVC_RESOLVED_NON_SCALAR_FUNCTION_CALL_BASE: i32 = 1170;
 const MID_DISTINCT: i32 = 8;
 
 /// `ResolvedScan` base class: `ColumnList` is the scan's referenced columns.
-const SVC_RESOLVED_SCAN: i32 = 1251;
+const SVC_RESOLVED_SCAN: i32 = 1252;
 const MID_SCAN_COLUMN_LIST: i32 = 12;
 
 /// `ResolvedTableScan`: `Table` is the catalog table the scan reads, and
 /// `Table::Name` is its catalog name (the physical table, not any query alias).
 /// `ColumnIndexList` maps each scanned column to its ordinal in the base table.
-const SVC_RESOLVED_TABLE_SCAN: i32 = 1295;
+const SVC_RESOLVED_TABLE_SCAN: i32 = 1296;
 const MID_TABLE_SCAN_TABLE: i32 = 32;
 const MID_TABLE_SCAN_ALIAS: i32 = 10;
 const MID_TABLE_SCAN_COLUMN_INDEX_LIST: i32 = 11;
-const SVC_TABLE: i32 = 1406;
+const SVC_TABLE: i32 = 1407;
 const MID_TABLE_NAME: i32 = 9;
 
 /// `ResolvedQueryStmt`: `OutputColumnList` is the query's output columns;
 /// `IsValueTable` is whether the query produces a value table (one unnamed
 /// value per row rather than a named-column row).
-const SVC_RESOLVED_QUERY_STMT: i32 = 1211;
+const SVC_RESOLVED_QUERY_STMT: i32 = 1212;
 const MID_OUTPUT_COLUMN_LIST: i32 = 12;
 const MID_QUERY_STMT_IS_VALUE_TABLE: i32 = 9;
 
-const SVC_RESOLVED_OUTPUT_COLUMN: i32 = 1181;
+const SVC_RESOLVED_OUTPUT_COLUMN: i32 = 1182;
 const MID_OUTPUT_COLUMN_GET_COLUMN: i32 = 8;
 const MID_OUTPUT_COLUMN_NAME: i32 = 9;
 
-const SVC_RESOLVED_COLUMN: i32 = 839;
+const SVC_RESOLVED_COLUMN: i32 = 840;
 const MID_COLUMN_ID: i32 = 8;
 const MID_COLUMN_NAME: i32 = 9;
 const MID_COLUMN_TABLE_NAME: i32 = 11;
 const MID_COLUMN_TYPE: i32 = 13;
 
-const SVC_TYPE: i32 = 1417;
+const SVC_TYPE: i32 = 1418;
 const MID_TYPE_NAME: i32 = 81;
 /// `ProductMode::PRODUCT_INTERNAL` (1): the fixed mode for rendering the type
 /// name that literal-value dispatch matches on, independent of display mode.

@@ -49,9 +49,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # The wasm2rs revision to transpile with. `main` tracks the latest generator;
-  # pin to a SHA here if a specific generator output must be reproduced.
-  WASM2RS_REF: main
+  # The wasm2rs revision to transpile with, pinned to a release commit so the generator output is reproducible;
+  # bump it (and scripts/native-guest.lock) together when moving wasm2rs.
+  WASM2RS_REF: 5d3e4d47e75add758bfeb38a7967b7d78aec8f55 # v0.2.0
   # The fetch step writes the pinned wasm here; every cargo step reads it so the
   # native dispatch and the wasmtime engine compare the identical module.
   GOOGLESQL_WASM: /tmp/googlesql.wasm

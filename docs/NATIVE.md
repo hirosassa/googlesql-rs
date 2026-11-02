@@ -45,7 +45,7 @@ differential tests demand byte-for-byte agreement.
 ## Reproduction
 
 Prerequisites: a `wasm2rs` checkout (default `../wasm2rs`), `wasm-tools` on `PATH`, and
-the SHA-pinned `spike/googlesql.wasm` (or any `GOOGLESQL_WASM`-pointed v0.3.4 wasm — it
+the SHA-pinned `spike/googlesql.wasm` (or any `GOOGLESQL_WASM`-pointed v0.4.0 wasm — it
 must match the SHA in `build.rs` so native and wasmtime compare the same module).
 
 ```bash
@@ -84,7 +84,7 @@ cargo build --release --features native
 ```
 
 `scripts/native-guest.lock` pins the two inputs the tree is generated from — the
-SHA-pinned `googlesql.wasm` (`v0.3.4`, via `build.rs`) and a `wasm2rs` commit — together
+SHA-pinned `googlesql.wasm` (`v0.4.0`, via `build.rs`) and a `wasm2rs` commit — together
 with `CONTENT_SHA256`, the canonical hash of the generated files
 (`scripts/native-guest-digest.sh`). wasm2rs output is deterministic, so that digest is
 reproducible from the pins; the fetch script verifies the extracted tree against it, so

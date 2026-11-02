@@ -37,7 +37,7 @@ mod dispatch {
 }
 
 /// Host imports the transpiled module leaves unresolved: the C++ runtime `env`
-/// stubs plus two WASI functions wasm2rs did not wire natively.
+/// stubs (wasm2rs wires every WASI function natively since v0.2.0).
 ///
 /// A hand-kept mirror of `src/native_backend.rs`'s `HostImports`: it must match
 /// that impl exactly (zero result values; a C++ throw traps), so the native-ffi
@@ -51,21 +51,21 @@ mod dispatch {
 pub struct HostImports;
 
 impl guest::Imports for HostImports {
-    fn import2(&mut self, _a0: i32, _a1: i32, _a2: i32) {
-        // env::__cxa_throw — a C++ exception. It cannot be resumed; trap here and
-        // let the FFI boundary's catch_unwind turn it into an error status.
-        panic!("C++ exception thrown in wasm (env::__cxa_throw)");
-    }
-    fn import4(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i64 {
-        0 // wasmify::callback_invoke — no host callbacks are registered.
-    }
     fn import0(&mut self, _a0: i32) -> i32 {
         0
     }
     fn import1(&mut self, _a0: i32) -> i32 {
         0
     }
+    // env::__cxa_throw — a C++ exception. It cannot be resumed; trap here and
+    // let the FFI boundary's catch_unwind turn it into an error status.
+    fn import2(&mut self, _a0: i32, _a1: i32, _a2: i32) {
+        panic!("C++ exception thrown in wasm (env::__cxa_throw)");
+    }
     fn import3(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) {}
+    fn import4(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i64 {
+        0 // wasmify::callback_invoke — no host callbacks are registered.
+    }
     fn import5(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
@@ -97,36 +97,90 @@ impl guest::Imports for HostImports {
         0
     }
     fn import15(&mut self, _a0: i32, _a1: i32) {}
-    fn import16(&mut self, _a0: i32) -> i32 {
+    fn import16(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
-    fn import17(&mut self, _a0: i32) -> i32 {
-        0
-    }
+    fn import17(&mut self, _a0: i32, _a1: i32, _a2: i32) {}
     fn import18(&mut self, _a0: i32) -> i32 {
         0
     }
-    fn import19(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+    fn import19(
+        &mut self,
+        _a0: i32,
+        _a1: i32,
+        _a2: i32,
+        _a3: i32,
+        _a4: i32,
+        _a5: i32,
+        _a6: i32,
+        _a7: i32,
+        _a8: i32,
+    ) -> i32 {
         0
     }
-    fn import20(&mut self, _a0: i32) {}
-    fn import21(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32, _a5: i32) -> i32 {
+    fn import20(&mut self, _a0: i32, _a1: i32) {}
+    fn import21(&mut self, _a0: i32) -> i32 {
         0
     }
     fn import22(&mut self, _a0: i32) {}
-    fn import23(&mut self, _a0: i32) -> i32 {
+    fn import23(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32, _a5: i32) -> i32 {
         0
     }
-    fn import24(&mut self, _a0: i32) -> i32 {
+    fn import24(&mut self, _a0: i32) {}
+    fn import25(&mut self, _a0: i32) -> i32 {
         0
     }
-    fn import25(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
+    fn import26(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import27(&mut self, _a0: i32, _a1: i32) {}
+    fn import28(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+        0
+    }
+    fn import29(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import30(&mut self, _a0: i32, _a1: i32) -> i32 {
         0
     }
     fn import31(&mut self, _a0: i32, _a1: i32) -> i32 {
         0
     }
-    fn import38(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i32 {
+    fn import32(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import33(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import34(&mut self, _a0: i32, _a1: i32) -> i32 {
+        0
+    }
+    fn import35(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import36(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import37(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import38(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) {}
+    fn import39(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32) -> i32 {
+        0
+    }
+    fn import40(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) -> i32 {
+        0
+    }
+    fn import41(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
+        0
+    }
+    fn import42(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import43(&mut self, _a0: i32) -> i32 {
+        0
+    }
+    fn import44(&mut self, _a0: i32, _a1: i32, _a2: i32) -> i32 {
         0
     }
 }
@@ -165,8 +219,8 @@ pub extern "C" fn guest_new(out: *mut *mut Inst) -> i32 {
         // Root the single WASI preopen at `/`, matching the wasmtime backend, so
         // the analyzer's absolute-path timezone reads resolve.
         let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
-        instance.func41(); // WASI reactor / C++ global constructors.
-        let _status: i32 = instance.func15885(); // wasm_init (status ignored, as in native).
+        instance.func60(); // WASI reactor / C++ global constructors.
+        let _status: i32 = instance.func15923(); // wasm_init (status ignored, as in native).
         let boxed = Box::into_raw(Box::new(instance));
         // SAFETY: `out` is a caller-provided writable out-pointer.
         unsafe {
@@ -201,7 +255,7 @@ pub extern "C" fn guest_alloc(inst: *mut Inst, len: u32, out: *mut u32) -> i32 {
     guard(|| {
         // SAFETY: `inst` is a live instance for the duration of the call.
         let inst = unsafe { &mut *inst };
-        let ptr = inst.func42(len.cast_signed()).cast_unsigned();
+        let ptr = inst.func61(len.cast_signed()).cast_unsigned();
         // SAFETY: `out` is a caller-provided writable out-pointer.
         unsafe {
             *out = ptr;
@@ -219,7 +273,7 @@ pub extern "C" fn guest_free(inst: *mut Inst, ptr: u32) -> i32 {
     guard(|| {
         // SAFETY: `inst` is a live instance for the duration of the call.
         let inst = unsafe { &mut *inst };
-        inst.func43(ptr.cast_signed());
+        inst.func62(ptr.cast_signed());
         OK
     })
 }

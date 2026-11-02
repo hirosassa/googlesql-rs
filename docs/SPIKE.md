@@ -1,6 +1,6 @@
 # Spike: measuring the host ABI of googlesql.wasm
 
-Target artifact: `googlesql.wasm` (13.9MB) from `goccy/googlesql-wasm` release **v0.3.4**
+Target artifact: `googlesql.wasm` (14.0MB) from `goccy/googlesql-wasm` release **v0.4.0**
 Reference implementation: `googlesql_wazero.go` (the wazero host glue, ~340k lines) from the same release.
 
 ## Conclusion: Option A (prebuilt wasm + a Rust WASM runtime) is feasible; the biggest risk (the C++ `env` functions) is resolved
@@ -86,15 +86,15 @@ Each method's `(serviceID, methodID)` and the request/response field numbers are
 
 | API | svc | mid | req | resp |
 |---|---|---|---|---|
-| `NewParserOptions()` | 699 | 0 | (none) | f1=uint64 (ParserOptions handle) |
-| `ParseStatement(sql, opts)` | 0 | 10 | f1=string(sql), f2=handle(opts, nil allowed) | f2=handle(ParserOutput) |
-| `ParserOutput.Node()` | 700 | 3 | f1=handle(ParserOutput) | f1=handle(ASTNode) |
-| `ParserOutput.Statement()` | 700 | 6 | f1=handle(ParserOutput) | f1=handle(ASTStatementNode) |
-| `Unparse(node)` | 0 | 12 | f1=handle(ASTNode) | f1=**string** (canonical SQL) |
+| `NewParserOptions()` | 700 | 0 | (none) | f1=uint64 (ParserOptions handle) |
+| `ParseStatement(sql, opts)` | 0 | 11 | f1=string(sql), f2=handle(opts, nil allowed) | f2=handle(ParserOutput) |
+| `ParserOutput.Node()` | 701 | 3 | f1=handle(ParserOutput) | f1=handle(ASTNode) |
+| `ParserOutput.Statement()` | 701 | 6 | f1=handle(ParserOutput) | f1=handle(ASTStatementNode) |
+| `Unparse(node)` | 0 | 13 | f1=handle(ASTNode) | f1=**string** (canonical SQL) |
 
 - Parse errors are carried in response field #15 (string) → the `invokeMethod` equivalent detects it and returns `Result::Err`.
 - **Destructor rule**: each type does `invoke(serviceID of that type, destructor_mid, handle(ptr))`.
-  Example: `ParserOptions.free` = `invoke(699, 12, handle)`.
+  Example: `ParserOptions.free` = `invoke(700, 12, handle)`.
   → In Rust, call this from each handle type's `Drop`. The exact destructor mids for ParserOutput etc. are grepped during implementation.
 
 ### E2E smoke test (first TDD goal)
@@ -120,8 +120,8 @@ A string result is easy to assert on, making it ideal for the final smoke test. 
 - decode: response field15 → error / handle (direct varint or submessage) / string (field1)
 
 ### Handle destruction (for `Drop`; measured)
-- `ParserOptions` destroy = `invoke(699, 12, append_handle(1, ptr))`
-- `ParserOutput` destroy = `invoke(700,  9, append_handle(1, ptr))`
+- `ParserOptions` destroy = `invoke(700, 12, append_handle(1, ptr))`
+- `ParserOutput` destroy = `invoke(701,  9, append_handle(1, ptr))`
 - AST nodes are arena-owned, so they need no individual destruction (destroying ParserOutput frees the whole tree)
 
 ## Implemented (as of this spike)
@@ -134,8 +134,8 @@ A string result is easy to assert on, making it ideal for the final smoke test. 
 
 1. `src/pb.rs` — minimal encode/decode for the wire-format above (TDD: start from unit tests)
 2. `src/parser.rs` — `Module::parse_statement(sql)`:
-   NewParserOptions(699,0) → ParseStatement(0,10) → ParserOutput.Node(700,3) → Unparse(0,12)
-   → canonical SQL string. Destroy the acquired handles (699,12 / 700,9).
+   NewParserOptions(700,0) → ParseStatement(0,11) → ParserOutput.Node(701,3) → Unparse(0,13)
+   → canonical SQL string. Destroy the acquired handles (700,12 / 701,9).
 3. `tests/parser.rs` — `"SELECT 1"` parse→unparse returns canonical SQL / `"SELECT FROM"` returns `Err`
 
 ## Rust crate layout (MVP)

@@ -16,8 +16,8 @@
 /// locally built cdylib) works. A target absent from this table has no prebuilt
 /// and must be built from source.
 const NATIVE_FFI_SHA256: &[(&str, &str)] = &[
-    ("aarch64-apple-darwin", "89ad681581bcb260edf000daed419139dafadc164fab157e69eeef91813af2f8"),
-    ("x86_64-unknown-linux-gnu", "ea4a0f23050edeb14d9ac1527d505465eb6466ff87a2a65b6bd1b434f1bd0aeb"),
+    ("aarch64-apple-darwin", "b804ca2342dc3375f54a68d5b592b5a72dc5c999c7be3f21e6b08b4a542170e7"),
+    ("x86_64-unknown-linux-gnu", "6b633fece42110bba9aaf4137e70007409a526afd25cde55772c99f5327caa29"),
 ];
 
 /// Placeholder pin for a target whose prebuilt cdylib has not been published
