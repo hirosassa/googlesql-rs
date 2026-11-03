@@ -199,15 +199,16 @@ fn tzdb_cache_root() -> PathBuf {
 ///
 /// A previous run's untrusted or incomplete `<version>` directory (a crash
 /// from before this staging existed, or a temp cleaner that deleted zones but
-/// kept the marker) is torn down first; a racing reader that trusted such a
-/// directory a moment earlier can still observe the teardown — the
-/// alternative, rewriting in place, truncates files under readers on every
-/// rebuild.
+/// kept the marker) is torn down first — but only after re-checking
+/// completeness, so a tree a concurrent process renamed into place while we
+/// staged ours survives instead (that race is lost the same way as a failed
+/// rename: the winner's tree is kept). The alternative, rewriting in place,
+/// truncates files under readers on every rebuild.
 ///
 /// Every directory is created without group/world write permission (see
-/// [`create_tz_dirs`]); the zone files themselves keep umask-derived modes,
-/// which only matters under a permissive umask on a shared unix temp
-/// directory.
+/// [`create_tz_dirs`]) and every file with explicit `0644` (see
+/// [`write_tzdb_file`]), so even a permissive umask cannot leave the cache
+/// modifiable by others.
 #[cfg(any(windows, feature = "bundled-tzdb"))]
 fn write_bundled_tzdb(root: &Path) -> Result<PathBuf, String> {
     let dir = root.join(tzdb::VERSION);
@@ -252,20 +253,28 @@ fn write_bundled_tzdb(root: &Path) -> Result<PathBuf, String> {
         let bytes = tzdb::raw_tz_by_name(name).ok_or_else(|| {
             format!("materialize the bundled tz database: zone {name} missing from bundled data")
         })?;
-        std::fs::write(&zone, bytes).map_err(|error| {
+        write_tzdb_file(&zone, bytes).map_err(|error| {
             format!(
                 "materialize the bundled tz database: write {}: {error}",
                 zone.display()
             )
         })?;
     }
-    std::fs::write(staged.join(TZDB_MARKER), tzdb::VERSION).map_err(|error| {
+    write_tzdb_file(&staged.join(TZDB_MARKER), tzdb::VERSION.as_bytes()).map_err(|error| {
         format!(
             "materialize the bundled tz database: write {}/{TZDB_MARKER}: {error}",
             staged.display()
         )
     })?;
-    // Make room for the rename over an untrusted or incomplete leftover.
+    // Make room for the rename over an untrusted or incomplete leftover —
+    // unless a concurrent process renamed a complete tree into `dir` while we
+    // staged ours: tearing that down would fail readers that just trusted it,
+    // and the race is lost exactly like a failed rename below — keep the
+    // winner's tree and drop the one staged here.
+    if tzdb_dir_complete(&dir) {
+        remove_dir_best_effort(&staged);
+        return Ok(dir);
+    }
     remove_dir_best_effort(&dir);
     match std::fs::rename(&staged, &dir) {
         Ok(()) => Ok(dir),
@@ -361,6 +370,34 @@ fn create_tz_dirs(dir: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn create_tz_dirs(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
+}
+
+/// Writes one file of the tz database (a zone, or the marker) with explicit
+/// `0644` permissions.
+///
+/// Unix `fs::write` creates files as `0666 & !umask`, so a permissive umask
+/// (e.g. 000 in some containers) would leave the zones rewritable by other
+/// users even inside `0755` directories. `create_new` never truncates an
+/// existing file, and like [`create_tz_dirs`] the mode is umask-masked but
+/// `0o644` carries no group/world-write bits, so the umask can only tighten
+/// it. Compiled only under `bundled-tzdb`, matching its callers.
+#[cfg(all(unix, feature = "bundled-tzdb"))]
+fn write_tzdb_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Windows twin of [`write_tzdb_file`]: `%TEMP%` is per-user and
+/// ACL-controlled, so plain `fs::write` needs no pinned mode.
+#[cfg(windows)]
+fn write_tzdb_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 /// Preopens `host_dir` read-only at [`GUEST_TZDIR`], best-effort.
@@ -836,6 +873,26 @@ mod tzdb_tests {
         assert!(
             rebuilt.join("UTC").is_file(),
             "the rebuilt directory must contain every zone again"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// Zone files are written with explicit `0644`, so a permissive umask
+    /// cannot leave them modifiable by other users of a shared temp directory.
+    #[cfg(unix)]
+    #[test]
+    fn zone_files_are_not_group_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_root("zone-file-modes");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        let mode = std::fs::metadata(dir.join("UTC"))
+            .expect("UTC zone metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o022,
+            0,
+            "zone files must not be group/world-writable"
         );
         remove_dir_best_effort(&root);
     }
