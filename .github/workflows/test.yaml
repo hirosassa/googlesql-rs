@@ -64,6 +64,39 @@ jobs:
       - name: Run cargo test
         run: cargo test --release --no-default-features --features wasmtime
 
+  # The `bundled-tzdb` code path (windows-only by cfg, unix-only by feature)
+  # is invisible to the job above: on linux `cfg(windows)` never fires and the
+  # plain `wasmtime` feature set leaves the whole block uncompiled. Lint and
+  # test it explicitly here, exercising the hermetic tz provisioning —
+  # materialization, idempotent re-runs, half-written-dir rebuilds — through
+  # the feature that compiles it on linux.
+  bundled-tzdb:
+    name: Bundled tz database (wasmtime + bundled-tzdb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Run cargo clippy
+        run: cargo clippy --all-targets --no-default-features --features wasmtime,bundled-tzdb -- -D warnings -W clippy::nursery
+
+      - name: Run cargo test
+        run: cargo test --release --no-default-features --features wasmtime,bundled-tzdb
+
+      - name: Run cargo doc
+        # Same rationale as the build job's doc step, for the feature set that
+        # actually compiles the bundled-tzdb block: its doc comments carry
+        # intra-doc links ([`tzdb_dir_complete`], [`create_tz_dirs`], ...) that
+        # rustdoc only resolves when the block is compiled.
+        run: cargo doc --no-deps --no-default-features --features wasmtime,bundled-tzdb
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
   coverage:
     runs-on: ubuntu-latest
     steps:

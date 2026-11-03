@@ -13,6 +13,9 @@
 //! only on the engine-agnostic [`GuestInstance`] trait.
 
 use std::collections::HashMap;
+use std::path::Path;
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use wasmtime::{
@@ -113,6 +116,303 @@ pub struct WasmtimeInstance {
     export_cache: HashMap<String, TypedFunc<(u32, u32), u64>>,
 }
 
+/// Guest path at which the tz database is exposed inside the sandbox.
+///
+/// cctz (reached through absl's `FindTimeZoneByName` on the analyzer path)
+/// resolves named zones under `TZDIR`; this is the path the wasm build expects.
+const GUEST_TZDIR: &str = "/usr/share/zoneinfo";
+
+/// Version marker file in a materialized tz database directory.
+///
+/// Written last, containing the tz database version: a directory whose marker
+/// is absent or stale is a half-written leftover from a crashed process and is
+/// rebuilt from scratch.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+const TZDB_MARKER: &str = ".complete";
+
+/// Materialized bundled tz database, resolved at most once per process.
+///
+/// `Err` caches why materialization failed, so repeated instance construction
+/// neither retries a doomed write nor loses the reason.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+static BUNDLED_TZDB: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+
+/// Returns the directory of the bundled tz database, materializing it on first
+/// use.
+///
+/// Time zone policy for the analyzer (cctz resolves named zones under `TZDIR`):
+/// Windows always bundles — its hosts have no `/usr/share/zoneinfo` at all, and
+/// that absence made every analyze call trap (wasm `unreachable` in cctz) —
+/// while unix defaults to the host database, whose local modifications are
+/// honored, and opts into this hermetic path with the `bundled-tzdb` feature:
+/// every host then analyzes the same tz data, whatever it ships locally.
+///
+/// Concretely, the [`tzdb`](https://docs.rs/tzdb) crate ships the IANA database
+/// in the binary; this writes each zone out as a TZif file under
+/// `<cache root>/<tz version>/` once per version (guarded by the
+/// [`TZDB_MARKER`] file) and the directory is preopened at the guest path.
+///
+/// The error names the materialization action so the caller can decide how to
+/// survive it; see `WasmtimeInstance::new` for the unix host-database fallback
+/// and the windows hard failure.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn bundled_tzdb_dir() -> Result<&'static Path, &'static str> {
+    BUNDLED_TZDB
+        .get_or_init(|| write_bundled_tzdb(&tzdb_cache_root()))
+        .as_ref()
+        .map(PathBuf::as_path)
+        .map_err(String::as_str)
+}
+
+/// Root under which materialized tz database versions are cached.
+///
+/// Windows `%TEMP%` is already per-user and access-controlled by the OS. Unix
+/// `/tmp` is shared and world-writable, so a predictable path there could be
+/// pre-created by another local user with crafted zones; the per-UID suffix
+/// plus the ownership check in [`dir_is_private`] keep the cache ours alone.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn tzdb_cache_root() -> PathBuf {
+    #[cfg(unix)]
+    let user = {
+        #[allow(
+            unsafe_code,
+            reason = "getuid is a pure libc query with no preconditions; std exposes no uid API"
+        )]
+        let uid = unsafe { libc::getuid() };
+        format!("-{uid}")
+    };
+    // Windows needs no suffix: `%TEMP%` is per-user already.
+    #[cfg(windows)]
+    let user = "";
+    std::env::temp_dir().join(format!("googlesql-tzdb{user}"))
+}
+
+/// Writes every bundled zone out as a TZif file under `<root>/<tz version>/`
+/// and returns that directory.
+///
+/// The tree is built under a `.tmp-<pid>` sibling and renamed into place, so a
+/// concurrent reader sees either no directory at all or a fully written one —
+/// never a zone file truncated mid-write by a rebuilding process (plain
+/// `fs::write` would truncate in place). The marker is written last inside the
+/// staged tree, and a writer that loses the rename race to a concurrent one
+/// keeps the winner's tree, re-verified via [`tzdb_dir_complete`].
+///
+/// A previous run's untrusted or incomplete `<version>` directory (a crash
+/// from before this staging existed, or a temp cleaner that deleted zones but
+/// kept the marker) is torn down first — but only after re-checking
+/// completeness, so a tree a concurrent process renamed into place while we
+/// staged ours survives instead (that race is lost the same way as a failed
+/// rename: the winner's tree is kept). The alternative, rewriting in place,
+/// truncates files under readers on every rebuild.
+///
+/// Every directory is created without group/world write permission (see
+/// [`create_tz_dirs`]) and every file with explicit `0644` (see
+/// [`write_tzdb_file`]), so even a permissive umask cannot leave the cache
+/// modifiable by others.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn write_bundled_tzdb(root: &Path) -> Result<PathBuf, String> {
+    let dir = root.join(tzdb::VERSION);
+    if tzdb_dir_complete(&dir) {
+        return Ok(dir);
+    }
+    // The cache root must be ours alone before anything is read from or
+    // written into it: unix `/tmp` is world-writable and another user could
+    // have pre-created this predictable path (windows `%TEMP%` is per-user,
+    // where [`dir_is_private`] always passes).
+    create_tz_dirs(root).map_err(|error| {
+        format!(
+            "materialize the bundled tz database: create {}: {error}",
+            root.display()
+        )
+    })?;
+    if !dir_is_private(root) {
+        return Err(format!(
+            "materialize the bundled tz database: cache root {} is owned by another user \
+             or group/world-writable; not loading a possibly planted tz database",
+            root.display()
+        ));
+    }
+    // Staged tree of this process; a leftover from an earlier crashed run of
+    // this pid (or a recycled pid) would make the write below incomplete.
+    let staged = root.join(format!("{}.tmp-{}", tzdb::VERSION, std::process::id()));
+    remove_dir_best_effort(&staged);
+    create_tz_dirs(&staged).map_err(|error| {
+        format!(
+            "materialize the bundled tz database: create {}: {error}",
+            staged.display()
+        )
+    })?;
+    for &name in tzdb::TZ_NAMES {
+        let zone = staged.join(name);
+        create_tz_dirs(zone.parent().unwrap_or(&staged)).map_err(|error| {
+            format!(
+                "materialize the bundled tz database: create {}: {error}",
+                zone.display()
+            )
+        })?;
+        let bytes = tzdb::raw_tz_by_name(name).ok_or_else(|| {
+            format!("materialize the bundled tz database: zone {name} missing from bundled data")
+        })?;
+        write_tzdb_file(&zone, bytes).map_err(|error| {
+            format!(
+                "materialize the bundled tz database: write {}: {error}",
+                zone.display()
+            )
+        })?;
+    }
+    write_tzdb_file(&staged.join(TZDB_MARKER), tzdb::VERSION.as_bytes()).map_err(|error| {
+        format!(
+            "materialize the bundled tz database: write {}/{TZDB_MARKER}: {error}",
+            staged.display()
+        )
+    })?;
+    // Make room for the rename over an untrusted or incomplete leftover —
+    // unless a concurrent process renamed a complete tree into `dir` while we
+    // staged ours: tearing that down would fail readers that just trusted it,
+    // and the race is lost exactly like a failed rename below — keep the
+    // winner's tree and drop the one staged here.
+    if tzdb_dir_complete(&dir) {
+        remove_dir_best_effort(&staged);
+        return Ok(dir);
+    }
+    remove_dir_best_effort(&dir);
+    match std::fs::rename(&staged, &dir) {
+        Ok(()) => Ok(dir),
+        // Lost a race with a concurrent writer whose tree is complete: it is
+        // equivalent to ours, so accept it and drop the one staged here.
+        Err(_) if tzdb_dir_complete(&dir) => {
+            remove_dir_best_effort(&staged);
+            Ok(dir)
+        }
+        Err(error) => Err(format!(
+            "materialize the bundled tz database: rename {} -> {}: {error}",
+            staged.display(),
+            dir.display()
+        )),
+    }
+}
+
+/// Whether `dir` holds a complete materialization of the bundled tz database
+/// for the running tzdb version — and, on unix, is ours alone.
+///
+/// The marker proves a writer finished (it is written last inside the staged
+/// tree); the representative `UTC` zone additionally guards against a temp
+/// cleaner deleting zone files while leaving the marker, which would otherwise
+/// bring the analyzer trap right back.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn tzdb_dir_complete(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(TZDB_MARKER)).is_ok_and(|done| done == tzdb::VERSION)
+        && dir.join("UTC").is_file()
+        && dir_is_private(dir)
+}
+
+/// Whether `dir` is owned by the current user and not writable by anyone else.
+///
+/// Only meaningful where the temp directory is shared: unix `/tmp`. Windows
+/// `%TEMP%` is per-user and access-controlled by the OS, so everything
+/// reachable there is trusted outright.
+// Compiled only under `bundled-tzdb` (matching its callers): plain unix
+// wasmtime builds never materialize a cache and do not pull `libc`.
+#[cfg(all(unix, feature = "bundled-tzdb"))]
+fn dir_is_private(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
+        #[allow(
+            unsafe_code,
+            reason = "getuid is a pure libc query with no preconditions; std exposes no uid API"
+        )]
+        let uid = unsafe { libc::getuid() };
+        uid == meta.uid() && meta.mode() & 0o022 == 0
+    })
+}
+
+/// Windows twin of [`dir_is_private`]: `%TEMP%` is per-user and ACL-controlled,
+/// so there is nothing to verify.
+#[cfg(windows)]
+const fn dir_is_private(_dir: &Path) -> bool {
+    true
+}
+
+/// Removes `dir` recursively, best-effort.
+///
+/// Every call site discards the outcome deliberately: a stale staged tree
+/// only costs disk space, and a failed teardown of an untrusted leftover
+/// surfaces at the next real filesystem operation instead.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn remove_dir_best_effort(dir: &Path) {
+    #[allow(
+        clippy::let_underscore_must_use,
+        reason = "best-effort cleanup; a real failure surfaces at the next operation"
+    )]
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Creates `dir` and any missing parents without group/world write permission.
+///
+/// Unix directory creation applies the umask to `0777`, so a permissive umask
+/// (e.g. 000 in some containers) would leave the cache group/world-writable —
+/// both failing our own trust check on the next run and letting others rewrite
+/// zones. `mode(0o755)` is still umask-masked, but since `0o755` carries no
+/// group/world-write bits, the umask can only tighten it, never loosen it.
+/// Windows needs nothing beyond `create_dir_all`: `%TEMP%` is per-user and
+/// ACL-controlled.
+// Compiled only under `bundled-tzdb`, matching its callers (see `dir_is_private`).
+#[cfg(all(unix, feature = "bundled-tzdb"))]
+fn create_tz_dirs(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o755)
+        .recursive(true)
+        .create(dir)
+}
+
+/// Windows twin of [`create_tz_dirs`].
+#[cfg(windows)]
+fn create_tz_dirs(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+/// Writes one file of the tz database (a zone, or the marker) with explicit
+/// `0644` permissions.
+///
+/// Unix `fs::write` creates files as `0666 & !umask`, so a permissive umask
+/// (e.g. 000 in some containers) would leave the zones rewritable by other
+/// users even inside `0755` directories. `create_new` never truncates an
+/// existing file, and like [`create_tz_dirs`] the mode is umask-masked but
+/// `0o644` carries no group/world-write bits, so the umask can only tighten
+/// it. Compiled only under `bundled-tzdb`, matching its callers.
+#[cfg(all(unix, feature = "bundled-tzdb"))]
+fn write_tzdb_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Windows twin of [`write_tzdb_file`]: `%TEMP%` is per-user and
+/// ACL-controlled, so plain `fs::write` needs no pinned mode.
+#[cfg(windows)]
+fn write_tzdb_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+/// Preopens `host_dir` read-only at [`GUEST_TZDIR`], best-effort.
+///
+/// The required `/` preopen in [`WasmtimeInstance::new`] already covers the tz
+/// directory, so a failure here is tolerable and discarded; the direct preopen
+/// only hands the guest an unambiguous handle at the path cctz expects.
+fn preopen_tzdir(builder: &mut WasiCtxBuilder, host_dir: &Path) {
+    #[allow(
+        clippy::let_underscore_must_use,
+        reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
+    )]
+    let _ = builder.preopened_dir(host_dir, GUEST_TZDIR, FsPerms::ReadOnly);
+}
+
 impl WasmtimeInstance {
     /// Loads the shared compiled wasm and returns a fully initialized instance.
     pub(crate) fn new() -> Result<Self, Error> {
@@ -126,18 +426,50 @@ impl WasmtimeInstance {
 
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stderr();
-        // Resolve the host tz database (may be a chain of symlinks on macOS) and
-        // preopen the real directory directly at the guest path cctz expects, so
-        // absl's FindTimeZoneByName works without in-sandbox symlink traversal.
-        if let Ok(real) = std::fs::canonicalize("/usr/share/zoneinfo") {
-            builder.env("TZDIR", "/usr/share/zoneinfo");
-            // Best-effort: the required "/" preopen below also covers zoneinfo,
-            // so failing to preopen it directly is tolerable and discarded.
-            #[allow(
-                clippy::let_underscore_must_use,
-                reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
-            )]
-            let _ = builder.preopened_dir(&real, "/usr/share/zoneinfo", FsPerms::ReadOnly);
+        // Time zone database provisioning for the analyzer (cctz resolves named
+        // zones under `TZDIR`), split by platform:
+        // - Windows always gets the bundled database (see `bundled_tzdb_dir`):
+        //   the host has no /usr/share/zoneinfo at all, and its absence made
+        //   every analyze call trap (cctz aborts with wasm `unreachable` when
+        //   the database is unreachable). There is no host database to fall
+        //   back to, so a failed materialization fails construction with the
+        //   real reason instead of letting the analyzer trap opaquely later.
+        // - unix defaults to the host's own database (the arm below), honoring
+        //   locally-modified zoneinfo; the `bundled-tzdb` feature opts into the
+        //   hermetic bundled database, keeping a host-database fallback for
+        //   when its cache directory cannot be written.
+        #[cfg(any(windows, feature = "bundled-tzdb"))]
+        {
+            builder.env("TZDIR", GUEST_TZDIR);
+            match bundled_tzdb_dir() {
+                Ok(dir) => preopen_tzdir(&mut builder, dir),
+                #[cfg(unix)]
+                Err(error) => {
+                    // Hermetic tz is an opt-in on unix: the host's own database
+                    // (when present) still beats failing instantiation.
+                    eprintln!("googlesql: {error}; falling back to host {GUEST_TZDIR}");
+                    if let Ok(real) = std::fs::canonicalize(GUEST_TZDIR) {
+                        preopen_tzdir(&mut builder, &real);
+                    }
+                }
+                #[cfg(windows)]
+                Err(error) => {
+                    return Err(Error::Instantiate(format!(
+                        "tz database provisioning: {error}"
+                    )));
+                }
+            }
+        }
+        #[cfg(all(unix, not(feature = "bundled-tzdb")))]
+        {
+            // Resolve the host tz database (may be a chain of symlinks on
+            // macOS) and preopen the real directory directly at the guest path
+            // cctz expects, so absl's FindTimeZoneByName works without
+            // in-sandbox symlink traversal.
+            if let Ok(real) = std::fs::canonicalize(GUEST_TZDIR) {
+                builder.env("TZDIR", GUEST_TZDIR);
+                preopen_tzdir(&mut builder, &real);
+            }
         }
         let wasi = builder
             .preopened_dir("/", "/", FsPerms::ReadOnly)
@@ -426,5 +758,172 @@ mod tests {
             2,
             "a different (svc, mid) must add its own cache entry"
         );
+    }
+}
+
+#[cfg(all(test, any(windows, feature = "bundled-tzdb")))]
+#[allow(clippy::expect_used, reason = "test code")]
+mod tzdb_tests {
+    use super::{TZDB_MARKER, remove_dir_best_effort, tzdb_dir_complete, write_bundled_tzdb};
+
+    /// A private cache root per test (parallel tests in one binary share a
+    /// pid, so the test name carries the isolation), cleared before use.
+    fn test_root(test: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir()
+            .join("googlesql-tzdb-tests")
+            .join(format!("{test}-{}", std::process::id()));
+        remove_dir_best_effort(&root);
+        root
+    }
+
+    /// Nested zone names (`America/Argentina/...`) materialize as real TZif
+    /// files under subdirectories of the version directory, not flattened or
+    /// skipped.
+    #[test]
+    fn nested_zone_names_materialize() {
+        assert!(
+            tzdb::TZ_NAMES.contains(&"America/Argentina/Buenos_Aires"),
+            "the chosen probe must exist in the bundled database"
+        );
+        let root = test_root("nested");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        let bytes = std::fs::read(dir.join("America/Argentina/Buenos_Aires"))
+            .expect("nested zone file must exist");
+        assert!(
+            bytes.starts_with(b"TZif"),
+            "nested zone must be a TZif file"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// A complete cache is reused as-is: the second run must not rewrite it.
+    /// Pinned by setting the UTC zone's mtime to a sentinel and checking it
+    /// survived, plus the absence of any staged `.tmp-` sibling afterwards.
+    #[test]
+    fn rerun_is_idempotent() {
+        let root = test_root("idempotent");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        let sentinel = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("UTC"))
+            .and_then(|file| file.set_modified(sentinel))
+            .expect("pin the UTC zone's mtime");
+
+        let dir_again = write_bundled_tzdb(&root).expect("second materialization");
+
+        assert_eq!(
+            dir, dir_again,
+            "the same version directory must be returned"
+        );
+        let mtime = std::fs::metadata(dir.join("UTC"))
+            .and_then(|meta| meta.modified())
+            .expect("UTC zone metadata");
+        assert_eq!(
+            mtime, sentinel,
+            "a complete cache must be reused, not rewritten"
+        );
+        let staged: Vec<_> = std::fs::read_dir(&root)
+            .expect("read cache root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            staged.is_empty(),
+            "no staged tree may be left behind: {staged:?}"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// A directory whose marker is gone (a crash mid-materialization from
+    /// before staging existed) is rebuilt from scratch, marker and all.
+    #[test]
+    fn missing_marker_rebuilds() {
+        let root = test_root("no-marker");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        std::fs::remove_file(dir.join(TZDB_MARKER)).expect("remove the marker");
+
+        let rebuilt = write_bundled_tzdb(&root).expect("rebuild");
+
+        assert_eq!(dir, rebuilt);
+        assert!(
+            tzdb_dir_complete(&rebuilt),
+            "the rebuilt dir must be complete"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// The marker alone is not trusted: a temp cleaner that deleted zone files
+    /// but left the marker must not silently bring the analyzer trap back —
+    /// the representative `UTC` probe rejects the directory and triggers a
+    /// full rebuild.
+    #[test]
+    fn missing_zone_despite_marker_rebuilds() {
+        let root = test_root("missing-zone");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        std::fs::remove_file(dir.join("UTC")).expect("remove the UTC zone");
+
+        assert!(
+            !tzdb_dir_complete(&dir),
+            "a directory without UTC must not count as complete"
+        );
+        let rebuilt = write_bundled_tzdb(&root).expect("rebuild");
+
+        assert!(
+            rebuilt.join("UTC").is_file(),
+            "the rebuilt directory must contain every zone again"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// Zone files are written with explicit `0644`, so a permissive umask
+    /// cannot leave them modifiable by other users of a shared temp directory.
+    #[cfg(unix)]
+    #[test]
+    fn zone_files_are_not_group_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_root("zone-file-modes");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        let mode = std::fs::metadata(dir.join("UTC"))
+            .expect("UTC zone metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o022,
+            0,
+            "zone files must not be group/world-writable"
+        );
+        remove_dir_best_effort(&root);
+    }
+
+    /// A group/world-writable version directory at this predictable cache path
+    /// is not trusted on unix (another local user could have planted it);
+    /// materialization replaces it with an owner-restricted one.
+    #[cfg(unix)]
+    #[test]
+    fn group_writable_dir_is_rebuilt() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_root("group-writable");
+        let dir = write_bundled_tzdb(&root).expect("first materialization");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o0777))
+            .expect("make the version directory world-writable");
+
+        assert!(
+            !tzdb_dir_complete(&dir),
+            "a group/world-writable directory must not count as complete"
+        );
+        let rebuilt = write_bundled_tzdb(&root).expect("rebuild");
+
+        let mode = std::fs::metadata(&rebuilt)
+            .expect("rebuilt metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o022,
+            0,
+            "the rebuilt directory must not be group/world-writable"
+        );
+        remove_dir_best_effort(&root);
     }
 }
