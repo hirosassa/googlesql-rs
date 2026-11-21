@@ -5,6 +5,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
 
   # GitHub Actions used by the workflows in .github/workflows.
@@ -15,6 +17,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     # Batch all action bumps into a single PR to reduce review churn.
     groups:
