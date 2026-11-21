@@ -208,7 +208,7 @@ impl Module {
     ))]
     pub fn new() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
-            crate::native_backend::NativeInstance::new()?,
+            crate::native_backend::NativeInstance::new(),
         )))
     }
 
@@ -228,7 +228,7 @@ impl Module {
     #[cfg(feature = "native")]
     pub fn new_native() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
-            crate::native_backend::NativeInstance::new()?,
+            crate::native_backend::NativeInstance::new(),
         )))
     }
 

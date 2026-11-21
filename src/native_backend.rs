@@ -213,11 +213,11 @@ impl NativeInstance {
     /// under `/usr/share/zoneinfo` (and may consult `/etc/localtime`); rooting the
     /// single WASI preopen at "/" lets those absolute reads resolve, exactly as
     /// under wasmtime. Without it the guest traps when cctz's read is refused.
-    pub(crate) fn new() -> Result<Self, Error> {
+    pub(crate) fn new() -> Self {
         let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
         instance.func60();
         let _status: i32 = instance.func15923();
-        Ok(Self { instance })
+        Self { instance }
     }
 }
 
