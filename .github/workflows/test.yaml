@@ -20,7 +20,7 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
 
       - name: Install ${{ matrix.rust }}
         id: toolchain
@@ -30,7 +30,7 @@ jobs:
           echo "rustc=$(rustc -V | sed 's/[^a-zA-Z0-9._-]/-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Rotate the cache key on the exact rustc build. Nightly's compiler
           # changes daily and Cargo fingerprints embed its commit, so a single
@@ -74,13 +74,13 @@ jobs:
     name: Bundled tz database (wasmtime + bundled-tzdb)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Run cargo clippy
         run: cargo clippy --all-targets --no-default-features --features wasmtime,bundled-tzdb -- -D warnings -W clippy::nursery
@@ -100,13 +100,13 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         run: rustup toolchain install stable --component llvm-tools-preview
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # rust-cache prunes target/ before saving and does not understand the
           # custom target/llvm-cov-target directory, so it silently drops the
@@ -117,7 +117,7 @@ jobs:
           save-if: true
 
       - name: Cache llvm-cov instrumented target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache@v6.1.0
         with:
           # Persist the instrumented wasmtime/cranelift tree wholesale so only
           # changed workspace crates recompile. Key on Cargo.lock AND Cargo.toml
@@ -129,7 +129,7 @@ jobs:
           restore-keys: llvm-cov-target-
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@v2.90.7
         with:
           tool: cargo-llvm-cov
 
@@ -141,7 +141,7 @@ jobs:
         run: cargo llvm-cov --workspace --no-default-features --features wasmtime --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: lcov.info
           fail_ci_if_error: true

@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout googlesql-rs
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           path: googlesql-rs
 
@@ -43,7 +43,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Checkout wasm2rs (pinned ref)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           repository: hirosassa/wasm2rs
           ref: ${{ steps.pins.outputs.wasm2rs_ref }}
@@ -55,7 +55,7 @@ jobs:
           rustup default stable
 
       - name: Install wasm-tools
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@v2.90.7
         with:
           tool: wasm-tools
 

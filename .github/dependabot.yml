@@ -8,8 +8,9 @@ updates:
     open-pull-requests-limit: 10
 
   # GitHub Actions used by the workflows in .github/workflows.
-  # Actions are pinned to a full commit SHA (with a `# vX.Y.Z` comment);
-  # Dependabot bumps the SHA and keeps the comment in sync.
+  # Actions are referenced by tag (`@vX.Y.Z`) and pinned to commit SHAs in
+  # .github/workflows/actions.lock. After a bump, run `gh actions-lock` to
+  # refresh the lockfile (the verify-lockfile workflow enforces this).
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
