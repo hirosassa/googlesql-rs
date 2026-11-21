@@ -4,7 +4,7 @@
 # Usage: scripts/update-wasm.sh vX.Y.Z
 #
 # Downloads the goccy/googlesql-wasm release asset for the requested version,
-# recomputes its SHA256, and rewrites WASM_VERSION / WASM_URL / WASM_SHA256 in
+# recomputes its SHA256, and rewrites WASM_URL / WASM_SHA256 in
 # build.rs. Safe to re-run: passing the current version reproduces the same
 # values and leaves build.rs unchanged.
 set -euo pipefail

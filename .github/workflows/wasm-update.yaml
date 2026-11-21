@@ -31,7 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          current=$(grep -oP 'WASM_VERSION: &str = "\K[^"]+' build.rs)
+          current=$(grep -oP 'googlesql-wasm/releases/download/\K[^/]+' build.rs)
           latest=$(gh release view --repo goccy/googlesql-wasm --json tagName -q .tagName)
           echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"

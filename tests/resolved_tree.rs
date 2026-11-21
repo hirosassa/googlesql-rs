@@ -1049,11 +1049,11 @@ fn table_scan_nodes_list_their_columns() {
         .expect("a ResolvedTableScan node lists its columns");
 
     assert!(
-        columns.contains(&"id".to_string()),
+        columns.iter().any(|c| c == "id"),
         "expected the scan to list `id`, got {columns:?}"
     );
     assert!(
-        columns.contains(&"name".to_string()),
+        columns.iter().any(|c| c == "name"),
         "expected the scan to list `name`, got {columns:?}"
     );
 }
@@ -1479,8 +1479,8 @@ fn multi_key_group_by_lists_every_column() {
     let columns = scan
         .group_by_columns()
         .expect("a ResolvedAggregateScan node lists its group-by columns");
-    assert!(columns.contains(&"id".to_string()), "got {columns:?}");
-    assert!(columns.contains(&"name".to_string()), "got {columns:?}");
+    assert!(columns.iter().any(|c| c == "id"), "got {columns:?}");
+    assert!(columns.iter().any(|c| c == "name"), "got {columns:?}");
 }
 
 #[test]
@@ -2075,7 +2075,7 @@ fn project_scan_reports_its_projected_columns() {
     let columns = project
         .project_columns()
         .expect("a project scan lists its columns");
-    assert!(columns.contains(&"n".to_string()));
+    assert!(columns.iter().any(|c| c == "n"));
 }
 
 #[test]
