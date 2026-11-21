@@ -40,10 +40,12 @@ pub fn append_uint64(buf: &mut Vec<u8>, field: u32, v: u64) {
     append_varint(buf, v);
 }
 
-/// Appends a non-negative int32 field (wire type 0, varint) to `buf`.
+/// Appends an int32 field (wire type 0, varint) to `buf`.
+///
+/// Negative values are sign-extended to 64 bits and use the 10-byte varint
+/// encoding, matching protobuf's `int32`.
 pub fn append_int32(buf: &mut Vec<u8>, field: u32, v: i32) {
-    append_tag(buf, field, 0);
-    append_varint(buf, u64::try_from(v).unwrap_or(0));
+    append_int64(buf, field, i64::from(v));
 }
 
 /// Appends an int64 field (wire type 0, varint) to `buf`.
@@ -111,6 +113,11 @@ fn read_varint(cur: &mut &[u8]) -> Option<u64> {
     loop {
         let (&b, rest) = cur.split_first()?;
         *cur = rest;
+        // The tenth byte only has room for bit 63; any higher payload bit would be
+        // silently truncated by the shift.
+        if shift == 63 && b & 0x7e != 0 {
+            return None;
+        }
         let part = u64::from(b & 0x7f).checked_shl(shift)?;
         result |= part;
         if b & 0x80 == 0 {
@@ -512,10 +519,10 @@ mod tests {
 
     #[test]
     fn int32_field_roundtrip() {
-        for v in [0i32, 1, 127, 128, 1000, i32::MAX, -1] {
+        for v in [0i32, 1, 127, 128, 1000, i32::MAX, -1, i32::MIN] {
             let mut buf = Vec::new();
-            append_int32(&mut buf, 3, v.max(0));
-            assert_eq!(read_int32_at_field(&buf, 3), Some(v.max(0)));
+            append_int32(&mut buf, 3, v);
+            assert_eq!(read_int32_at_field(&buf, 3), Some(v));
         }
         // The int32 representation of -1 (lower 32 bits) must also be readable.
         let mut neg = Vec::new();
@@ -619,6 +626,28 @@ mod tests {
         append_varint(&mut max, u64::MAX);
         assert_eq!(max.len(), 10);
         assert_eq!(read_varint(&mut max.as_slice()), Some(u64::MAX));
+    }
+
+    #[test]
+    fn read_varint_rejects_truncated_tenth_byte() {
+        // The tenth byte may only carry bit 63 (0x01). Higher payload bits would
+        // be silently dropped by the shift, so they must be rejected instead.
+        let mut bytes = [0xFFu8; 10];
+        bytes[9] = 0x7F;
+        assert_eq!(read_varint(&mut &bytes[..]), None);
+        bytes[9] = 0x02;
+        assert_eq!(read_varint(&mut &bytes[..]), None);
+        bytes[9] = 0x01;
+        assert_eq!(read_varint(&mut &bytes[..]), Some(u64::MAX));
+    }
+
+    #[test]
+    fn append_int32_sign_extends_negative_values() {
+        // protobuf int32 encodes negatives as 10-byte sign-extended varints.
+        let mut buf = Vec::new();
+        append_int32(&mut buf, 1, -1);
+        assert_eq!(buf.len(), 1 + 10);
+        assert_eq!(read_int32_at_field(&buf, 1), Some(-1));
     }
 
     #[test]
