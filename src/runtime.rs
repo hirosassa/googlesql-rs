@@ -573,9 +573,7 @@ impl Module {
     /// tracks it and it would leak until the `Store` is dropped. The read error
     /// takes priority over a free error (mirroring [`with_frees`](Module::with_frees)).
     fn finish_response(&mut self, packed: u64) -> Result<Vec<u8>, Error> {
-        let resp_ptr = u32::try_from(packed >> 32).map_err(|e| Error::Memory(e.to_string()))?;
-        let resp_len =
-            u32::try_from(packed & 0xFFFF_FFFF).map_err(|e| Error::Memory(e.to_string()))?;
+        let (resp_ptr, resp_len) = unpack(packed);
         if resp_len == 0 {
             return Ok(Vec::new());
         }
@@ -666,6 +664,15 @@ impl Module {
         self.req_scratch_cap = len;
         Ok(ptr)
     }
+}
+
+/// Splits a guest response word (`ptr << 32 | len`) into `(ptr, len)`.
+const fn unpack(packed: u64) -> (u32, u32) {
+    let [p0, p1, p2, p3, l0, l1, l2, l3] = packed.to_be_bytes();
+    (
+        u32::from_be_bytes([p0, p1, p2, p3]),
+        u32::from_be_bytes([l0, l1, l2, l3]),
+    )
 }
 
 #[cfg(test)]
@@ -770,6 +777,23 @@ mod tests {
             .unwrap_or_else(super::PoisonError::into_inner)
             .live
             .clone()
+    }
+
+    /// `unpack` is the inverse of the guest's `ptr << 32 | len` packing, including
+    /// the extremes where either half saturates its 32 bits.
+    #[test]
+    fn unpack_round_trips_ptr_and_len() {
+        for (ptr, len) in [
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (0xDEAD_BEEF, 0x1234_5678),
+            (u32::MAX, 0),
+            (0, u32::MAX),
+            (u32::MAX, u32::MAX),
+        ] {
+            assert_eq!(super::unpack(pack(ptr, len)), (ptr, len));
+        }
     }
 
     /// A failed `read` of the response buffer must still free that buffer:

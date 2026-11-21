@@ -551,6 +551,18 @@ impl GuestInstance for WasmtimeInstance {
     fn read(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, Error> {
         let offset = usize::try_from(ptr).map_err(|e| Error::Memory(e.to_string()))?;
         let len = usize::try_from(len).map_err(|e| Error::Memory(e.to_string()))?;
+        // Validate against the memory size before sizing the buffer: `len` is
+        // guest-controlled (up to 4 GiB) and a failed allocation aborts instead of
+        // returning an error.
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| Error::Memory("read range overflows usize".into()))?;
+        let mem_len = self.memory.data_size(&self.store);
+        if end > mem_len {
+            return Err(Error::Memory(format!(
+                "read {offset}..{end} out of bounds (memory len {mem_len})"
+            )));
+        }
         let mut buf = vec![0u8; len];
         self.memory
             .read(&self.store, offset, &mut buf)
@@ -758,6 +770,40 @@ mod tests {
             2,
             "a different (svc, mid) must add its own cache entry"
         );
+    }
+
+    /// A read past the end of linear memory must fail with a bounds error before
+    /// any buffer is sized from the guest-supplied `len` (up to 4 GiB), matching
+    /// the native backend instead of relying on the allocator to survive it.
+    #[test]
+    fn read_past_memory_end_is_a_bounds_error() {
+        let mut inst = WasmtimeInstance::new().expect("instantiate instance");
+        let mem_len = inst.memory.data_size(&inst.store);
+        let ptr = u32::try_from(mem_len).expect("memory fits u32") - 4;
+
+        let err = inst.read(ptr, 5).expect_err("one byte past the end");
+        assert!(
+            err.to_string().contains("out of bounds (memory len"),
+            "unexpected error: {err}"
+        );
+        let err = inst.read(0, u32::MAX).expect_err("len far beyond memory");
+        assert!(
+            err.to_string().contains("out of bounds (memory len"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A read ending exactly at the last byte of memory is in bounds.
+    #[test]
+    fn read_ending_at_memory_end_succeeds() {
+        let mut inst = WasmtimeInstance::new().expect("instantiate instance");
+        let mem_len = inst.memory.data_size(&inst.store);
+        let ptr = u32::try_from(mem_len).expect("memory fits u32") - 4;
+
+        let bytes = inst.read(ptr, 4).expect("read up to the last byte");
+        assert_eq!(bytes.len(), 4);
+        let empty = inst.read(u32::try_from(mem_len).expect("fits u32"), 0);
+        assert!(empty.expect("empty read at the end").is_empty());
     }
 }
 
