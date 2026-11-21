@@ -70,6 +70,32 @@ fn check(status: i32, op: &str) -> Result<(), Error> {
     }
 }
 
+/// `guest-ffi`'s out-of-range status (`ERR_MEMORY` in `native/guest-ffi/lib.rs`).
+const ERR_MEMORY: i32 = 1;
+
+/// Allocates `len` zeroed bytes, returning `Error::Memory` instead of aborting
+/// when the allocator refuses. `len` is guest-supplied (up to 4 GiB), so
+/// `vec![0u8; len]` could abort; `try_reserve_exact` + `resize` would be
+/// fallible but touches every page. `alloc_zeroed` is both fallible and lazy
+/// (untouched pages stay uncommitted until the guest bounds check rejects them).
+fn alloc_zeroed_buf(len: usize) -> Result<Vec<u8>, Error> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let layout = std::alloc::Layout::array::<u8>(len).map_err(|e| Error::Memory(e.to_string()))?;
+    // SAFETY: `layout` has non-zero size (`len > 0`).
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err(Error::Memory(format!(
+            "cannot allocate {len} byte read buffer"
+        )));
+    }
+    // SAFETY: `ptr` was allocated by the global allocator with `Layout::array::<u8>(len)`
+    // (align 1, size `len`) and is fully initialized (zeroed), so it is a valid
+    // `Vec<u8>` of length and capacity `len`.
+    Ok(unsafe { Vec::from_raw_parts(ptr, len, len) })
+}
+
 /// The native-ffi engine: owns one staticlib instance for its lifetime.
 pub struct NativeFfiInstance {
     handle: *mut GuestHandle,
@@ -127,9 +153,14 @@ impl GuestInstance for NativeFfiInstance {
 
     fn read(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, Error> {
         let len_usize = usize::try_from(len).map_err(|e| Error::Memory(e.to_string()))?;
-        let mut buf = vec![0u8; len_usize];
+        let mut buf = alloc_zeroed_buf(len_usize)?;
         // SAFETY: `handle` is live; `buf` has exactly `len` writable bytes.
         let status = unsafe { guest_read(self.handle, ptr, len, buf.as_mut_ptr()) };
+        if status == ERR_MEMORY {
+            return Err(Error::Memory(format!(
+                "guest-ffi read of {len} bytes at {ptr} is out of bounds"
+            )));
+        }
         check(status, "read")?;
         Ok(buf)
     }
@@ -159,5 +190,43 @@ impl GuestInstance for NativeFfiInstance {
         };
         check(status, "call_named")?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test code")]
+mod tests {
+    use super::NativeFfiInstance;
+    use crate::backend::GuestInstance;
+    use crate::error::Error;
+
+    /// A real instance plus a `(ptr, len)` block it allocated, so the bounds the
+    /// guest enforces are the ones the test probes.
+    fn instance_with_block(len: u32) -> (NativeFfiInstance, u32) {
+        let mut inst = NativeFfiInstance::new().expect("instantiate native-ffi instance");
+        let ptr = inst.alloc(len).expect("alloc block");
+        (inst, ptr)
+    }
+
+    /// A read far past linear memory (guest-supplied `len` up to 4 GiB) must come
+    /// back as `Error::Memory`, never abort the process on allocation failure.
+    #[test]
+    fn read_out_of_bounds_is_a_memory_error() {
+        let (mut inst, ptr) = instance_with_block(16);
+
+        let err = inst.read(ptr, u32::MAX).expect_err("len far beyond memory");
+        assert!(matches!(err, Error::Memory(_)), "unexpected error: {err}");
+        let err = inst.read(u32::MAX, 1).expect_err("ptr beyond memory");
+        assert!(matches!(err, Error::Memory(_)), "unexpected error: {err}");
+    }
+
+    /// A read of exactly the allocated block round-trips what was written.
+    #[test]
+    fn read_exact_block_round_trips() {
+        let (mut inst, ptr) = instance_with_block(4);
+        inst.write(ptr, &[1, 2, 3, 4]).expect("write block");
+
+        assert_eq!(inst.read(ptr, 4).expect("read block"), [1, 2, 3, 4]);
+        assert!(inst.read(ptr, 0).expect("empty read").is_empty());
     }
 }
