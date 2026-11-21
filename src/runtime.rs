@@ -667,7 +667,7 @@ impl Module {
 }
 
 /// Splits a guest response word (`ptr << 32 | len`) into `(ptr, len)`.
-fn unpack(packed: u64) -> (u32, u32) {
+const fn unpack(packed: u64) -> (u32, u32) {
     let [p0, p1, p2, p3, l0, l1, l2, l3] = packed.to_be_bytes();
     (
         u32::from_be_bytes([p0, p1, p2, p3]),
