@@ -434,7 +434,7 @@ mod tests {
             append_varint(&mut buf, v);
             let mut cur = buf.as_slice();
             assert_eq!(read_varint(&mut cur), Some(v));
-            assert!(cur.is_empty());
+            assert_eq!(cur, <&[u8]>::default());
         }
     }
 
@@ -497,7 +497,7 @@ mod tests {
         // An absent field yields no handles, and unrelated fields are skipped.
         let mut other = Vec::new();
         append_string(&mut other, 2, "ignored");
-        assert!(read_handles_at_field(&other, 1).is_empty());
+        assert_eq!(read_handles_at_field(&other, 1), Vec::<u64>::new());
 
         // A same-numbered field with a different wire type is skipped, not
         // treated as a handle, and the trailing handle is still collected.
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(read_int32s_at_field(&unpacked, 1), vec![7, 8]);
 
         // An absent field yields no values.
-        assert!(read_int32s_at_field(&[], 1).is_empty());
+        assert_eq!(read_int32s_at_field(&[], 1), Vec::<i32>::new());
     }
 
     #[test]

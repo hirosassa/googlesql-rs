@@ -35,22 +35,15 @@ type Backend = (&'static str, fn() -> Module);
 /// native (wasm2rs) engine, and the `native-ffi` (default) engine. Each entry
 /// pairs a label with a constructor, so every group runs the same work through
 /// each backend that is compiled in.
-#[allow(
-    unused_mut,
-    clippy::vec_init_then_push,
-    reason = "which arms are pushed depends on the enabled backend features; a \
-              single-feature build pushes just once, but there is no always-present \
-              backend to seed the vec with"
-)]
 fn backends() -> Vec<Backend> {
-    let mut engines: Vec<Backend> = Vec::new();
-    #[cfg(feature = "wasmtime")]
-    engines.push(("wasmtime", || Module::new().unwrap()));
-    #[cfg(feature = "native")]
-    engines.push(("native", || Module::new_native().unwrap()));
-    #[cfg(feature = "native-ffi")]
-    engines.push(("native-ffi", || Module::new_native_ffi().unwrap()));
-    engines
+    vec![
+        #[cfg(feature = "wasmtime")]
+        ("wasmtime", || Module::new().unwrap()),
+        #[cfg(feature = "native")]
+        ("native", || Module::new_native().unwrap()),
+        #[cfg(feature = "native-ffi")]
+        ("native-ffi", || Module::new_native_ffi().unwrap()),
+    ]
 }
 
 /// A two-table catalog the analyzer benchmarks resolve against.

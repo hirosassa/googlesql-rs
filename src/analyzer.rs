@@ -1815,19 +1815,22 @@ impl Module {
             {
                 Ok(()) => {}
                 Err(e) => {
-                    // Best-effort cleanup of the orphaned column while already
-                    // unwinding `e`; a second failure here cannot be surfaced
-                    // without masking the original error, so it is discarded.
-                    #[allow(
-                        clippy::let_underscore_must_use,
-                        reason = "best-effort free on an error path; original error takes precedence"
-                    )]
-                    let _ = self.invoke(
-                        SVC_SIMPLE_COLUMN,
-                        MID_FREE_SIMPLE_COLUMN,
-                        &pb::handle_arg(column_handle),
-                    );
-                    return Err(e);
+                    // Free the orphaned column while unwinding `e`. The original
+                    // error stays primary; a failed free is reported alongside it
+                    // rather than dropped, since it strands a guest allocation.
+                    let cleanup = self
+                        .invoke(
+                            SVC_SIMPLE_COLUMN,
+                            MID_FREE_SIMPLE_COLUMN,
+                            &pb::handle_arg(column_handle),
+                        )
+                        .and_then(|resp| check_error(&resp));
+                    return Err(match cleanup {
+                        Ok(()) => e,
+                        Err(cleanup_err) => Error::Wasm(format!(
+                            "{e}; additionally failed to free the orphaned column: {cleanup_err}"
+                        )),
+                    });
                 }
             }
         }

@@ -2233,12 +2233,13 @@ fn undeclared_parameter_types_reports_each_parameter_in_order() {
 fn undeclared_parameter_types_is_empty_without_parameters() {
     let mut module = Module::new().unwrap();
 
-    assert!(
+    assert!(matches!(
         module
             .undeclared_parameter_types("SELECT 1", &[])
             .unwrap()
-            .is_empty()
-    );
+            .as_slice(),
+        []
+    ));
 }
 
 #[test]

@@ -9,6 +9,7 @@
 
 use std::env;
 use std::error::Error;
+use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -180,7 +181,9 @@ fn ensure_guest_ffi_dylib(
 ) -> Result<(), Box<dyn Error>> {
     // Reuse a cached copy whose checksum still matches the pin.
     if let Ok(cached) = fs::read(dest)
-        && sha256_hex(&cached) == expected_sha
+        // A hashing failure is a cache miss: the fresh download is verified (and
+        // any failure propagated) by `verify_sha256_against` below.
+        && sha256_hex(&cached).is_ok_and(|h| h == expected_sha)
     {
         return Ok(());
     }
@@ -199,7 +202,9 @@ fn ensure_guest_ffi_dylib(
         fs::read(&compressed).map_err(|e| format!("cannot read {}: {e}", compressed.display()))?;
     // The compressed asset has served its purpose; drop it (best-effort) so it
     // doesn't linger in OUT_DIR beside the decompressed cdylib the cache keys off.
-    fs::remove_file(&compressed).ok();
+    if let Err(e) = fs::remove_file(&compressed) {
+        println!("cargo::warning=cannot remove {}: {e}", compressed.display());
+    }
     let bytes = zstd::decode_all(packed.as_slice())
         .map_err(|e| format!("cannot zstd-decode {asset}: {e}"))?;
     verify_sha256_against(&format!("guest-ffi {target} cdylib"), &bytes, expected_sha)?;
@@ -235,7 +240,7 @@ fn resolve_wasm_bytes(dest: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     }
 
     if let Ok(cached) = fs::read(dest)
-        && sha256_hex(&cached) == WASM_SHA256
+        && sha256_hex(&cached).is_ok_and(|h| h == WASM_SHA256)
     {
         return Ok(cached);
     }
@@ -268,16 +273,20 @@ fn verify_sha256(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
 /// Verifies that the SHA256 of `bytes` equals `expected`, naming `what` in the
 /// mismatch error. Shared by the wasm and prebuilt-cdylib integrity checks.
 fn verify_sha256_against(what: &str, bytes: &[u8], expected: &str) -> Result<(), Box<dyn Error>> {
-    let actual = sha256_hex(bytes);
+    let actual = sha256_hex(bytes)?;
     if actual != expected {
         return Err(format!("{what} SHA256 mismatch (expected {expected}, got {actual})").into());
     }
     Ok(())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+fn sha256_hex(bytes: &[u8]) -> Result<String, fmt::Error> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    let mut hex = String::new();
+    for b in &digest {
+        write!(hex, "{b:02x}")?;
+    }
+    Ok(hex)
 }
