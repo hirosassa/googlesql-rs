@@ -414,6 +414,8 @@ mod tests {
     /// A request the guest allocator cannot satisfy is `Error::Memory` (needs a
     /// `guest-ffi` that reports `ERR_ALLOC`; the pre-ERR_ALLOC prebuilt returned
     /// a NULL offset as success), and the instance stays usable afterwards.
+    /// Gated on a from-source library (`GUEST_FFI_LIB`) until the pin is bumped.
+    #[cfg(guest_ffi_from_source)]
     #[test]
     fn alloc_beyond_guest_memory_is_a_memory_error() {
         let mut inst = NativeFfiInstance::new().expect("instantiate native-ffi instance");
