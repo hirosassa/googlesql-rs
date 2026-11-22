@@ -13,6 +13,8 @@
 //! other import returns the zero value of its result type. Keeping them
 //! identical is what lets the differential tests expect byte-for-byte agreement.
 
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
 use crate::backend::GuestInstance;
 use crate::error::Error;
 
@@ -43,9 +45,10 @@ mod dispatch {
 struct HostImports;
 
 /// Traps the guest on a C++ `throw`. The `guest::Imports` methods return plain
-/// values, so a panic is the only way to abort the call. This in-crate backend
-/// does not catch it, so it reaches the caller of the `Module` API; only the
-/// `guest-ffi` cdylib converts it into an error status.
+/// values, so a panic is the only way to abort the call. This string panic is not
+/// a typed `Wasm2RsTrap`, so [`NativeInstance::guarded`] lets it reach the caller
+/// of the `Module` API; only the `guest-ffi` cdylib converts it into an error
+/// status.
 #[expect(
     clippy::panic,
     reason = "a C++ throw cannot be unwound through native Rust; trapping matches the wasmtime env stub"
@@ -200,6 +203,10 @@ impl guest::Imports for HostImports {
 /// it is single-threaded per instance; it is [`Send`] but not `Sync`.
 pub struct NativeInstance {
     instance: guest::Instance<HostImports>,
+    /// Set when a typed guest trap was caught. The trap leaves the guest
+    /// half-executed (its shadow stack and heap are mid-update), so every later
+    /// call is refused rather than run against that state.
+    poisoned: bool,
 }
 
 impl NativeInstance {
@@ -221,7 +228,32 @@ impl NativeInstance {
         // and fail only if the call traps, and no ABI note gives a nonzero value a
         // failure meaning. Keep all backends consistent with that.
         let _wasm_init_status: i32 = instance.func15923();
-        Self { instance }
+        Self {
+            instance,
+            poisoned: false,
+        }
+    }
+
+    /// Runs one guest entry point, turning a typed guest trap (notably the
+    /// call-depth limit the guest is generated with, which keeps deeply nested SQL
+    /// from overflowing the host stack) into [`Error::Wasm`], as the wasmtime
+    /// engine does. Any other panic (a C++ throw) is re-raised unchanged.
+    fn guarded<T>(&mut self, call: impl FnOnce(&mut Self) -> T) -> Result<T, Error> {
+        if self.poisoned {
+            return Err(Error::Wasm(
+                "native instance poisoned by an earlier guest trap".into(),
+            ));
+        }
+        match catch_unwind(AssertUnwindSafe(|| call(self))) {
+            Ok(value) => Ok(value),
+            Err(payload) => match payload.downcast::<guest::Wasm2RsTrap>() {
+                Ok(trap) => {
+                    self.poisoned = true;
+                    Err(Error::Wasm(format!("native guest trapped: {trap}")))
+                }
+                Err(other) => resume_unwind(other),
+            },
+        }
     }
 }
 
@@ -273,22 +305,26 @@ impl GuestInstance for NativeInstance {
     fn call_rpc(&mut self, svc: i32, mid: i32, req_ptr: u32, req_len: u32) -> Result<u64, Error> {
         let func = dispatch::packed_by_rpc::<HostImports>(svc, mid)
             .ok_or_else(|| Error::Wasm(format!("no native export `w_{svc}_{mid}`")))?;
-        let packed = func(
-            &mut self.instance,
-            req_ptr.cast_signed(),
-            req_len.cast_signed(),
-        );
+        let packed = self.guarded(|this| {
+            func(
+                &mut this.instance,
+                req_ptr.cast_signed(),
+                req_len.cast_signed(),
+            )
+        })?;
         Ok(packed.cast_unsigned())
     }
 
     fn call_named(&mut self, name: &str, req_ptr: u32, req_len: u32) -> Result<u64, Error> {
         let func = dispatch::packed_by_name::<HostImports>(name)
             .ok_or_else(|| Error::Wasm(format!("no native export `{name}`")))?;
-        let packed = func(
-            &mut self.instance,
-            req_ptr.cast_signed(),
-            req_len.cast_signed(),
-        );
+        let packed = self.guarded(|this| {
+            func(
+                &mut this.instance,
+                req_ptr.cast_signed(),
+                req_len.cast_signed(),
+            )
+        })?;
         Ok(packed.cast_unsigned())
     }
 }

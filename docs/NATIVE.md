@@ -53,10 +53,11 @@ scripts/gen-native-guest.sh          # transpile + generate native/guest and nat
 cargo test --features native --lib 'native_backend::'   # differential tests vs wasmtime
 ```
 
-A split transpile emits `lib.rs`, `funcs_N.rs`, and `data_N.bin` side files that `lib.rs`
-`include_bytes!`s, so anything copying the tree must take the whole `native/guest` directory
-(the pack / fetch / digest scripts already do). `gen-native-guest.sh` clears the previous
-output first so stale files cannot skew the digest.
+A split transpile emits `lib.rs` and `funcs_N.rs` (wasm2rs 0.6 keeps data segments inline; its
+`--data-files` option, which would add `data_N.bin` side files, is not used), so anything copying
+the tree must take the whole `native/guest` directory (the pack / fetch / digest scripts already
+do). `gen-native-guest.sh` clears the previous output first so stale files (for example the
+`data_N.bin` files an earlier wasm2rs wrote) cannot skew the digest.
 
 `native/`'s generated sources are gitignored (~122MB, regenerated); only the guest crate's
 tiny `native/guest/Cargo.toml` is committed, so Cargo can resolve the optional `guest`
@@ -88,8 +89,9 @@ scripts/fetch-native-guest.sh        # download + extract + verify native/guest 
 cargo build --release --features native
 ```
 
-`scripts/native-guest.lock` pins the two inputs the tree is generated from — the
-SHA-pinned `googlesql.wasm` (`v0.4.0`, via `build.rs`) and a `wasm2rs` commit — together
+`scripts/native-guest.lock` pins the inputs the tree is generated from — the
+SHA-pinned `googlesql.wasm` (`v0.4.0`, via `build.rs`), a `wasm2rs` commit (`v0.6.0`) and the
+guest call-depth limit (see [below](#deeply-nested-sql-the-guest-call-depth-limit)) — together
 with `CONTENT_SHA256`, the canonical hash of the generated files
 (`scripts/native-guest-digest.sh`). wasm2rs output is deterministic, so that digest is
 reproducible from the pins; the fetch script verifies the extracted tree against it, so
@@ -210,37 +212,74 @@ symbol is version 0). The Rust shim does **not** reference it yet: a hard `exter
 would make the currently pinned prebuilt (version 0) fail to link. Once a release containing it
 is pinned, add the check to `NativeFfiInstance::new` (follow-up).
 
-### Known limitation: deeply nested SQL can overflow the host stack
+### Deeply nested SQL: the guest call-depth limit
 
-The transpiled guest recurses on the **host's native stack**, and a stack overflow aborts the
-process (it is not a panic, so `guard`'s `catch_unwind` cannot turn it into an error status). The
-`wasmtime` engine is unaffected: it enforces its own wasm stack limit and returns `Error::Wasm`.
-This applies to every engine that runs the guest natively (`native-ffi` and `native`).
+The transpiled guest recurses on the **host's native stack**, and a native stack overflow aborts
+the process (it is not a panic, so no `catch_unwind` can turn it into an error). To keep that from
+happening, the guest is generated with wasm2rs's `--call-depth-limit=N`: every defined function
+counts its nesting in a thread-local, and a call that would nest deeper than `N` traps with a typed
+`Wasm2RsTrap::CallStackExhausted`. The trap surfaces as an ordinary `Error::Wasm` (`native-ffi`:
+`guard` catches it and the instance is poisoned, see above; `native`: `NativeInstance` catches the
+typed trap and poisons likewise), so deeply nested SQL is rejected like any other bad input.
 
-Measured on `aarch64-apple-darwin` (analyzer, `Module::analyze_output_columns`):
+**The limit is `CALL_DEPTH_LIMIT=8000`** (pinned in `scripts/native-guest.lock`, which
+`scripts/gen-native-guest.sh` reads, so the prebuilt guest, the cdylib and a from-source build all
+agree). It is sized by stack, not by SQL: the worst case measured is about 570 bytes of native stack
+per guest call (the parser phase on over-limit input), so the deepest allowed recursion needs about
+4.6 MB and fits the 8 MB default of a main thread with a 1.7x margin. It does **not** fit the 2 MB
+default of a spawned thread (see the trade-off below). Measured on `aarch64-apple-darwin` with the
+optimized cdylib and the analyzer entry point `Module::analyze_output_columns`:
 
-| input | stack | result |
-|---|---|---|
-| nested subqueries, 1,000 deep | 8 MB (main thread default) | ok |
-| nested subqueries, 3,000 deep | 8 MB | aborts |
-| nested subqueries, 10,000 deep | 64 MB | ok |
-| nested subqueries, 30,000 deep | 64 MB | aborts |
-| nested subqueries, 30,000 deep | 256 MB | `Error::Wasm` (guest trap) |
-| nested subqueries, 1,000,000 deep | 96 MB or more | `Error::Wasm` (guest trap) |
-| `1+1+…` chain, 1,000 terms | 8 MB | ok |
-| `1+1+…` chain, 10,000 terms | 8 MB | aborts |
-| `1+1+…` chain, 1,000,000 terms | 64 MB | aborts |
-| `1+1+…` chain, 1,000,000 terms | 128 MB or more | `Error::Wasm` (guest trap) |
+| shape | wasm calls per nesting level | deepest nesting that still analyzes | native stack when the limit trips |
+|---|---|---|---|
+| nested scalar subqueries `(SELECT (SELECT …))` | 13 | 613 | 4.6 MB |
+| `1+1+…` chain | 8 | 997 | 3.7 MB |
+| nested function calls `ABS(ABS(…))` | 8 | 997 | 4.4 MB |
+| nested `CASE WHEN TRUE THEN CASE …` | 8 | 997 | 3.9 MB |
+| nested `FROM (SELECT * FROM (…))` | 4 | 1,992 | 3.1 MB |
+| nested `WITH a AS (WITH …)` | 9 | 886 | 3.5 MB |
 
-The parser alone is not affected (a million nested parentheses parse fine); the recursion is in
-analysis. The guest also traps on its own once it has used roughly 64–96 MB of native stack, so a
-caller thread with a larger stack gets an ordinary error instead of an abort.
+An ordinary analysis, including a CTE/subquery/CASE statement, a 500-term `OR` chain or a
+5,000-element `IN` list, needs under 80 KB of stack (the probe's floor), far below the limit. For
+comparison the `wasmtime` engine (its default 512 KB wasm stack) already rejects 169 nested
+subqueries, a 257-term chain and 284 nested calls, so the limit is 2 to 4 times more permissive
+than that. Flat `AND` chains and `UNION ALL` lists do not recurse (a million terms analyze fine).
+The parser alone is not limited by this (a million nested parentheses parse fine); the recursion
+that matters is in analysis.
 
-If the SQL is untrusted:
+**Trade-off: 8 MB, not 2 MB.** A 2 MB spawned-thread stack would need a limit of about 2,500
+(`2 MB * 0.75 / 570 B`), i.e. only ~190 nested subqueries or ~310 chained terms, below what real
+generated SQL can reach and not much beyond what `wasmtime` allows. So the default protects the main
+thread and any thread with at least ~6 MB; on a 2 MB thread (the `std::thread::spawn` default, also
+common for async worker threads) a hostile query can still overflow before the limit trips. For
+such threads either regenerate with `CALL_DEPTH_LIMIT=2500` or run the module on a larger stack as
+below. The 8000 figure was checked end to end: with the optimized cdylib, over-limit input of every
+shape above returns `Error::Wasm` on an 8 MB thread, and aborts on a 2 MB one.
 
-- use the `wasmtime` feature, or
-- run the module on a thread with a large stack (256 MB is ample; it is virtual memory, committed
-  only as used):
+`tests/native.rs` and `tests/native_ffi.rs` check that SQL nested past the limit is an `Error::Wasm`
+and SQL within it still analyzes. CI builds the guest unoptimized (frames about 100x bigger), so
+they run on a 512 MiB thread; set `GOOGLESQL_TEST_STACK_KB=8192` against an optimized cdylib
+(`GUEST_FFI_LIB`) to re-check the 8 MB claim.
+
+Cost: the guard is a thread-local read, compare and write per defined-function entry plus a drop on
+exit, and it also grows the code (the release cdylib is 60 MB, from 45 MB without it). Measured on
+`aarch64-apple-darwin` (release cdylib, a CTE + CASE + subquery statement, 500 iterations,
+three alternating runs): `analyze_output_columns` 1.07 ms -> 2.28 ms (+114%) and `parse_statement`
+0.40 ms -> 0.59 ms (+47%). That is a real cost of the generic per-function guard (the macOS
+thread-local access is a function call), not noise; other targets were not measured. If it matters,
+the guard can be limited to functions inside call-graph cycles (the only ones that can recurse), or
+the counter can live in the instance instead of a thread-local; both are changes to wasm2rs.
+
+To change the limit, regenerate with `CALL_DEPTH_LIMIT=<n> scripts/gen-native-guest.sh` and build
+the cdylib or the `native` feature from source (`CALL_DEPTH_LIMIT=0` disables it again). A value
+other than the pinned one changes the content digest, so it cannot be combined with
+`fetch-native-guest.sh`'s verification. Size `n` to the stack your threads actually have:
+roughly `n * 570` bytes must fit, minus the caller's own frames.
+
+Prebuilt `native-ffi` cdylibs published before the limit (up to `native-ffi-v0.1.2`) do not have
+it and still abort on a stack overflow. With such a library, for untrusted SQL, use the `wasmtime`
+feature or run the module on a thread with a large stack (256 MB is ample; it is virtual memory,
+committed only as used):
 
 ```rust
 let handle = std::thread::Builder::new()
@@ -250,9 +289,6 @@ let handle = std::thread::Builder::new()
         module.analyze_output_columns(&sql, &[])
     })?;
 ```
-
-A durable fix belongs in the transpiler (a stack-depth check at function entry that traps), not in
-this crate.
 
 ## Differential results
 

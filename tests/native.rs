@@ -17,6 +17,8 @@
 
 use googlesql::Module;
 
+mod common;
+
 /// The native engine is constructible from the public API and, driven through
 /// the same backend-agnostic methods as the default engine, agrees with it.
 #[test]
@@ -30,4 +32,12 @@ fn new_native_is_usable_from_the_public_api() {
         wasmtime.format_sql(sql).expect("wasmtime format_sql"),
         "the native backend must format identically to wasmtime through the public API",
     );
+}
+
+/// The guest is generated with a call-depth limit, so SQL nested far deeper than
+/// any real query returns an `Error` instead of overflowing the host stack (which
+/// would abort the whole test process).
+#[test]
+fn deeply_nested_sql_is_an_error_not_a_stack_overflow() {
+    common::assert_deep_sql_is_an_error(Module::new_native);
 }

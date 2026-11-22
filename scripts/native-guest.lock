@@ -10,13 +10,20 @@
 #
 # Generated from:
 #   googlesql.wasm  v0.4.0  (the SHA-pinned module resolved by build.rs)
-#   wasm2rs         v0.2.0 (5d3e4d47e75add758bfeb38a7967b7d78aec8f55)
+#   wasm2rs         v0.6.0 (fc30d57e7758e0f3cb66678c31756dce0fb6566d)
+#   call depth limit 8000 (wasm2rs --call-depth-limit; see CALL_DEPTH_LIMIT below)
 #
-# When either input moves, regenerate, update CONTENT_SHA256 (and RELEASE_TAG /
+# CALL_DEPTH_LIMIT is a generator flag, so it is an input of the digest too:
+# scripts/gen-native-guest.sh reads it from here. It caps the guest's nested
+# calls so a deeply nested query traps (an ordinary `Error`) instead of
+# overflowing the host's native stack; see docs/NATIVE.md for how 8000 was chosen.
+#
+# When any input moves, regenerate, update CONTENT_SHA256 (and RELEASE_TAG /
 # TARBALL_URL), and republish with .github/workflows/release-native-guest.yaml.
 WASM_VERSION=v0.4.0
-WASM2RS_REF=5d3e4d47e75add758bfeb38a7967b7d78aec8f55
-CONTENT_SHA256=fcba720a0b6f8254b1c77693c6605d3cf5a8d6c35040b137d0abddee419a8ab5
-RELEASE_TAG=native-guest-v0.4.0-5d3e4d4
+WASM2RS_REF=fc30d57e7758e0f3cb66678c31756dce0fb6566d
+CALL_DEPTH_LIMIT=8000
+CONTENT_SHA256=b52d37ebab9042b954833cb6e043e649473e0f759864be07e34c53a3e2764bd9
+RELEASE_TAG=native-guest-v0.4.0-fc30d57-d8000
 TARBALL_NAME=native-guest.tar.gz
-TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.4.0-5d3e4d4/native-guest.tar.gz
+TARBALL_URL=https://github.com/hirosassa/googlesql-rs/releases/download/native-guest-v0.4.0-fc30d57-d8000/native-guest.tar.gz
