@@ -205,6 +205,50 @@ symbol is version 0). The Rust shim does **not** reference it yet: a hard `exter
 would make the currently pinned prebuilt (version 0) fail to link. Once a release containing it
 is pinned, add the check to `NativeFfiInstance::new` (follow-up).
 
+### Known limitation: deeply nested SQL can overflow the host stack
+
+The transpiled guest recurses on the **host's native stack**, and a stack overflow aborts the
+process (it is not a panic, so `guard`'s `catch_unwind` cannot turn it into an error status). The
+`wasmtime` engine is unaffected: it enforces its own wasm stack limit and returns `Error::Wasm`.
+This applies to every engine that runs the guest natively (`native-ffi` and `native`).
+
+Measured on `aarch64-apple-darwin` (analyzer, `Module::analyze_output_columns`):
+
+| input | stack | result |
+|---|---|---|
+| nested subqueries, 1,000 deep | 8 MB (main thread default) | ok |
+| nested subqueries, 3,000 deep | 8 MB | aborts |
+| nested subqueries, 10,000 deep | 64 MB | ok |
+| nested subqueries, 30,000 deep | 64 MB | aborts |
+| nested subqueries, 30,000 deep | 256 MB | `Error::Wasm` (guest trap) |
+| nested subqueries, 1,000,000 deep | 96 MB or more | `Error::Wasm` (guest trap) |
+| `1+1+…` chain, 1,000 terms | 8 MB | ok |
+| `1+1+…` chain, 10,000 terms | 8 MB | aborts |
+| `1+1+…` chain, 1,000,000 terms | 64 MB | aborts |
+| `1+1+…` chain, 1,000,000 terms | 128 MB or more | `Error::Wasm` (guest trap) |
+
+The parser alone is not affected (a million nested parentheses parse fine); the recursion is in
+analysis. The guest also traps on its own once it has used roughly 64–96 MB of native stack, so a
+caller thread with a larger stack gets an ordinary error instead of an abort.
+
+If the SQL is untrusted:
+
+- use the `wasmtime` feature, or
+- run the module on a thread with a large stack (256 MB is ample; it is virtual memory, committed
+  only as used):
+
+```rust
+let handle = std::thread::Builder::new()
+    .stack_size(256 << 20)
+    .spawn(move || {
+        let mut module = googlesql::Module::new()?;
+        module.analyze_output_columns(&sql, &[])
+    })?;
+```
+
+A durable fix belongs in the transpiler (a stack-depth check at function entry that traps), not in
+this crate.
+
 ## Differential results
 
 `src/native_backend.rs` (`#[cfg(test)]`) constructs both engines in one process and
