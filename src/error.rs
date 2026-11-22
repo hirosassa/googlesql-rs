@@ -2,7 +2,7 @@
 
 /// A 1-based position within analyzed SQL text.
 ///
-/// GoogleSQL reports error positions as a `[at line:column]` suffix on its
+/// `GoogleSQL` reports error positions as a `[at line:column]` suffix on its
 /// messages; both coordinates count from 1, matching that convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ErrorLocation {
@@ -25,10 +25,10 @@ impl ErrorLocation {
 
     /// Resolves this position to a 0-based byte offset into `sql`.
     ///
-    /// GoogleSQL reports columns as 1-based Unicode code-point counts (a
+    /// `GoogleSQL` reports columns as 1-based Unicode code-point counts (a
     /// multi-byte character advances the column by one), so this walks the target
     /// line by code point to recover the byte offset. A column past the end of the
-    /// line clamps to the line's end (GoogleSQL points one past the last character
+    /// line clamps to the line's end (`GoogleSQL` points one past the last character
     /// for end-of-input errors). Returns `None` when the position does not fall
     /// within `sql` (line or column out of range).
     #[must_use]
@@ -69,9 +69,9 @@ impl ErrorLocation {
         line_start.checked_add(within)
     }
 
-    /// Parses GoogleSQL's trailing ` [at line:column]` suffix, if present.
+    /// Parses `GoogleSQL`'s trailing ` [at line:column]` suffix, if present.
     ///
-    /// GoogleSQL appends the position as the last token of the message, e.g.
+    /// `GoogleSQL` appends the position as the last token of the message, e.g.
     /// `Table not found: t [at 1:15]`. A message with no such suffix (or a
     /// non-numeric one) yields `None`.
     fn parse_suffix(message: &str) -> Option<Self> {
@@ -91,26 +91,26 @@ impl ErrorLocation {
 ///
 /// The wasm ABI reports every problem as a single free-text string with no
 /// separate status code, so this classification is a heuristic over the stable
-/// prefixes GoogleSQL emits. The raw message is always available via
+/// prefixes `GoogleSQL` emits. The raw message is always available via
 /// [`SqlError::message`] regardless of the category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlErrorKind {
-    /// A parser-level syntax error. GoogleSQL's parser prefixes these with
+    /// A parser-level syntax error. `GoogleSQL`'s parser prefixes these with
     /// `Syntax error:` (e.g. `Syntax error: Unexpected end of statement`).
     Syntax,
 
-    /// A feature the underlying GoogleSQL build does not support, reported with
+    /// A feature the underlying `GoogleSQL` build does not support, reported with
     /// the `not supported` phrase (e.g. `Analytic functions not supported`).
     /// Identified by that phrase appearing anywhere in the message.
     Unsupported,
 
-    /// Any other error GoogleSQL reported while resolving the statement: an
+    /// Any other error `GoogleSQL` reported while resolving the statement: an
     /// unresolved name, a missing table, a type mismatch, and so on.
     Analysis,
 }
 
 impl SqlErrorKind {
-    /// Classifies a GoogleSQL message into a [`SqlErrorKind`].
+    /// Classifies a `GoogleSQL` message into a [`SqlErrorKind`].
     ///
     /// The `Syntax error:` prefix wins over the `not supported` phrase, since a
     /// syntax error is the more specific signal when both appear.
@@ -125,12 +125,12 @@ impl SqlErrorKind {
     }
 }
 
-/// An error reported by GoogleSQL itself: a syntax error, an unresolved name,
+/// An error reported by `GoogleSQL` itself: a syntax error, an unresolved name,
 /// an unsupported feature, and so on.
 ///
-/// The message is preserved exactly as GoogleSQL produced it (including any
+/// The message is preserved exactly as `GoogleSQL` produced it (including any
 /// trailing `[at line:column]` suffix); [`location`](Self::location) additionally
-/// exposes that position in structured form when GoogleSQL supplied one, and
+/// exposes that position in structured form when `GoogleSQL` supplied one, and
 /// [`kind`](Self::kind) gives a coarse category derived from the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlError {
@@ -140,21 +140,21 @@ pub struct SqlError {
 }
 
 impl SqlError {
-    /// The error message exactly as GoogleSQL produced it, including any
+    /// The error message exactly as `GoogleSQL` produced it, including any
     /// trailing `[at line:column]` suffix.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// The source position GoogleSQL attributed the error to, or `None` when the
+    /// The source position `GoogleSQL` attributed the error to, or `None` when the
     /// message carried no `[at line:column]` suffix.
     ///
     /// The analyzer entry points ([`Module::analyze_statement`](crate::Module::analyze_statement)
     /// and friends) attach this suffix to every error, including syntax errors
     /// they surface while parsing. Errors from
     /// [`Module::parse_statement`](crate::Module::parse_statement), however, arrive
-    /// without a position: GoogleSQL emits parser errors with the location in a
+    /// without a position: `GoogleSQL` emits parser errors with the location in a
     /// structured payload that the wasm boundary drops, and the parser's error
     /// message mode is not settable through the exposed ABI. For a located syntax
     /// error, analyze the statement instead of parsing it.
@@ -172,7 +172,7 @@ impl SqlError {
     }
 
     /// Renders the offending source line with a caret (`^`) under the error
-    /// position, mirroring GoogleSQL's multi-line-with-caret error format.
+    /// position, mirroring `GoogleSQL`'s multi-line-with-caret error format.
     ///
     /// For example, an error at `1:8` of `SELECT a FROM b` renders as:
     ///
@@ -181,7 +181,7 @@ impl SqlError {
     ///        ^
     /// ```
     ///
-    /// The caret is padded with `column - 1` spaces, matching GoogleSQL's own
+    /// The caret is padded with `column - 1` spaces, matching `GoogleSQL`'s own
     /// convention (one space per column, so a run of wide characters shifts the
     /// caret by their code-point count, not their display width). Returns `None`
     /// when this error carries no location or the location's line is not in `sql`.
@@ -222,7 +222,7 @@ impl std::fmt::Display for SqlError {
     }
 }
 
-/// Errors that can occur when using the GoogleSQL bindings.
+/// Errors that can occur when using the `GoogleSQL` bindings.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to load or instantiate the wasm module.
@@ -237,7 +237,7 @@ pub enum Error {
     #[error("wasm memory access error: {0}")]
     Memory(String),
 
-    /// An error returned by GoogleSQL itself (e.g. a syntax error).
+    /// An error returned by `GoogleSQL` itself (e.g. a syntax error).
     #[error("googlesql error: {0}")]
     GoogleSql(SqlError),
 
@@ -252,7 +252,7 @@ pub enum Error {
     Protocol(String),
 }
 
-/// Converts a GoogleSQL error carried in field 15 of a wasm response into
+/// Converts a `GoogleSQL` error carried in field 15 of a wasm response into
 /// [`Error::GoogleSql`].
 ///
 /// The wasm ABI reports every GoogleSQL-level problem as a single free-text

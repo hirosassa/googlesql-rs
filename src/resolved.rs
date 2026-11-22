@@ -231,7 +231,7 @@ const SVC_RESOLVED_ARRAY_SCAN: i32 = 810;
 const MID_ARRAY_SCAN_ELEMENT_COLUMN: i32 = 16;
 const MID_ARRAY_SCAN_IS_OUTER: i32 = 21;
 
-/// `Value` (zetasql::Value): scalar accessors, each returning the contents in
+/// `Value` (`zetasql::Value)`: scalar accessors, each returning the contents in
 /// response field 1 for the matching type.
 const SVC_VALUE: i32 = 1429;
 const MID_VALUE_BOOL: i32 = 110;
@@ -343,20 +343,23 @@ pub struct OutputColumn {
 
 impl OutputColumn {
     /// The output column's name (its alias, or the source column name).
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// The resolved type name (e.g. `INT64`, `STRING`).
+    #[must_use]
     pub fn type_name(&self) -> &str {
         &self.type_name
     }
 
     /// The unique id of the column this output exposes.
     ///
-    /// GoogleSQL assigns every resolved column a distinct positive id; this is
+    /// `GoogleSQL` assigns every resolved column a distinct positive id; this is
     /// the id of the underlying column, letting callers link an output column to
     /// the [`ColumnReference`]s that read the same column elsewhere in the tree.
+    #[must_use]
     pub const fn id(&self) -> i32 {
         self.id
     }
@@ -379,20 +382,23 @@ impl ColumnReference {
     /// For a column read from a user table this is that table's name; for a
     /// column produced by an intermediate scan (a projection, aggregation, …)
     /// the analyzer supplies a synthetic name such as `$query` or `$aggregate`.
+    #[must_use]
     pub fn table(&self) -> &str {
         &self.table
     }
 
     /// The referenced column's name.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// The referenced column's unique id within the query.
     ///
-    /// GoogleSQL assigns every resolved column a distinct positive id, so this
+    /// `GoogleSQL` assigns every resolved column a distinct positive id, so this
     /// disambiguates columns that share a name — for example the `id` columns of
     /// two separate scans of the same table in a self-join carry different ids.
+    #[must_use]
     pub const fn id(&self) -> i32 {
         self.id
     }
@@ -401,7 +407,7 @@ impl ColumnReference {
 /// The constant a `ResolvedLiteral` node carries.
 ///
 /// Only the common scalar types are modelled. Marked `#[non_exhaustive]` because
-/// GoogleSQL has more literal types than are represented here; adding a variant
+/// `GoogleSQL` has more literal types than are represented here; adding a variant
 /// later must not be a breaking change for callers that match on it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -429,16 +435,16 @@ pub enum LiteralValue {
     /// A `TIMESTAMP` constant, as the number of microseconds since the
     /// 1970-01-01 epoch.
     Timestamp(i64),
-    /// A `NUMERIC` constant, as GoogleSQL's canonical decimal text (e.g. `1.5`).
+    /// A `NUMERIC` constant, as `GoogleSQL`'s canonical decimal text (e.g. `1.5`).
     /// Fixed-point NUMERIC has no lossless primitive representation, so its exact
-    /// value is carried as the string form GoogleSQL prints.
+    /// value is carried as the string form `GoogleSQL` prints.
     Numeric(String),
-    /// A `DATETIME` constant, as GoogleSQL's canonical text (e.g.
+    /// A `DATETIME` constant, as `GoogleSQL`'s canonical text (e.g.
     /// `2020-01-02 03:04:05`).
     Datetime(String),
-    /// A `TIME` constant, as GoogleSQL's canonical text (e.g. `03:04:05`).
+    /// A `TIME` constant, as `GoogleSQL`'s canonical text (e.g. `03:04:05`).
     Time(String),
-    /// An `INTERVAL` constant, as GoogleSQL's canonical text in
+    /// An `INTERVAL` constant, as `GoogleSQL`'s canonical text in
     /// `<years>-<months> <days> <hours>:<minutes>:<seconds>` form (e.g.
     /// `0-0 1 0:0:0` for one day).
     Interval(String),
@@ -460,7 +466,7 @@ pub enum LiteralValue {
         /// unbounded.
         end: Box<Self>,
     },
-    /// A `JSON` constant, as the normalized JSON text GoogleSQL prints (e.g.
+    /// A `JSON` constant, as the normalized JSON text `GoogleSQL` prints (e.g.
     /// `{"a":1}`).
     Json(String),
     /// A `NULL` constant. Its resolved type is still available through the
@@ -485,11 +491,13 @@ pub struct CastInfo {
 
 impl CastInfo {
     /// The resolved type the cast converts from (its operand's type).
+    #[must_use]
     pub fn from_type(&self) -> &str {
         &self.from_type
     }
 
     /// The resolved type the cast converts to (the cast's own type).
+    #[must_use]
     pub fn to_type(&self) -> &str {
         &self.to_type
     }
@@ -497,6 +505,7 @@ impl CastInfo {
     /// Whether the cast returns `NULL` on a failed conversion instead of
     /// erroring, i.e. whether it is a `SAFE_CAST`. A plain `CAST` reports
     /// `false`.
+    #[must_use]
     pub const fn is_safe(&self) -> bool {
         self.safe
     }
@@ -504,7 +513,7 @@ impl CastInfo {
 
 /// The kind of a `ResolvedJoinScan`.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL may report join kinds beyond
+/// Marked `#[non_exhaustive]` because `GoogleSQL` may report join kinds beyond
 /// these (e.g. semi/anti joins from array or `IN` subquery rewrites); adding a
 /// variant later must not be a breaking change for callers that match on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -607,7 +616,7 @@ pub enum MergeMatch {
 
 /// The kind of a `ResolvedSubqueryExpr`.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL also defines `LIKE ANY`/`LIKE
+/// Marked `#[non_exhaustive]` because `GoogleSQL` also defines `LIKE ANY`/`LIKE
 /// ALL` subquery forms; this wasm build rejects that syntax, so those variants
 /// are omitted until they can be produced and their wire values verified.
 /// Adding one later must not be a breaking change for callers that match on it.
@@ -640,12 +649,14 @@ pub struct LimitOffset {
 
 impl LimitOffset {
     /// The `LIMIT` row count, or `None` if it is not an `INT64` literal.
+    #[must_use]
     pub const fn limit(&self) -> Option<i64> {
         self.limit
     }
 
     /// The `OFFSET` row count, or `None` if there is no `OFFSET` clause or its
     /// value is not an `INT64` literal.
+    #[must_use]
     pub const fn offset(&self) -> Option<i64> {
         self.offset
     }
@@ -704,7 +715,54 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
+    /// A node with only its kind and type set; the kind-gated attributes and
+    /// children are filled in afterwards by `Module::build_resolved_node`.
+    const fn bare(kind: String, type_name: Option<String>) -> Self {
+        Self {
+            kind,
+            type_name,
+            column_ref: None,
+            literal_value: None,
+            has_explicit_type: None,
+            function_name: None,
+            table_name: None,
+            cast: None,
+            parameter_name: None,
+            argument_count: None,
+            scan_columns: None,
+            alias: None,
+            column_index_list: None,
+            distinct: None,
+            join_type: None,
+            has_using: None,
+            is_descending: None,
+            is_correlated: None,
+            set_operation: None,
+            subquery_kind: None,
+            group_by_columns: None,
+            aggregate_columns: None,
+            limit_offset: None,
+            with_query_name: None,
+            is_value_table: None,
+            struct_field_index: None,
+            array_element_name: None,
+            is_outer: None,
+            project_columns: None,
+            computed_column_name: None,
+            column_definition_name: None,
+            column_definition_type: None,
+            insert_mode: None,
+            insert_columns: None,
+            create_mode: None,
+            merge_action: None,
+            merge_match: None,
+            parse_location: None,
+            children: Vec::new(),
+        }
+    }
+
     /// The node's kind (e.g. `ResolvedQueryStmt`, `ResolvedTableScan`).
+    #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
     }
@@ -712,17 +770,20 @@ impl ResolvedNode {
     /// The node's resolved type name (e.g. `INT64`, `STRING`), or `None` for
     /// nodes that are not expressions (scans, statements, and other structural
     /// nodes carry no type).
+    #[must_use]
     pub fn type_name(&self) -> Option<&str> {
         self.type_name.as_deref()
     }
 
     /// The column this node reads, or `None` if it is not a `ResolvedColumnRef`.
+    #[must_use]
     pub const fn column_ref(&self) -> Option<&ColumnReference> {
         self.column_ref.as_ref()
     }
 
     /// The constant this node carries, or `None` if it is not a `ResolvedLiteral`
     /// (or its type is one this crate does not yet model).
+    #[must_use]
     pub const fn literal_value(&self) -> Option<&LiteralValue> {
         self.literal_value.as_ref()
     }
@@ -731,6 +792,7 @@ impl ResolvedNode {
     /// rather than inferred from the constant, or `None` if it is not a
     /// `ResolvedLiteral`. `SELECT CAST(NULL AS INT64)` yields `Some(true)`,
     /// while a bare `SELECT 1` yields `Some(false)`.
+    #[must_use]
     pub const fn has_explicit_type(&self) -> Option<bool> {
         self.has_explicit_type
     }
@@ -739,18 +801,21 @@ impl ResolvedNode {
     /// `count`), or `None` if it is not a function call. Covers both scalar
     /// (`ResolvedFunctionCall`) and aggregate (`ResolvedAggregateFunctionCall`)
     /// calls; use [`is_aggregate`](Self::is_aggregate) to tell them apart.
+    #[must_use]
     pub fn function_name(&self) -> Option<&str> {
         self.function_name.as_deref()
     }
 
     /// Whether this node is an aggregate function call (e.g. `COUNT`, `SUM`), as
     /// opposed to a scalar call or a non-call node.
+    #[must_use]
     pub fn is_aggregate(&self) -> bool {
         self.kind == KIND_AGGREGATE_FUNCTION_CALL
     }
 
     /// The catalog name of the table this node scans, or `None` if it is not a
     /// `ResolvedTableScan`. This is the physical table's name, not any query alias.
+    #[must_use]
     pub fn table_name(&self) -> Option<&str> {
         self.table_name.as_deref()
     }
@@ -760,6 +825,7 @@ impl ResolvedNode {
     /// prune columns, this lists every column of the scanned table, not only the
     /// ones the query references (use [`Module::referenced_tables`] for the
     /// referenced-only, query-wide view).
+    #[must_use]
     pub fn scan_columns(&self) -> Option<&[String]> {
         self.scan_columns.as_deref()
     }
@@ -768,6 +834,7 @@ impl ResolvedNode {
     /// `ResolvedTableScan`. This is the name given with `AS` (e.g. `u` in
     /// `FROM users AS u`); it is empty when the scan has no explicit alias.
     /// See [`table_name`](Self::table_name) for the underlying table's name.
+    #[must_use]
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
     }
@@ -776,18 +843,21 @@ impl ResolvedNode {
     /// with [`scan_columns`](Self::scan_columns), or `None` if this node is not a
     /// `ResolvedTableScan`. For example, a scan of a table whose columns are
     /// `(id, name)` reports `[0, 1]`.
+    #[must_use]
     pub fn column_index_list(&self) -> Option<&[i32]> {
         self.column_index_list.as_deref()
     }
 
     /// The source and target types of this node's cast, or `None` if it is not a
     /// `ResolvedCast`.
+    #[must_use]
     pub const fn cast(&self) -> Option<&CastInfo> {
         self.cast.as_ref()
     }
 
     /// The name of the query parameter this node references (e.g. `p` for `@p`),
     /// or `None` if it is not a `ResolvedParameter`.
+    #[must_use]
     pub fn parameter_name(&self) -> Option<&str> {
         self.parameter_name.as_deref()
     }
@@ -798,6 +868,7 @@ impl ResolvedNode {
     /// calls. For a scalar call this equals `children().len()`, but an aggregate
     /// call may carry extra modifier children (e.g. `ORDER BY`), so this counts
     /// only the value arguments.
+    #[must_use]
     pub const fn argument_count(&self) -> Option<usize> {
         self.argument_count
     }
@@ -806,12 +877,14 @@ impl ResolvedNode {
     /// (e.g. `COUNT(DISTINCT x)`), or `None` if it is not an aggregate function
     /// call. Scalar function calls never carry DISTINCT, so they report `None`,
     /// not `Some(false)`.
+    #[must_use]
     pub const fn distinct(&self) -> Option<bool> {
         self.distinct
     }
 
     /// The kind of this node's join (INNER/LEFT/RIGHT/FULL), or `None` if it is
     /// not a `ResolvedJoinScan`.
+    #[must_use]
     pub const fn join_type(&self) -> Option<JoinType> {
         self.join_type
     }
@@ -819,6 +892,7 @@ impl ResolvedNode {
     /// Whether this node's join was written with a `USING` clause, or `None` if
     /// it is not a `ResolvedJoinScan`. `Some(false)` covers both an `ON` join and
     /// a comma/cross join; only `JOIN ... USING (...)` yields `Some(true)`.
+    #[must_use]
     pub const fn has_using(&self) -> Option<bool> {
         self.has_using
     }
@@ -826,6 +900,7 @@ impl ResolvedNode {
     /// Whether this ORDER BY item sorts descending (`DESC`), or `None` if it is
     /// not a `ResolvedOrderByItem`. Ascending is the default, so an item written
     /// without `ASC`/`DESC` reports `Some(false)`.
+    #[must_use]
     pub const fn is_descending(&self) -> Option<bool> {
         self.is_descending
     }
@@ -834,6 +909,7 @@ impl ResolvedNode {
     /// correlated reference, as in a correlated subquery), or `None` if it is
     /// not a `ResolvedColumnRef`. A reference to a column of its own query
     /// reports `Some(false)`.
+    #[must_use]
     pub const fn is_correlated(&self) -> Option<bool> {
         self.is_correlated
     }
@@ -841,12 +917,14 @@ impl ResolvedNode {
     /// The set operator this node applies (`UNION`/`INTERSECT`/`EXCEPT`, in its
     /// `ALL` or `DISTINCT` form), or `None` if it is not a
     /// `ResolvedSetOperationScan`.
+    #[must_use]
     pub const fn set_operation(&self) -> Option<SetOperation> {
         self.set_operation
     }
 
     /// The kind of subquery this node is (scalar/`ARRAY`/`EXISTS`/`IN`), or
     /// `None` if it is not a `ResolvedSubqueryExpr`.
+    #[must_use]
     pub const fn subquery_kind(&self) -> Option<SubqueryKind> {
         self.subquery_kind
     }
@@ -855,6 +933,7 @@ impl ResolvedNode {
     /// `ResolvedAggregateScan`. Grouping keys keep the order they are written;
     /// an aggregate scan with no keys (a bare aggregate such as
     /// `SELECT COUNT(*)`) reports `Some([])`.
+    #[must_use]
     pub fn group_by_columns(&self) -> Option<&[String]> {
         self.group_by_columns.as_deref()
     }
@@ -863,12 +942,14 @@ impl ResolvedNode {
     /// such as the `COUNT(*)` in `SELECT COUNT(*) ... GROUP BY ...`), or `None`
     /// if it is not a `ResolvedAggregateScan`. Each name is synthetic (e.g.
     /// `$agg1`); a scan that computes no aggregates reports `Some([])`.
+    #[must_use]
     pub fn aggregate_columns(&self) -> Option<&[String]> {
         self.aggregate_columns.as_deref()
     }
 
     /// The `LIMIT`/`OFFSET` row counts of this node, or `None` if it is not a
     /// `ResolvedLimitOffsetScan`.
+    #[must_use]
     pub const fn limit_offset(&self) -> Option<&LimitOffset> {
         self.limit_offset.as_ref()
     }
@@ -877,6 +958,7 @@ impl ResolvedNode {
     /// `WITH t AS (...)`, or in a `... FROM t` that references it), or `None` if
     /// it is neither a `ResolvedWithEntry` nor a `ResolvedWithRefScan`. Use
     /// [`kind`](Self::kind) to tell a definition from a reference.
+    #[must_use]
     pub fn with_query_name(&self) -> Option<&str> {
         self.with_query_name.as_deref()
     }
@@ -884,6 +966,7 @@ impl ResolvedNode {
     /// Whether this statement produces a value table (each row is a single
     /// unnamed value rather than a named-column row, as with `SELECT AS VALUE`),
     /// or `None` if it is not a `ResolvedQueryStmt`.
+    #[must_use]
     pub const fn is_value_table(&self) -> Option<bool> {
         self.is_value_table
     }
@@ -891,12 +974,14 @@ impl ResolvedNode {
     /// The zero-based position of the struct field this node reads (e.g. `1` for
     /// `.b` in `STRUCT(1 AS a, 2 AS b).b`), or `None` if it is not a
     /// `ResolvedGetStructField`.
+    #[must_use]
     pub const fn struct_field_index(&self) -> Option<i32> {
         self.struct_field_index
     }
 
     /// The name of the column each array element is bound to (the `x` in
     /// `UNNEST(...) AS x`), or `None` if this node is not a `ResolvedArrayScan`.
+    #[must_use]
     pub fn array_element_name(&self) -> Option<&str> {
         self.array_element_name.as_deref()
     }
@@ -904,6 +989,7 @@ impl ResolvedNode {
     /// Whether this array scan keeps input rows whose array is empty or `NULL`
     /// (`true` for `LEFT JOIN UNNEST(...)`, `false` for a plain `FROM UNNEST`),
     /// or `None` if this node is not a `ResolvedArrayScan`.
+    #[must_use]
     pub const fn is_outer(&self) -> Option<bool> {
         self.is_outer
     }
@@ -911,6 +997,7 @@ impl ResolvedNode {
     /// The names of the columns this node's projection produces — both columns
     /// passed through from its input and columns computed by the `SELECT` list —
     /// or `None` if it is not a `ResolvedProjectScan`.
+    #[must_use]
     pub fn project_columns(&self) -> Option<&[String]> {
         self.project_columns.as_deref()
     }
@@ -919,6 +1006,7 @@ impl ResolvedNode {
     /// `None` if it is not a `ResolvedComputedColumn`. A computed column pairs a
     /// `SELECT`- or `GROUP BY`-list expression with the column that names its
     /// result; this is that column's name.
+    #[must_use]
     pub fn computed_column_name(&self) -> Option<&str> {
         self.computed_column_name.as_deref()
     }
@@ -927,6 +1015,7 @@ impl ResolvedNode {
     /// `CREATE TABLE t (a INT64)`), or `None` if it is not a
     /// `ResolvedColumnDefinition`. A `CREATE TABLE` statement carries one such
     /// node per declared column.
+    #[must_use]
     pub fn column_definition_name(&self) -> Option<&str> {
         self.column_definition_name.as_deref()
     }
@@ -936,6 +1025,7 @@ impl ResolvedNode {
     /// not a `ResolvedColumnDefinition`. Pairs with
     /// [`column_definition_name`](Self::column_definition_name) to recover a
     /// `CREATE TABLE` column's full `name type` declaration.
+    #[must_use]
     pub fn column_definition_type(&self) -> Option<&str> {
         self.column_definition_type.as_deref()
     }
@@ -943,6 +1033,7 @@ impl ResolvedNode {
     /// The conflict-handling mode of this node, or `None` if it is not a
     /// `ResolvedInsertStmt`. A plain `INSERT` reports [`InsertMode::Error`];
     /// the `OR IGNORE` / `OR REPLACE` / `OR UPDATE` prefixes report the others.
+    #[must_use]
     pub const fn insert_mode(&self) -> Option<InsertMode> {
         self.insert_mode
     }
@@ -951,6 +1042,7 @@ impl ResolvedNode {
     /// `INSERT INTO t (id) ...`), or `None` if it is not a `ResolvedInsertStmt`.
     /// This is the explicit target-column list, a subset of the table's columns,
     /// distinct from the table scan's full column set.
+    #[must_use]
     pub fn insert_columns(&self) -> Option<&[String]> {
         self.insert_columns.as_deref()
     }
@@ -959,6 +1051,7 @@ impl ResolvedNode {
     /// `ResolvedCreateTableStmt`. A plain `CREATE TABLE` reports
     /// [`CreateMode::Default`]; `CREATE OR REPLACE` and `CREATE ... IF NOT
     /// EXISTS` report the others.
+    #[must_use]
     pub const fn create_mode(&self) -> Option<CreateMode> {
         self.create_mode
     }
@@ -967,6 +1060,7 @@ impl ResolvedNode {
     /// `ResolvedMergeWhen`. Pairs with [`merge_match`](Self::merge_match): a
     /// clause's action (`INSERT`/`UPDATE`/`DELETE`) and the rows it applies to
     /// are independent.
+    #[must_use]
     pub const fn merge_action(&self) -> Option<MergeAction> {
         self.merge_action
     }
@@ -974,6 +1068,7 @@ impl ResolvedNode {
     /// Which rows this `MERGE` `WHEN` clause applies to, or `None` if it is not
     /// a `ResolvedMergeWhen`. `WHEN MATCHED` reports [`MergeMatch::Matched`];
     /// the `NOT MATCHED BY SOURCE` / `BY TARGET` forms report the others.
+    #[must_use]
     pub const fn merge_match(&self) -> Option<MergeMatch> {
         self.merge_match
     }
@@ -983,11 +1078,13 @@ impl ResolvedNode {
     /// full-node-scope location recording, but synthetic nodes with no source
     /// text (e.g. a wrapping projection) still report `None`. The range indexes
     /// the same SQL string passed to `resolved_tree`.
+    #[must_use]
     pub fn parse_location(&self) -> Option<Range<usize>> {
         self.parse_location.clone()
     }
 
     /// The child nodes, in the order the analyzer reports them.
+    #[must_use]
     pub fn children(&self) -> &[Self] {
         &self.children
     }
@@ -1004,11 +1101,13 @@ pub struct TableRef {
 
 impl TableRef {
     /// The referenced table's name.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// The columns read from this table, in the order first encountered.
+    #[must_use]
     pub fn columns(&self) -> &[String] {
         &self.columns
     }
@@ -1192,47 +1291,94 @@ impl Module {
     fn build_resolved_node(&mut self, node: u64) -> Result<ResolvedNode, Error> {
         let kind = self.node_kind(node)?;
         let type_name = self.node_type_name(node)?;
+        let mut out = ResolvedNode::bare(kind.clone(), type_name);
+
+        self.fill_expression_attributes(node, &kind, &mut out)?;
+        self.fill_scan_attributes(node, &kind, &mut out)?;
+        self.fill_statement_attributes(node, &kind, &mut out)?;
+        // A location can attach to any resolved node, so this is not gated on kind.
+        out.parse_location = self.node_parse_location(node)?;
+
+        let child_ptrs = self.child_nodes(node)?;
+        out.children.reserve(child_ptrs.len());
+        for child in child_ptrs {
+            if child != 0 {
+                out.children.push(self.build_resolved_node(child)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fills the attributes of expression-like nodes (column references,
+    /// literals, function calls, casts, parameters, ...) that apply to `kind`.
+    fn fill_expression_attributes(
+        &mut self,
+        node: u64,
+        kind: &str,
+        out: &mut ResolvedNode,
+    ) -> Result<(), Error> {
         let is_function_call = kind == KIND_FUNCTION_CALL || kind == KIND_AGGREGATE_FUNCTION_CALL;
 
-        let column_ref = self.read_if(kind == KIND_COLUMN_REF, |s| s.node_column_ref(node))?;
-        let literal_value = if kind == KIND_LITERAL {
-            self.node_literal_value(node)?
-        } else {
-            None
-        };
-        let has_explicit_type =
+        out.column_ref = self.read_if(kind == KIND_COLUMN_REF, |s| s.node_column_ref(node))?;
+        out.is_correlated =
+            self.read_if(kind == KIND_COLUMN_REF, |s| s.node_is_correlated(node))?;
+        if kind == KIND_LITERAL {
+            out.literal_value = self.node_literal_value(node)?;
+        }
+        out.has_explicit_type =
             self.read_if(kind == KIND_LITERAL, |s| s.node_has_explicit_type(node))?;
-        let function_name = self.read_if(is_function_call, |s| s.node_function_name(node))?;
-        let argument_count = self.read_if(is_function_call, |s| s.node_argument_count(node))?;
-        let table_name = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_table_name(node))?;
-        let scan_columns = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_scan_columns(node))?;
-        let alias = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_alias(node))?;
-        let column_index_list =
-            self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_column_index_list(node))?;
-        let distinct = self.read_if(kind == KIND_AGGREGATE_FUNCTION_CALL, |s| {
+        out.function_name = self.read_if(is_function_call, |s| s.node_function_name(node))?;
+        out.argument_count = self.read_if(is_function_call, |s| s.node_argument_count(node))?;
+        out.distinct = self.read_if(kind == KIND_AGGREGATE_FUNCTION_CALL, |s| {
             s.node_distinct(node)
         })?;
-        let join_type = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_join_type(node))?;
-        let has_using = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_has_using(node))?;
-        let is_descending =
+        out.is_descending =
             self.read_if(kind == KIND_ORDER_BY_ITEM, |s| s.node_is_descending(node))?;
-        let is_correlated =
-            self.read_if(kind == KIND_COLUMN_REF, |s| s.node_is_correlated(node))?;
-        let set_operation = self.read_if(kind == KIND_SET_OPERATION_SCAN, |s| {
+        out.subquery_kind =
+            self.read_if(kind == KIND_SUBQUERY_EXPR, |s| s.node_subquery_kind(node))?;
+        out.struct_field_index = self.read_if(kind == KIND_GET_STRUCT_FIELD, |s| {
+            s.rpc_int32(SVC_RESOLVED_GET_STRUCT_FIELD, MID_FIELD_IDX, node)
+        })?;
+        out.computed_column_name = self.read_if(kind == KIND_COMPUTED_COLUMN, |s| {
+            s.node_computed_column_name(node)
+        })?;
+        if kind == KIND_CAST {
+            out.cast = self.node_cast(node, out.type_name.as_deref())?;
+        }
+        out.parameter_name = self.read_if(kind == KIND_PARAMETER, |s| {
+            s.rpc_string(SVC_RESOLVED_PARAMETER, MID_PARAMETER_NAME, node)
+        })?;
+        Ok(())
+    }
+
+    /// Fills the attributes of scan nodes (table, join, set-operation,
+    /// aggregate, array, project, limit/offset, WITH) that apply to `kind`.
+    fn fill_scan_attributes(
+        &mut self,
+        node: u64,
+        kind: &str,
+        out: &mut ResolvedNode,
+    ) -> Result<(), Error> {
+        out.table_name = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_table_name(node))?;
+        out.scan_columns = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_scan_columns(node))?;
+        out.alias = self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_alias(node))?;
+        out.column_index_list =
+            self.read_if(kind == KIND_TABLE_SCAN, |s| s.node_column_index_list(node))?;
+        out.join_type = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_join_type(node))?;
+        out.has_using = self.read_if(kind == KIND_JOIN_SCAN, |s| s.node_has_using(node))?;
+        out.set_operation = self.read_if(kind == KIND_SET_OPERATION_SCAN, |s| {
             s.node_set_operation(node)
         })?;
-        let subquery_kind =
-            self.read_if(kind == KIND_SUBQUERY_EXPR, |s| s.node_subquery_kind(node))?;
-        let group_by_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
+        out.group_by_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
             s.node_group_by_columns(node)
         })?;
-        let aggregate_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
+        out.aggregate_columns = self.read_if(kind == KIND_AGGREGATE_SCAN, |s| {
             s.node_aggregate_columns(node)
         })?;
-        let limit_offset = self.read_if(kind == KIND_LIMIT_OFFSET_SCAN, |s| {
+        out.limit_offset = self.read_if(kind == KIND_LIMIT_OFFSET_SCAN, |s| {
             s.node_limit_offset(node)
         })?;
-        let with_query_name = if kind == KIND_WITH_ENTRY {
+        out.with_query_name = if kind == KIND_WITH_ENTRY {
             Some(self.rpc_string(SVC_RESOLVED_WITH_ENTRY, MID_WITH_QUERY_NAME, node)?)
         } else if kind == KIND_WITH_REF_SCAN {
             Some(self.rpc_string(
@@ -1243,99 +1389,43 @@ impl Module {
         } else {
             None
         };
-        let is_value_table =
-            self.read_if(kind == KIND_QUERY_STMT, |s| s.node_is_value_table(node))?;
-        let struct_field_index = self.read_if(kind == KIND_GET_STRUCT_FIELD, |s| {
-            s.rpc_int32(SVC_RESOLVED_GET_STRUCT_FIELD, MID_FIELD_IDX, node)
-        })?;
-        let array_element_name =
+        out.array_element_name =
             self.read_if(kind == KIND_ARRAY_SCAN, |s| s.node_array_element_name(node))?;
-        let is_outer = self.read_if(kind == KIND_ARRAY_SCAN, |s| s.node_is_outer(node))?;
-        let project_columns =
+        out.is_outer = self.read_if(kind == KIND_ARRAY_SCAN, |s| s.node_is_outer(node))?;
+        out.project_columns =
             self.read_if(kind == KIND_PROJECT_SCAN, |s| s.node_scan_columns(node))?;
-        let computed_column_name = self.read_if(kind == KIND_COMPUTED_COLUMN, |s| {
-            s.node_computed_column_name(node)
-        })?;
-        let column_definition_name = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
+        Ok(())
+    }
+
+    /// Fills the attributes of statement and DDL/DML nodes (query, column
+    /// definition, INSERT, CREATE, MERGE) that apply to `kind`.
+    fn fill_statement_attributes(
+        &mut self,
+        node: u64,
+        kind: &str,
+        out: &mut ResolvedNode,
+    ) -> Result<(), Error> {
+        out.is_value_table =
+            self.read_if(kind == KIND_QUERY_STMT, |s| s.node_is_value_table(node))?;
+        out.column_definition_name = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
             s.rpc_string(
                 SVC_RESOLVED_COLUMN_DEFINITION,
                 MID_COLUMN_DEFINITION_NAME,
                 node,
             )
         })?;
-        let column_definition_type = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
+        out.column_definition_type = self.read_if(kind == KIND_COLUMN_DEFINITION, |s| {
             s.node_column_definition_type(node)
         })?;
-        let insert_mode = self.read_if(kind == KIND_INSERT_STMT, |s| s.node_insert_mode(node))?;
-        let insert_columns =
+        out.insert_mode = self.read_if(kind == KIND_INSERT_STMT, |s| s.node_insert_mode(node))?;
+        out.insert_columns =
             self.read_if(kind == KIND_INSERT_STMT, |s| s.node_insert_columns(node))?;
-        let create_mode = self.read_if(is_create_statement(&kind), |s| s.node_create_mode(node))?;
-        let (merge_action, merge_match) = if kind == KIND_MERGE_WHEN {
-            (
-                Some(self.node_merge_action(node)?),
-                Some(self.node_merge_match(node)?),
-            )
-        } else {
-            (None, None)
-        };
-        // A location can attach to any resolved node, so this is not gated on kind.
-        let parse_location = self.node_parse_location(node)?;
-        let cast = if kind == KIND_CAST {
-            self.node_cast(node, type_name.as_deref())?
-        } else {
-            None
-        };
-        let parameter_name = self.read_if(kind == KIND_PARAMETER, |s| {
-            s.rpc_string(SVC_RESOLVED_PARAMETER, MID_PARAMETER_NAME, node)
-        })?;
-        let child_ptrs = self.child_nodes(node)?;
-        let mut children = Vec::with_capacity(child_ptrs.len());
-        for child in child_ptrs {
-            if child != 0 {
-                children.push(self.build_resolved_node(child)?);
-            }
+        out.create_mode = self.read_if(is_create_statement(kind), |s| s.node_create_mode(node))?;
+        if kind == KIND_MERGE_WHEN {
+            out.merge_action = Some(self.node_merge_action(node)?);
+            out.merge_match = Some(self.node_merge_match(node)?);
         }
-        Ok(ResolvedNode {
-            kind,
-            type_name,
-            column_ref,
-            literal_value,
-            has_explicit_type,
-            function_name,
-            table_name,
-            cast,
-            parameter_name,
-            argument_count,
-            scan_columns,
-            alias,
-            column_index_list,
-            distinct,
-            join_type,
-            has_using,
-            is_descending,
-            is_correlated,
-            set_operation,
-            subquery_kind,
-            group_by_columns,
-            aggregate_columns,
-            limit_offset,
-            with_query_name,
-            is_value_table,
-            struct_field_index,
-            array_element_name,
-            is_outer,
-            project_columns,
-            computed_column_name,
-            column_definition_name,
-            column_definition_type,
-            insert_mode,
-            insert_columns,
-            create_mode,
-            merge_action,
-            merge_match,
-            parse_location,
-            children,
-        })
+        Ok(())
     }
 
     /// Reads the source and target types of a `ResolvedCast` node.

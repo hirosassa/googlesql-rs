@@ -1,4 +1,4 @@
-//! The default [`GuestInstance`] engine: the GoogleSQL prebuilt wasm running on
+//! The default [`GuestInstance`] engine: the `GoogleSQL` prebuilt wasm running on
 //! wasmtime.
 //!
 //! The [`GuestInstance`] RPC convention it serves is described on
@@ -90,7 +90,7 @@ struct HostState {
     wasi: WasiP1Ctx,
 }
 
-/// A GoogleSQL guest instance backed by wasmtime.
+/// A `GoogleSQL` guest instance backed by wasmtime.
 ///
 /// wasmtime's `Store` requires exclusive access (`&mut`), so every method takes
 /// `&mut self`, serializing all calls through one instance. The type is [`Send`]
@@ -148,7 +148,7 @@ static BUNDLED_TZDB: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 /// every host then analyzes the same tz data, whatever it ships locally.
 ///
 /// Concretely, the [`tzdb`](https://docs.rs/tzdb) crate ships the IANA database
-/// in the binary; this writes each zone out as a TZif file under
+/// in the binary; this writes each zone out as a `TZif` file under
 /// `<cache root>/<tz version>/` once per version (guarded by the
 /// [`TZDB_MARKER`] file) and the directory is preopened at the guest path.
 ///
@@ -191,7 +191,7 @@ fn tzdb_cache_root() -> PathBuf {
     std::env::temp_dir().join(format!("googlesql-tzdb{user}"))
 }
 
-/// Writes every bundled zone out as a TZif file under `<root>/<tz version>/`
+/// Writes every bundled zone out as a `TZif` file under `<root>/<tz version>/`
 /// and returns that directory.
 ///
 /// The tree is built under a `.tmp-<pid>` sibling and renamed into place, so a
@@ -838,7 +838,7 @@ mod tzdb_tests {
         root
     }
 
-    /// Nested zone names (`America/Argentina/...`) materialize as real TZif
+    /// Nested zone names (`America/Argentina/...`) materialize as real `TZif`
     /// files under subdirectories of the version directory, not flattened or
     /// skipped.
     #[test]

@@ -1,4 +1,4 @@
-//! The engine-agnostic [`Module`]: the GoogleSQL bindings and the RPC
+//! The engine-agnostic [`Module`]: the `GoogleSQL` bindings and the RPC
 //! marshaling that drive a [`GuestInstance`].
 //!
 //! `Module` owns the parser/formatter/analyzer bindings and the shared plumbing
@@ -27,7 +27,7 @@ const MID_ENABLE_LANGUAGE_FEATURE: i32 = 6;
 const MID_SET_PRODUCT_MODE: i32 = 28;
 
 /// `ProductMode::PRODUCT_INTERNAL`: the default type surface (e.g. `DOUBLE`,
-/// `INT64`). GoogleSQL numbers its `ProductMode` enum from 1, so this is 1, not 0.
+/// `INT64`). `GoogleSQL` numbers its `ProductMode` enum from 1, so this is 1, not 0.
 /// The public [`ProductMode`](crate::ProductMode) enum owns the wire mapping;
 /// this is only the default the `Module` starts with.
 const PRODUCT_MODE_INTERNAL: i32 = 1;
@@ -35,7 +35,7 @@ const PRODUCT_MODE_INTERNAL: i32 = 1;
 /// How the analyzer's optional [`LanguageFeature`](crate::LanguageFeature) set
 /// is built for [`Module::language_options`].
 ///
-/// The two variants are the two opposite defaults ZetaSQL offers: start from
+/// The two variants are the two opposite defaults `ZetaSQL` offers: start from
 /// every feature on and switch some off, or start from every feature off and
 /// switch some on.
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ enum LanguageFeatureMode {
     Minimal(Vec<i32>),
 }
 
-/// A single instance of the GoogleSQL guest, the entry point to the parser,
+/// A single instance of the `GoogleSQL` guest, the entry point to the parser,
 /// formatter, and analyzer.
 ///
 /// Each `Module` owns one `GuestInstance`, which requires exclusive access, so
@@ -60,7 +60,7 @@ enum LanguageFeatureMode {
 /// deliberately not `Sync`: parallelism comes from separate instances, not from
 /// sharing one.
 pub struct Module {
-    /// The wasm engine that executes the GoogleSQL guest. Boxed as a trait
+    /// The wasm engine that executes the `GoogleSQL` guest. Boxed as a trait
     /// object so the default wasmtime engine and a future ahead-of-time-compiled
     /// engine share the identical `Module` above them; the indirection is one
     /// vtable hop per RPC, negligible beside the guest call itself.
@@ -180,6 +180,10 @@ impl Module {
     /// wasmtime baseline to compare against), otherwise the `native-ffi` cdylib
     /// engine, otherwise the `native` (wasm2rs) engine. Every method past
     /// construction is backend-agnostic, so the choice is invisible here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Instantiate`] if the engine cannot be loaded or initialized.
     #[cfg(feature = "wasmtime")]
     pub fn new() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
@@ -190,6 +194,10 @@ impl Module {
     /// Loads the default engine (the `native-ffi` cdylib, as `wasmtime` is not
     /// enabled) and returns a fully initialized instance. See the `wasmtime`
     /// variant of this method for how the default engine is chosen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the `guest-ffi` instance cannot be created.
     #[cfg(all(not(feature = "wasmtime"), feature = "native-ffi"))]
     pub fn new() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
@@ -201,6 +209,11 @@ impl Module {
     /// `wasmtime` nor `native-ffi` is enabled) and returns a fully initialized
     /// instance. See the `wasmtime` variant of this method for how the default
     /// engine is chosen.
+    ///
+    /// # Errors
+    ///
+    /// Never fails today: the `native` engine is constructed infallibly, and the
+    /// `Result` keeps the signature uniform with the other engines.
     #[cfg(all(
         not(feature = "wasmtime"),
         not(feature = "native-ffi"),
@@ -225,6 +238,11 @@ impl Module {
     /// The generated `guest` crate the `native` feature depends on is large and
     /// not committed; see `docs/NATIVE.md` for how to provision it
     /// (`scripts/fetch-native-guest.sh`) and build with `--features native`.
+    ///
+    /// # Errors
+    ///
+    /// Never fails today: the `native` engine is constructed infallibly, and the
+    /// `Result` keeps the signature uniform with the other engines.
     #[cfg(feature = "native")]
     pub fn new_native() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
@@ -251,6 +269,10 @@ impl Module {
     /// The cdylib is provisioned separately (downloaded from a `native-ffi-v*`
     /// Release, or built from `native/guest-ffi` and located via
     /// `GUEST_FFI_LIB`); see `docs/NATIVE.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the `guest-ffi` instance cannot be created.
     #[cfg(feature = "native-ffi")]
     pub fn new_native_ffi() -> Result<Self, Error> {
         Ok(Self::from_backend(Box::new(
@@ -304,7 +326,7 @@ impl Module {
     ///
     /// Use for handles whose ownership transfers into the wasm side (e.g. a
     /// `SimpleColumn` adopted by a `SimpleTable`), which the host must not free.
-    /// Returns [`Error::GoogleSql`] if the response carries a GoogleSQL error, or
+    /// Returns [`Error::GoogleSql`] if the response carries a `GoogleSQL` error, or
     /// [`Error::Protocol`] if the constructor yields a null handle.
     pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
         let resp = self.invoke(svc, mid, req)?;
@@ -324,7 +346,7 @@ impl Module {
     /// dropped, defers freeing the resulting wasm-side handle via
     /// `w_<free_svc>_<free_mid>` (run by the enclosing [`with_frees`](Module::with_frees)).
     ///
-    /// Returns [`Error::GoogleSql`] if the response carries a GoogleSQL error, or
+    /// Returns [`Error::GoogleSql`] if the response carries a `GoogleSQL` error, or
     /// [`Error::Protocol`] if the constructor yields a null handle.
     pub(crate) fn acquire_handle(
         &mut self,
@@ -357,7 +379,7 @@ impl Module {
     /// feature set and all statement kinds accepted (unless restricted), building
     /// it on first use.
     ///
-    /// GoogleSQL gates optional syntax (e.g. the `QUALIFY` clause) behind
+    /// `GoogleSQL` gates optional syntax (e.g. the `QUALIFY` clause) behind
     /// language features that default `LanguageOptions` leaves off, and its
     /// analyzer resolves only query statements unless told otherwise. By default
     /// the parser and analyzer both wire in the maximum released feature set and
@@ -519,21 +541,39 @@ impl Module {
     }
 
     /// Allocates `len` bytes in wasm linear memory and returns the pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the guest allocator call fails.
     pub fn alloc(&mut self, len: u32) -> Result<u32, Error> {
         self.backend.alloc(len)
     }
 
     /// Frees a pointer previously returned by `alloc`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the guest free call fails.
     pub fn free(&mut self, ptr: u32) -> Result<(), Error> {
         self.backend.free(ptr)
     }
 
     /// Writes a byte slice into wasm memory at `ptr`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Memory`] if `ptr..ptr + data.len()` is not a valid range of guest
+    /// memory.
     pub fn write(&mut self, ptr: u32, data: &[u8]) -> Result<(), Error> {
         self.backend.write(ptr, data)
     }
 
     /// Reads `len` bytes from wasm memory starting at `ptr` and returns them as a `Vec<u8>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Memory`] if `ptr..ptr + len` is not a valid range of guest
+    /// memory.
     pub fn read(&mut self, ptr: u32, len: u32) -> Result<Vec<u8>, Error> {
         self.backend.read(ptr, len)
     }
@@ -541,6 +581,12 @@ impl Module {
     /// Invokes a wasmify RPC following the `w_<svc>_<mid>` convention: encodes
     /// `req` into the reused request region, calls the export via the backend, and
     /// decodes the packed response, freeing the wasm-side response buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the RPC export traps, [`Error::Memory`] if the request
+    /// cannot be written or the response cannot be read, and [`Error::Protocol`] if the
+    /// packed response is malformed.
     pub fn invoke(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<Vec<u8>, Error> {
         let (req_ptr, req_len) = self.prepare_request(req)?;
         let packed = self.backend.call_rpc(svc, mid, req_ptr, req_len)?;
@@ -549,6 +595,12 @@ impl Module {
 
     /// Calls a named export (`wasmify_get_type_name`, etc.), the by-name
     /// counterpart to [`invoke`](Module::invoke).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`] if the named export is missing or traps, [`Error::Memory`]
+    /// if the request cannot be written or the response cannot be read, and
+    /// [`Error::Protocol`] if the packed response is malformed.
     pub fn call_export(&mut self, name: &str, req: &[u8]) -> Result<Vec<u8>, Error> {
         let (req_ptr, req_len) = self.prepare_request(req)?;
         let packed = self.backend.call_named(name, req_ptr, req_len)?;

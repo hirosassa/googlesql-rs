@@ -1,6 +1,6 @@
 //! The engine-agnostic wasm ABI that [`Module`](crate::Module) drives.
 //!
-//! GoogleSQL's parser, formatter, and analyzer are reached through a small,
+//! `GoogleSQL`'s parser, formatter, and analyzer are reached through a small,
 //! fixed set of wasm operations: allocate and free linear memory, read and write
 //! it, and call an export following the
 //! `w_<svc>_<mid>(ptr,len) -> (ptr<<32 | len)` RPC convention (or a named export
@@ -20,7 +20,7 @@
 
 use crate::error::Error;
 
-/// A single running instance of the GoogleSQL guest, abstracted over the engine
+/// A single running instance of the `GoogleSQL` guest, abstracted over the engine
 /// that executes it.
 ///
 /// Implementors own the guest's linear memory and exports. Resolving an export

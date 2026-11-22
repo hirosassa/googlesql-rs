@@ -1,4 +1,4 @@
-//! Prepares the GoogleSQL prebuilt WebAssembly module at build time.
+//! Prepares the `GoogleSQL` prebuilt `WebAssembly` module at build time.
 //!
 //! Resolution priority:
 //! 1. Local file pointed to by the `GOOGLESQL_WASM` environment variable (offline / development)

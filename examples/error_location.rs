@@ -1,4 +1,4 @@
-//! Read the source position of a GoogleSQL error from `SqlError`.
+//! Read the source position of a `GoogleSQL` error from `SqlError`.
 //!
 //! Run with: `cargo run --example error_location`
 

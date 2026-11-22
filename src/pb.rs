@@ -288,7 +288,7 @@ pub fn read_int32_at_field(resp: &[u8], field: u32) -> Result<Option<i32>> {
 
 /// Reads every int32 stored at the given repeated field number from a response.
 ///
-/// GoogleSQL emits repeated `int32` either packed (a single length-delimited run
+/// `GoogleSQL` emits repeated `int32` either packed (a single length-delimited run
 /// of varints) or unpacked (one wire-type-0 field per element); this accepts
 /// both, so `column_index_list`-style accessors decode into one value per
 /// element, in order. An absent field yields an empty vector; a malformed

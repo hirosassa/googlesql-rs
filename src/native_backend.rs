@@ -193,7 +193,7 @@ impl guest::Imports for HostImports {
     }
 }
 
-/// A running instance of the wasm2rs-transpiled GoogleSQL guest.
+/// A running instance of the wasm2rs-transpiled `GoogleSQL` guest.
 ///
 /// Holds the generated `Instance` (which owns the guest's linear memory as a
 /// `Vec<u8>`) and drives it entirely in native Rust. Like the wasmtime engine

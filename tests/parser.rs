@@ -1,4 +1,4 @@
-//! End-to-end tests for parser functionality (parse_statement → canonical SQL).
+//! End-to-end tests for parser functionality (`parse_statement` → canonical SQL).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -29,7 +29,7 @@ fn parses_and_canonicalizes_select() {
 
 /// A `QUALIFY` clause parses and round-trips through the canonical SQL.
 ///
-/// `QUALIFY` is gated behind a GoogleSQL language feature; the parser enables
+/// `QUALIFY` is gated behind a `GoogleSQL` language feature; the parser enables
 /// the maximum language feature set so the clause is accepted.
 #[test]
 fn parses_qualify_clause() {
@@ -44,7 +44,7 @@ fn parses_qualify_clause() {
     );
 }
 
-/// A SQL statement with a syntax error returns a GoogleSql error.
+/// A SQL statement with a syntax error returns a `GoogleSql` error.
 #[test]
 fn returns_error_for_invalid_sql() {
     let mut module = Module::new().unwrap();
@@ -193,7 +193,7 @@ fn parses_a_bare_expression() {
     );
 }
 
-/// A syntactically invalid expression returns a GoogleSql error.
+/// A syntactically invalid expression returns a `GoogleSql` error.
 #[test]
 fn returns_error_for_invalid_expression() {
     let mut module = Module::new().unwrap();
@@ -247,7 +247,7 @@ fn parses_a_struct_type() {
     );
 }
 
-/// An invalid type string returns a GoogleSql error.
+/// An invalid type string returns a `GoogleSql` error.
 #[test]
 fn returns_error_for_invalid_type() {
     let mut module = Module::new().unwrap();
@@ -313,7 +313,7 @@ fn parses_a_plain_statement_as_a_script() {
     );
 }
 
-/// An invalid script returns a GoogleSql error.
+/// An invalid script returns a `GoogleSql` error.
 #[test]
 fn returns_error_for_invalid_script() {
     let mut module = Module::new().unwrap();

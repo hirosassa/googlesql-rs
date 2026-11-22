@@ -1,7 +1,7 @@
-//! Rust bindings for GoogleSQL (ZetaSQL).
+//! Rust bindings for `GoogleSQL` (`ZetaSQL`).
 //!
 //! Drives the prebuilt WebAssembly module published by goccy/googlesql-wasm on
-//! top of wasmtime, so you get GoogleSQL's parser, formatter, and analyzer
+//! top of wasmtime, so you get `GoogleSQL`'s parser, formatter, and analyzer
 //! without building the C++ library or writing any `unsafe` FFI.
 //!
 //! # Quick start
@@ -42,11 +42,11 @@
 //!
 //! # Errors
 //!
-//! Every fallible call returns [`Error`]. A problem reported by GoogleSQL itself
+//! Every fallible call returns [`Error`]. A problem reported by `GoogleSQL` itself
 //! (a syntax error, an unresolved name, an unsupported feature) surfaces as
 //! [`Error::GoogleSql`], carrying a [`SqlError`] whose
 //! [`location`](SqlError::location) exposes the offending [`ErrorLocation`] when
-//! GoogleSQL supplied one.
+//! `GoogleSQL` supplied one.
 //!
 //! # Backends
 //!
