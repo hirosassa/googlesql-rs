@@ -308,10 +308,10 @@ impl Module {
     /// [`Error::Protocol`] if the constructor yields a null handle.
     pub(crate) fn new_handle(&mut self, svc: i32, mid: i32, req: &[u8]) -> Result<u64, Error> {
         let resp = self.invoke(svc, mid, req)?;
-        if let Some(message) = pb::extract_error(&resp) {
+        if let Some(message) = pb::extract_error(&resp)? {
             return Err(Error::GoogleSql(message.into()));
         }
-        let ptr = pb::read_handle_at_field(&resp, 1);
+        let ptr = pb::read_handle_at_field(&resp, 1)?;
         if ptr == 0 {
             return Err(Error::Protocol(format!(
                 "constructor w_{svc}_{mid} returned null"
@@ -943,7 +943,7 @@ mod tests {
         let resp = module
             .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
             .expect("NewParserOptions RPC");
-        let handle = super::pb::read_handle_at_field(&resp, 1);
+        let handle = super::pb::read_handle_at_field(&resp, 1).expect("handle");
         assert_ne!(handle, 0, "NewParserOptions must return a non-null handle");
 
         // Free it back through the single-handle helper under test.
@@ -1014,7 +1014,7 @@ mod tests {
         let resp = module
             .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
             .expect("NewParserOptions RPC");
-        let first = super::pb::read_handle_at_field(&resp, 1);
+        let first = super::pb::read_handle_at_field(&resp, 1).expect("handle");
         assert_ne!(first, 0, "NewParserOptions must return a non-null handle");
         assert_eq!(
             module.req_scratch_ptr, 0,
@@ -1032,7 +1032,7 @@ mod tests {
         let resp = module
             .invoke(SVC_PARSER_OPTIONS, MID_NEW_PARSER_OPTIONS, &[])
             .expect("NewParserOptions RPC");
-        let second = super::pb::read_handle_at_field(&resp, 1);
+        let second = super::pb::read_handle_at_field(&resp, 1).expect("handle");
         module
             .invoke_handle(SVC_PARSER_OPTIONS, MID_FREE_PARSER_OPTIONS, second)
             .expect("FreeParserOptions via invoke_handle");
