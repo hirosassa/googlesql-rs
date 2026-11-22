@@ -321,6 +321,13 @@ jobs:
         working-directory: googlesql-rs
         run: cargo build --manifest-path native/guest-ffi/Cargo.toml
 
+      - name: Clippy (guest-ffi shim)
+        working-directory: googlesql-rs
+        # The cdylib is a separate crate with its own `[lints]` table (mirroring
+        # the root), so the main-crate clippy step below never lints it. It
+        # needs the generated `guest` crate, which the build above just made.
+        run: cargo clippy --manifest-path native/guest-ffi/Cargo.toml --all-targets -- -D warnings -W clippy::nursery
+
       - name: Unit-test the build helpers
         working-directory: googlesql-rs
         run: cargo test --test build_helpers
