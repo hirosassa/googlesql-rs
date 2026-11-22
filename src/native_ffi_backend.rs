@@ -1,7 +1,7 @@
 //! The native-ffi [`GuestInstance`] engine: the wasm2rs `guest` reached through
 //! a C-ABI cdylib (`native/guest-ffi`) instead of the `guest` path-dependency.
 //!
-//! Enabled by the `native-ffi` feature (PoC). Where the `native` backend links
+//! Enabled by the `native-ffi` feature (`PoC`). Where the `native` backend links
 //! the `guest` crate directly and drives its `Instance` methods in-process, this
 //! backend links a prebuilt `guest-ffi` shared library and reaches the same
 //! engine through a flat C ABI. Every request marshaling and the packed-response

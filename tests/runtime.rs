@@ -31,8 +31,8 @@ fn instantiates_and_roundtrips_memory() {
     module.free(ptr).unwrap();
 }
 
-/// A real RPC (NewParserOptions = svc700/mid0, empty request) succeeds and returns
-/// a non-empty response (the ParserOptions handle).
+/// A real RPC (`NewParserOptions` = svc700/mid0, empty request) succeeds and returns
+/// a non-empty response (the `ParserOptions` handle).
 #[test]
 fn invoke_new_parser_options_returns_response() {
     let mut module = Module::new().unwrap();

@@ -1,4 +1,4 @@
-//! High-level API for the GoogleSQL formatter.
+//! High-level API for the `GoogleSQL` formatter.
 //!
 //! `FormatSql` (svc/mid from the wasmify glue) is self-contained: it takes only
 //! the SQL string and returns the pretty-printed SQL, with no options or handles.
@@ -13,9 +13,15 @@ const SVC_FORMATTER: i32 = 0;
 const MID_FORMAT_SQL: i32 = 5;
 
 impl Module {
-    /// Pretty-prints a SQL string into GoogleSQL's canonical formatted form.
+    /// Pretty-prints a SQL string into `GoogleSQL`'s canonical formatted form.
     ///
     /// Returns [`Error::GoogleSql`] when the input cannot be parsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn format_sql(&mut self, sql: &str) -> Result<String, Error> {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, sql);

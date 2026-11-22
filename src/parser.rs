@@ -1,4 +1,4 @@
-//! High-level API for the GoogleSQL parser.
+//! High-level API for the `GoogleSQL` parser.
 //!
 //! Call chain (svc/mid values from `docs/SPIKE.md`):
 //! NewParserOptions(700,0) → ParseStatement(0,11) → ParserOutput.Node(701,3)
@@ -51,11 +51,13 @@ pub struct ParsedStatement {
 
 impl ParsedStatement {
     /// The normalized canonical SQL string.
+    #[must_use]
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
     }
 
     /// The root node of the AST.
+    #[must_use]
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
@@ -73,11 +75,13 @@ pub struct ParsedExpression {
 
 impl ParsedExpression {
     /// The normalized canonical form of the expression.
+    #[must_use]
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
     }
 
     /// The root node of the AST (an expression node).
+    #[must_use]
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
@@ -95,17 +99,19 @@ pub struct ParsedType {
 
 impl ParsedType {
     /// The normalized canonical form of the type.
+    #[must_use]
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
     }
 
     /// The root node of the AST (a type node).
+    #[must_use]
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
 }
 
-/// A parsed GoogleSQL script (a sequence of statements that may include
+/// A parsed `GoogleSQL` script (a sequence of statements that may include
 /// scripting constructs such as `DECLARE`, `SET`, `IF`, `WHILE`, and
 /// `BEGIN ... END` blocks).
 ///
@@ -119,11 +125,13 @@ pub struct ParsedScript {
 
 impl ParsedScript {
     /// The normalized canonical form of the script.
+    #[must_use]
     pub fn canonical_sql(&self) -> &str {
         &self.canonical_sql
     }
 
     /// The root node of the AST (a script node).
+    #[must_use]
     pub const fn root(&self) -> &AstNode {
         &self.root
     }
@@ -131,7 +139,7 @@ impl ParsedScript {
 
 /// The outcome of parsing a semicolon-separated script.
 ///
-/// GoogleSQL parses one statement at a time and cannot recover past a syntax
+/// `GoogleSQL` parses one statement at a time and cannot recover past a syntax
 /// error, so [`statements`](Self::statements) holds every statement parsed
 /// before parsing halted and [`error`](Self::error) holds the syntax error that
 /// stopped it, if any.
@@ -143,6 +151,7 @@ pub struct ParsedStatements {
 
 impl ParsedStatements {
     /// The statements parsed successfully, in source order.
+    #[must_use]
     pub fn statements(&self) -> &[ParsedStatement] {
         &self.statements
     }
@@ -152,16 +161,19 @@ impl ParsedStatements {
     /// Like [`parse_statement`](Module::parse_statement) errors, this carries no
     /// line/column: the wasm ABI reports parser errors as a plain string with no
     /// position payload.
+    #[must_use]
     pub const fn error(&self) -> Option<&SqlError> {
         self.error.as_ref()
     }
 
     /// Whether the entire script parsed without a syntax error.
+    #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.error.is_none()
     }
 
     /// Consumes the result, returning the statements parsed before any error.
+    #[must_use]
     pub fn into_statements(self) -> Vec<ParsedStatement> {
         self.statements
     }
@@ -175,6 +187,12 @@ impl Module {
     /// Every wasm-side handle acquired during the parse is an RAII `Handle`
     /// that enqueues its own free on drop; the enclosing `with_frees`
     /// releases them all, whether the parse succeeded or failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn parse_statement(&mut self, sql: &str) -> Result<ParsedStatement, Error> {
         self.with_frees(|module| {
             let options = module.acquire_parser_options()?;
@@ -196,6 +214,12 @@ impl Module {
     /// Handle lifetimes mirror [`parse_statement`](Self::parse_statement): every
     /// wasm-side handle is released by the enclosing `with_frees` once the tree
     /// has been read, whether the parse succeeded or failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn parse_expression(&mut self, sql: &str) -> Result<ParsedExpression, Error> {
         self.with_frees(|module| {
             let options = module.acquire_parser_options()?;
@@ -216,6 +240,12 @@ impl Module {
     /// Handle lifetimes mirror [`parse_statement`](Self::parse_statement): every
     /// wasm-side handle is released by the enclosing `with_frees` once the tree
     /// has been read, whether the parse succeeded or failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn parse_type(&mut self, sql: &str) -> Result<ParsedType, Error> {
         self.with_frees(|module| {
             let options = module.acquire_parser_options()?;
@@ -228,7 +258,7 @@ impl Module {
         })
     }
 
-    /// Parses a GoogleSQL script into a single AST rooted at a script node.
+    /// Parses a `GoogleSQL` script into a single AST rooted at a script node.
     ///
     /// Unlike [`parse_statement`](Self::parse_statement), which rejects scripting
     /// constructs, this accepts a full script: variable declarations (`DECLARE`),
@@ -243,6 +273,12 @@ impl Module {
     /// Handle lifetimes mirror [`parse_statement`](Self::parse_statement): every
     /// wasm-side handle is released by the enclosing `with_frees` once the tree
     /// has been read, whether the parse succeeded or failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn parse_script(&mut self, sql: &str) -> Result<ParsedScript, Error> {
         self.with_frees(|module| {
             let options = module.acquire_parser_options()?;
@@ -263,13 +299,19 @@ impl Module {
     /// [`parse_statement`](Self::parse_statement) applies to every statement, so
     /// gated syntax such as the `QUALIFY` clause is accepted.
     ///
-    /// GoogleSQL halts at the first syntax error and cannot resume past it, so a
+    /// `GoogleSQL` halts at the first syntax error and cannot resume past it, so a
     /// malformed statement stops parsing: the returned [`ParsedStatements`] then
     /// holds every statement parsed before the error plus the error itself.
     ///
     /// The outer [`Error`] is reserved for infrastructure failures (a wasm or
-    /// protocol fault); a GoogleSQL syntax error is reported through
+    /// protocol fault); a `GoogleSQL` syntax error is reported through
     /// [`ParsedStatements::error`], never as an outer `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`], [`Error::Memory`] or [`Error::Protocol`] on an engine,
+    /// memory or response-contract failure. A `GoogleSQL` syntax error is not an `Err`:
+    /// it is reported through [`ParsedStatements::error`].
     pub fn parse_statements(&mut self, sql: &str) -> Result<ParsedStatements, Error> {
         self.parse_statement_stream(sql, MID_PARSE_NEXT_STATEMENT)
     }
@@ -288,10 +330,16 @@ impl Module {
     /// one tree.
     ///
     /// Error handling matches [`parse_statements`](Self::parse_statements):
-    /// GoogleSQL halts at the first syntax error and cannot resume, so
+    /// `GoogleSQL` halts at the first syntax error and cannot resume, so
     /// [`ParsedStatements`] holds every statement parsed before the error plus
     /// the error itself, and the outer [`Error`] is reserved for infrastructure
     /// faults.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Wasm`], [`Error::Memory`] or [`Error::Protocol`] on an engine,
+    /// memory or response-contract failure. A `GoogleSQL` syntax error is not an `Err`:
+    /// it is reported through [`ParsedStatements::error`].
     pub fn parse_script_statements(&mut self, sql: &str) -> Result<ParsedStatements, Error> {
         self.parse_statement_stream(sql, MID_PARSE_NEXT_SCRIPT_STATEMENT)
     }
