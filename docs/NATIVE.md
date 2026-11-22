@@ -188,6 +188,23 @@ feed them into `scripts/update-native-ffi-pins.sh <tag>` to rewrite `NATIVE_FFI_
 downstream builds can fetch. The `native-ffi` job in `native.yaml` exercises the whole
 fetch → decompress → verify → link → differential-test chain on every native-touching PR.
 
+### Boundary contract (status codes, poisoning, ABI version)
+
+Every `guest_*` entry point returns an `i32` status: `0` ok, `1` invalid pointer / out-of-range
+guest memory, `2` no matching export, `3` guest allocator out of memory (`wasm_alloc` returned
+NULL for a non-empty request — the reference wazero glue treats that as OOM too), `4` instance
+poisoned, `-1` guest trap caught. A trap leaves the guest half-executed, so the instance is
+**poisoned**: the library answers every later call with `4`, and only `guest_free_instance` is
+allowed. The Rust shim also remembers the poisoned state itself (it fails fast without crossing
+the FFI), so a prebuilt library that predates codes `3`/`4` is still guarded, and maps all codes
+through one function (`status_to_result`). `wasm_init`'s returned status is intentionally not a
+failure signal (the reference glue and the wasmtime backend ignore it; only a trap fails).
+
+The library also exports `guest_abi_version() -> u32` (currently `1`; a library without the
+symbol is version 0). The Rust shim does **not** reference it yet: a hard `extern` reference
+would make the currently pinned prebuilt (version 0) fail to link. Once a release containing it
+is pinned, add the check to `NativeFfiInstance::new` (follow-up).
+
 ## Differential results
 
 `src/native_backend.rs` (`#[cfg(test)]`) constructs both engines in one process and

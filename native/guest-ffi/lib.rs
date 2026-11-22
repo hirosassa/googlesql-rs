@@ -204,8 +204,22 @@ impl guest::Imports for HostImports {
     }
 }
 
-/// The opaque instance handle passed back and forth across the C ABI.
-type Inst = guest::Instance<HostImports>;
+/// The opaque instance handle passed back and forth across the C ABI: the guest
+/// instance plus the poison flag. Callers only ever see it as a `void*`.
+///
+/// `pub` only because it appears in the `extern "C"` signatures below.
+pub struct Inst {
+    guest: guest::Instance<HostImports>,
+    /// Set when a guest trap was caught. A trap leaves the guest half-executed
+    /// (shadow stack pointer, malloc state and wasm globals inconsistent), so a
+    /// poisoned instance rejects every call except [`guest_free_instance`].
+    poisoned: bool,
+}
+
+/// Version of this C ABI, returned by [`guest_abi_version`]. Bump on any change
+/// to a signature or to the meaning of a status code. Libraries that predate the
+/// handshake do not export the symbol and are implicitly version 0.
+const ABI_VERSION: u32 = 1;
 
 /// Success.
 const OK: i32 = 0;
@@ -213,7 +227,12 @@ const OK: i32 = 0;
 const ERR_MEMORY: i32 = 1;
 /// No export matched the requested `(svc, mid)` or name (a dispatch miss).
 const ERR_NO_EXPORT: i32 = 2;
-/// A guest trap (panic) unwound into the boundary and was caught.
+/// The guest allocator (`wasm_alloc`) returned NULL for a non-empty request.
+const ERR_ALLOC: i32 = 3;
+/// The instance trapped earlier; only [`guest_free_instance`] is allowed.
+const ERR_POISONED: i32 = 4;
+/// A guest trap (panic) unwound into the boundary and was caught. The instance
+/// is poisoned from this point on.
 const ERR_PANIC: i32 = -1;
 
 /// Reborrows a caller-provided pointer as a mutable reference, or `None` if null.
@@ -279,6 +298,40 @@ fn guard(body: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(ERR_PANIC)
 }
 
+/// [`guard`] for entry points that operate on a live instance: rejects a null or
+/// poisoned handle, and poisons the instance when `body` traps.
+///
+/// # Safety
+/// A non-null `inst` must be a live pointer from [`guest_new`], not aliased for
+/// the duration of the call.
+#[expect(
+    unsafe_code,
+    reason = "raw-pointer reborrow of the instance handle at the C-ABI boundary"
+)]
+unsafe fn with_instance(inst: *mut Inst, body: impl FnOnce(&mut Inst) -> i32) -> i32 {
+    // SAFETY: the caller guarantees `inst` is live and unaliased if non-null.
+    let Some(inst) = (unsafe { borrow_mut(inst) }) else {
+        return ERR_MEMORY;
+    };
+    if inst.poisoned {
+        return ERR_POISONED;
+    }
+    let status = guard(|| body(inst));
+    if status == ERR_PANIC {
+        inst.poisoned = true;
+    }
+    status
+}
+
+/// Returns the C ABI version ([`ABI_VERSION`]) this library implements, so a
+/// host can refuse a library whose signatures or status codes differ from the
+/// declarations it was compiled against.
+#[expect(unsafe_code, reason = "C-ABI export: exported symbol")]
+#[unsafe(no_mangle)]
+pub extern "C" fn guest_abi_version() -> u32 {
+    ABI_VERSION
+}
+
 /// Constructs and initializes a native instance, writing the owning pointer to
 /// `*out`. The caller must release it with [`guest_free_instance`].
 ///
@@ -297,15 +350,27 @@ pub unsafe extern "C" fn guest_new(out: *mut *mut Inst) -> i32 {
         };
         // Root the single WASI preopen at `/`, matching the wasmtime backend, so
         // the analyzer's absolute-path timezone reads resolve.
-        let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
-        instance.func60(); // WASI reactor / C++ global constructors.
-        let _status: i32 = instance.func15923(); // wasm_init (status ignored, as in native).
-        *out = Box::into_raw(Box::new(instance));
+        let mut guest = guest::Instance::new(HostImports).with_preopen_root("/");
+        guest.func60(); // WASI reactor / C++ global constructors.
+        // `wasm_init`'s returned status is deliberately not treated as failure:
+        // the reference wazero glue (spike/wazero.go) and the wasmtime backend
+        // both ignore it and only fail when the call traps, and no ABI note gives
+        // a nonzero value a failure meaning. A trap here is caught by `guard`.
+        let _wasm_init_status: i32 = guest.func15923();
+        *out = Box::into_raw(Box::new(Inst {
+            guest,
+            poisoned: false,
+        }));
         OK
     })
 }
 
-/// Releases an instance created by [`guest_new`]. A null pointer is ignored.
+/// Releases an instance created by [`guest_new`]. A null pointer is ignored. Also
+/// the only call permitted on a poisoned instance.
+///
+/// Returns nothing (the C signature is unchanged for compatibility); a teardown
+/// that traps is reported on stderr instead of being silently dropped, since the
+/// caller is typically a destructor with no way to act on a status.
 ///
 /// # Safety
 /// `inst` must be a pointer returned by [`guest_new`] and not used afterward.
@@ -318,14 +383,19 @@ pub unsafe extern "C" fn guest_free_instance(inst: *mut Inst) {
     if inst.is_null() {
         return;
     }
-    let _ = guard(|| {
+    let status = guard(|| {
         // SAFETY: `inst` came from `guest_new`'s `Box::into_raw` and is not aliased.
         drop(unsafe { Box::from_raw(inst) });
         OK
     });
+    if status != OK {
+        eprintln!("guest-ffi: guest_free_instance failed (status {status}); instance leaked");
+    }
 }
 
-/// Allocates `len` bytes in guest memory, writing the offset to `*out`.
+/// Allocates `len` bytes in guest memory, writing the offset to `*out`. A NULL
+/// result from the guest allocator for a non-empty request (its out-of-memory
+/// signal) is `ERR_ALLOC` and leaves `*out` untouched.
 ///
 /// # Safety
 /// `inst` must be a live instance and `out` a writable `*mut u32`.
@@ -335,15 +405,20 @@ pub unsafe extern "C" fn guest_free_instance(inst: *mut Inst) {
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn guest_alloc(inst: *mut Inst, len: u32, out: *mut u32) -> i32 {
-    guard(|| {
-        // SAFETY: the caller guarantees `inst` is live and `out` writable if non-null.
-        let (Some(inst), Some(out)) = (unsafe { borrow_mut(inst) }, unsafe { borrow_mut(out) })
-        else {
-            return ERR_MEMORY;
-        };
-        *out = inst.func61(len.cast_signed()).cast_unsigned();
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live and `out` writable if non-null.
+    unsafe {
+        with_instance(inst, |inst| {
+            let Some(out) = borrow_mut(out) else {
+                return ERR_MEMORY;
+            };
+            let ptr = inst.guest.func61(len.cast_signed()).cast_unsigned();
+            if ptr == 0 && len != 0 {
+                return ERR_ALLOC;
+            }
+            *out = ptr;
+            OK
+        })
+    }
 }
 
 /// Frees a guest allocation previously returned by [`guest_alloc`].
@@ -356,14 +431,13 @@ pub unsafe extern "C" fn guest_alloc(inst: *mut Inst, len: u32, out: *mut u32) -
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn guest_free(inst: *mut Inst, ptr: u32) -> i32 {
-    guard(|| {
-        // SAFETY: the caller guarantees `inst` is live if non-null.
-        let Some(inst) = (unsafe { borrow_mut(inst) }) else {
-            return ERR_MEMORY;
-        };
-        inst.func62(ptr.cast_signed());
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live if non-null.
+    unsafe {
+        with_instance(inst, |inst| {
+            inst.guest.func62(ptr.cast_signed());
+            OK
+        })
+    }
 }
 
 /// Copies `data_len` bytes from `data` into guest memory at offset `ptr`.
@@ -382,27 +456,27 @@ pub unsafe extern "C" fn guest_write(
     data: *const u8,
     data_len: usize,
 ) -> i32 {
-    guard(|| {
-        // SAFETY: the caller guarantees `inst` is live and `data`/`data_len`
-        // describe a readable range.
-        let (Some(inst), Some(data)) = (unsafe { borrow_mut(inst) }, unsafe {
-            bytes_from(data, data_len)
-        }) else {
-            return ERR_MEMORY;
-        };
-        let Ok(offset) = usize::try_from(ptr) else {
-            return ERR_MEMORY;
-        };
-        let Some(end) = offset.checked_add(data.len()) else {
-            return ERR_MEMORY;
-        };
-        let mem = inst.memory();
-        let Some(dst) = mem.get_mut(offset..end) else {
-            return ERR_MEMORY;
-        };
-        dst.copy_from_slice(data);
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live and `data`/`data_len`
+    // describe a readable range.
+    unsafe {
+        with_instance(inst, |inst| {
+            let Some(data) = bytes_from(data, data_len) else {
+                return ERR_MEMORY;
+            };
+            let Ok(offset) = usize::try_from(ptr) else {
+                return ERR_MEMORY;
+            };
+            let Some(end) = offset.checked_add(data.len()) else {
+                return ERR_MEMORY;
+            };
+            let mem = inst.guest.memory();
+            let Some(dst) = mem.get_mut(offset..end) else {
+                return ERR_MEMORY;
+            };
+            dst.copy_from_slice(data);
+            OK
+        })
+    }
 }
 
 /// Copies `len` bytes from guest memory at offset `ptr` into `out_buf`, which
@@ -417,30 +491,30 @@ pub unsafe extern "C" fn guest_write(
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn guest_read(inst: *mut Inst, ptr: u32, len: u32, out_buf: *mut u8) -> i32 {
-    guard(|| {
-        let Ok(offset) = usize::try_from(ptr) else {
-            return ERR_MEMORY;
-        };
-        let Ok(len) = usize::try_from(len) else {
-            return ERR_MEMORY;
-        };
-        // SAFETY: the caller guarantees `inst` is live and `out_buf` covers `len`
-        // writable bytes.
-        let (Some(inst), Some(out)) = (unsafe { borrow_mut(inst) }, unsafe {
-            bytes_from_mut(out_buf, len)
-        }) else {
-            return ERR_MEMORY;
-        };
-        let Some(end) = offset.checked_add(len) else {
-            return ERR_MEMORY;
-        };
-        let mem = inst.memory();
-        let Some(slice) = mem.get(offset..end) else {
-            return ERR_MEMORY;
-        };
-        out.copy_from_slice(slice);
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live and `out_buf` covers `len`
+    // writable bytes.
+    unsafe {
+        with_instance(inst, |inst| {
+            let Ok(offset) = usize::try_from(ptr) else {
+                return ERR_MEMORY;
+            };
+            let Ok(len) = usize::try_from(len) else {
+                return ERR_MEMORY;
+            };
+            let Some(out) = bytes_from_mut(out_buf, len) else {
+                return ERR_MEMORY;
+            };
+            let Some(end) = offset.checked_add(len) else {
+                return ERR_MEMORY;
+            };
+            let mem = inst.guest.memory();
+            let Some(slice) = mem.get(offset..end) else {
+                return ERR_MEMORY;
+            };
+            out.copy_from_slice(slice);
+            OK
+        })
+    }
 }
 
 /// Invokes the RPC export identified by `(svc, mid)` with the request at
@@ -461,18 +535,19 @@ pub unsafe extern "C" fn guest_call_rpc(
     len: u32,
     out: *mut u64,
 ) -> i32 {
-    guard(|| {
-        // SAFETY: the caller guarantees `inst` is live and `out` writable if non-null.
-        let (Some(inst), Some(out)) = (unsafe { borrow_mut(inst) }, unsafe { borrow_mut(out) })
-        else {
-            return ERR_MEMORY;
-        };
-        let Some(func) = dispatch::packed_by_rpc::<HostImports>(svc, mid) else {
-            return ERR_NO_EXPORT;
-        };
-        *out = func(inst, ptr.cast_signed(), len.cast_signed()).cast_unsigned();
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live and `out` writable if non-null.
+    unsafe {
+        with_instance(inst, |inst| {
+            let Some(out) = borrow_mut(out) else {
+                return ERR_MEMORY;
+            };
+            let Some(func) = dispatch::packed_by_rpc::<HostImports>(svc, mid) else {
+                return ERR_NO_EXPORT;
+            };
+            *out = func(&mut inst.guest, ptr.cast_signed(), len.cast_signed()).cast_unsigned();
+            OK
+        })
+    }
 }
 
 /// Invokes the named export with the request at `(ptr, len)`, writing the packed
@@ -494,23 +569,22 @@ pub unsafe extern "C" fn guest_call_named(
     len: u32,
     out: *mut u64,
 ) -> i32 {
-    guard(|| {
-        // SAFETY: the caller guarantees `inst` is live, `out` writable, and
-        // `name_ptr`/`name_len` a readable range.
-        let (Some(inst), Some(out), Some(name_bytes)) = (
-            unsafe { borrow_mut(inst) },
-            unsafe { borrow_mut(out) },
-            unsafe { bytes_from(name_ptr, name_len) },
-        ) else {
-            return ERR_MEMORY;
-        };
-        let Ok(name) = std::str::from_utf8(name_bytes) else {
-            return ERR_MEMORY;
-        };
-        let Some(func) = dispatch::packed_by_name::<HostImports>(name) else {
-            return ERR_NO_EXPORT;
-        };
-        *out = func(inst, ptr.cast_signed(), len.cast_signed()).cast_unsigned();
-        OK
-    })
+    // SAFETY: the caller guarantees `inst` is live, `out` writable, and
+    // `name_ptr`/`name_len` a readable range.
+    unsafe {
+        with_instance(inst, |inst| {
+            let (Some(out), Some(name_bytes)) = (borrow_mut(out), bytes_from(name_ptr, name_len))
+            else {
+                return ERR_MEMORY;
+            };
+            let Ok(name) = std::str::from_utf8(name_bytes) else {
+                return ERR_MEMORY;
+            };
+            let Some(func) = dispatch::packed_by_name::<HostImports>(name) else {
+                return ERR_NO_EXPORT;
+            };
+            *out = func(&mut inst.guest, ptr.cast_signed(), len.cast_signed()).cast_unsigned();
+            OK
+        })
+    }
 }

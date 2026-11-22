@@ -331,6 +331,13 @@ jobs:
         # differential test target (tests/native_ffi.rs) is linted too.
         run: cargo clippy --all-targets --features wasmtime -- -D warnings -W clippy::nursery
 
+      # The shim's in-crate tests (status mapping, poisoning, and the
+      # from-source-gated guest-OOM test) are lib tests, which the integration
+      # target below does not select.
+      - name: Shim unit tests (GUEST_FFI_LIB override)
+        working-directory: googlesql-rs
+        run: cargo test --features wasmtime --lib 'native_ffi_backend::'
+
       - name: Differential test vs wasmtime (GUEST_FFI_LIB override)
         working-directory: googlesql-rs
         run: cargo test --features wasmtime --test native_ffi

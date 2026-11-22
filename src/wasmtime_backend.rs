@@ -512,6 +512,9 @@ impl WasmtimeInstance {
             let winit = winit
                 .typed::<(), u32>(&store)
                 .map_err(|e| Error::Instantiate(format!("wasm_init type: {e}")))?;
+            // Only a trap fails instantiation; the returned status is ignored on
+            // purpose, as in the reference wazero glue (`spike/wazero.go`), where
+            // no ABI note gives a nonzero value a failure meaning.
             winit
                 .call(&mut store, ())
                 .map_err(|e| Error::Instantiate(format!("wasm_init call: {e}")))?;
