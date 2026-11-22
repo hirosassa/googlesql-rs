@@ -187,3 +187,69 @@ fn literal_nodes_expose_their_typed_values() {
     let parsed = module.parse_expression("a + b").unwrap();
     assert_eq!(parsed.root().literal(), None);
 }
+
+/// Parses `expr` and returns the root's binary operator, which must be a binary expression.
+fn root_binary_operator(module: &mut Module, expr: &str) -> googlesql::BinaryOperator {
+    let parsed = module.parse_expression(expr).unwrap();
+    assert_eq!(parsed.root().kind(), "ASTBinaryExpression", "{expr}");
+    parsed.root().binary_operator().unwrap()
+}
+
+// The wire value -> variant table is hand-written, so a shifted or swapped
+// entry would silently report the wrong operator; pin every reachable token.
+#[test]
+fn every_binary_operator_token_maps_to_its_variant() {
+    use googlesql::BinaryOp::{
+        BitwiseAnd, BitwiseOr, BitwiseXor, Concat, Divide, Eq, Ge, Gt, Is, Le, Like, Lt, Minus,
+        Multiply, Ne, Ne2, Plus,
+    };
+    let cases = [
+        ("a LIKE b", Like, false),
+        ("a = b", Eq, false),
+        ("a != b", Ne, false),
+        ("a <> b", Ne2, false),
+        ("a > b", Gt, false),
+        ("a < b", Lt, false),
+        ("a >= b", Ge, false),
+        ("a <= b", Le, false),
+        ("a | b", BitwiseOr, false),
+        ("a ^ b", BitwiseXor, false),
+        ("a & b", BitwiseAnd, false),
+        ("a + b", Plus, false),
+        ("a - b", Minus, false),
+        ("a * b", Multiply, false),
+        ("a / b", Divide, false),
+        ("a || b", Concat, false),
+    ];
+    let mut module = Module::new().unwrap();
+    for (expr, op, negated) in cases {
+        let got = root_binary_operator(&mut module, expr);
+        assert_eq!(got.operator(), op, "{expr}");
+        assert_eq!(got.is_negated(), negated, "{expr}");
+    }
+
+    // `IS [NOT] <literal>` is parsed as a binary IS; only NOT sets the flag.
+    let got = root_binary_operator(&mut module, "a IS NOT TRUE");
+    assert_eq!((got.operator(), got.is_negated()), (Is, true));
+    let got = root_binary_operator(&mut module, "a IS TRUE");
+    assert_eq!((got.operator(), got.is_negated()), (Is, false));
+}
+
+#[test]
+fn every_unary_operator_token_maps_to_its_variant() {
+    use googlesql::UnaryOp::{BitwiseNot, IsNotUnknown, IsUnknown, Minus, Not, Plus};
+    let cases = [
+        ("NOT x", Not),
+        ("~x", BitwiseNot),
+        ("-x", Minus),
+        ("+x", Plus),
+        ("x IS UNKNOWN", IsUnknown),
+        ("x IS NOT UNKNOWN", IsNotUnknown),
+    ];
+    let mut module = Module::new().unwrap();
+    for (expr, op) in cases {
+        let parsed = module.parse_expression(expr).unwrap();
+        assert_eq!(parsed.root().kind(), "ASTUnaryExpression", "{expr}");
+        assert_eq!(parsed.root().unary_operator(), Some(op), "{expr}");
+    }
+}
