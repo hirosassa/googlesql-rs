@@ -216,7 +216,11 @@ impl NativeInstance {
     pub(crate) fn new() -> Self {
         let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
         instance.func60();
-        let _status: i32 = instance.func15923();
+        // The returned status is deliberately not a failure signal: the reference
+        // wazero glue (`spike/wazero.go`) and the wasmtime backend both ignore it
+        // and fail only if the call traps, and no ABI note gives a nonzero value a
+        // failure meaning. Keep all backends consistent with that.
+        let _wasm_init_status: i32 = instance.func15923();
         Self { instance }
     }
 }
