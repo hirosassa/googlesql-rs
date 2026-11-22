@@ -20,10 +20,10 @@ impl Module {
         let mut req = Vec::new();
         pb::append_string(&mut req, 1, sql);
         let resp = self.invoke(SVC_FORMATTER, MID_FORMAT_SQL, &req)?;
-        if let Some(message) = pb::extract_error(&resp) {
+        if let Some(message) = pb::extract_error(&resp)? {
             return Err(Error::GoogleSql(message.into()));
         }
-        pb::read_string_at_field(&resp, 2)
+        pb::read_string_at_field(&resp, 2)?
             .ok_or_else(|| Error::Protocol("FormatSql returned no string".into()))
     }
 }

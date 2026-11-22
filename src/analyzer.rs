@@ -1883,7 +1883,7 @@ impl Module {
         pb::append_handle(&mut req, 2, element);
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_ARRAY_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 2);
+        let ptr = pb::read_handle_at_field(&resp, 2)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeArrayType returned null".into()));
         }
@@ -1899,7 +1899,7 @@ impl Module {
         pb::append_handle(&mut req, 2, element);
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_RANGE_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 2);
+        let ptr = pb::read_handle_at_field(&resp, 2)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeRangeType returned null".into()));
         }
@@ -1917,7 +1917,7 @@ impl Module {
         pb::append_handle(&mut req, 3, value);
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_MAP_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 1);
+        let ptr = pb::read_handle_at_field(&resp, 1)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeMapType returned null".into()));
         }
@@ -1944,7 +1944,7 @@ impl Module {
         }
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_STRUCT_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 2);
+        let ptr = pb::read_handle_at_field(&resp, 2)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeStructType returned null".into()));
         }
@@ -2360,7 +2360,7 @@ impl Module {
         pb::append_submessage(&mut req, 2, bytes);
         let resp = self.invoke(SVC_MESSAGE_LITE, MID_PARSE_FROM_STRING, &req)?;
         check_error(&resp)?;
-        if !pb::read_bool_at_field(&resp, 1) {
+        if !pb::read_bool_at_field(&resp, 1)? {
             return Err(Error::Protocol(
                 "ParseFromString rejected the descriptor".into(),
             ));
@@ -2370,7 +2370,7 @@ impl Module {
         pb::append_handle(&mut req, 2, fdp.ptr());
         let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_BUILD_FILE, &req)?;
         check_error(&resp)?;
-        if pb::read_handle_at_field(&resp, 1) == 0 {
+        if pb::read_handle_at_field(&resp, 1)? == 0 {
             return Err(Error::Protocol("BuildFile returned null".into()));
         }
         Ok(fdp)
@@ -2383,7 +2383,7 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_FIND_ENUM_TYPE_BY_NAME, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 1);
+        let ptr = pb::read_handle_at_field(&resp, 1)?;
         if ptr == 0 {
             return Err(Error::Protocol(format!("enum type {name} not found")));
         }
@@ -2399,7 +2399,7 @@ impl Module {
         pb::append_handle(&mut req, 2, enum_desc);
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_ENUM_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 2);
+        let ptr = pb::read_handle_at_field(&resp, 2)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeEnumType returned null".into()));
         }
@@ -2413,7 +2413,7 @@ impl Module {
         pb::append_string(&mut req, 2, name);
         let resp = self.invoke(SVC_DESCRIPTOR_POOL, MID_FIND_MESSAGE_TYPE_BY_NAME, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 1);
+        let ptr = pb::read_handle_at_field(&resp, 1)?;
         if ptr == 0 {
             return Err(Error::Protocol(format!("proto type {name} not found")));
         }
@@ -2429,7 +2429,7 @@ impl Module {
         pb::append_handle(&mut req, 2, message);
         let resp = self.invoke(SVC_TYPE_FACTORY, MID_MAKE_PROTO_TYPE, &req)?;
         check_error(&resp)?;
-        let ptr = pb::read_handle_at_field(&resp, 2);
+        let ptr = pb::read_handle_at_field(&resp, 2)?;
         if ptr == 0 {
             return Err(Error::Protocol("MakeProtoType returned null".into()));
         }
@@ -3186,7 +3186,7 @@ impl Module {
         let resp = self.invoke(SVC_ANALYZER, call.mid, &req)?;
         check_error(&resp)?;
 
-        let output_ptr = pb::read_handle_at_field(&resp, 2);
+        let output_ptr = pb::read_handle_at_field(&resp, 2)?;
         if output_ptr == 0 {
             return extract(self, 0);
         }
@@ -3285,7 +3285,7 @@ impl Module {
         pb::append_handle(&mut req, 4, type_factory);
         let resp = self.invoke(SVC_ANALYZER, MID_ANALYZE_NEXT_STATEMENT, &req)?;
         check_error(&resp)?;
-        Ok(pb::read_handle_at_field(&resp, 2))
+        Ok(pb::read_handle_at_field(&resp, 2)?)
     }
 
     /// Reads a `ParseResumeLocation`'s current byte offset into the input.
@@ -3296,6 +3296,6 @@ impl Module {
             resume,
         )?;
         check_error(&resp)?;
-        Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
+        Ok(pb::read_int32_at_field(&resp, 1)?.unwrap_or(0))
     }
 }

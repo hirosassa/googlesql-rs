@@ -319,7 +319,13 @@ impl Module {
         let literal = self.node_literal(&kind, node_ptr)?;
 
         let num_children = self.node_num_children(node_ptr)?;
-        let mut children = Vec::with_capacity(usize::try_from(num_children).unwrap_or(0));
+        if num_children < 0 {
+            return Err(Error::Protocol(format!(
+                "negative child count: {num_children}"
+            )));
+        }
+        // Not pre-sized: the count comes from the wasm response.
+        let mut children = Vec::new();
         for i in 0..num_children {
             let child_ptr = self.node_child(node_ptr, i)?;
             if child_ptr != 0 {
@@ -343,7 +349,7 @@ impl Module {
         let resp =
             self.invoke_handle(SVC_AST_IDENTIFIER, MID_IDENTIFIER_GET_AS_STRING, node_ptr)?;
         check_error(&resp)?;
-        pb::read_string_at_field(&resp, 1)
+        pb::read_string_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("identifier string not found".into()))
     }
 
@@ -351,14 +357,14 @@ impl Module {
     fn node_binary_operator(&mut self, node_ptr: u64) -> Result<BinaryOperator, Error> {
         let op_resp = self.invoke_handle(SVC_AST_BINARY_EXPRESSION, MID_BINARY_OP, node_ptr)?;
         check_error(&op_resp)?;
-        let raw = pb::read_int32_at_field(&op_resp, 1)
+        let raw = pb::read_int32_at_field(&op_resp, 1)?
             .ok_or_else(|| Error::Protocol("binary operator not found".into()))?;
         let operator = BinaryOp::from_wire(raw)?;
 
         let not_resp =
             self.invoke_handle(SVC_AST_BINARY_EXPRESSION, MID_BINARY_IS_NOT, node_ptr)?;
         check_error(&not_resp)?;
-        let negated = pb::read_bool_at_field(&not_resp, 1);
+        let negated = pb::read_bool_at_field(&not_resp, 1)?;
 
         Ok(BinaryOperator { operator, negated })
     }
@@ -367,7 +373,7 @@ impl Module {
     fn node_unary_operator(&mut self, node_ptr: u64) -> Result<UnaryOp, Error> {
         let resp = self.invoke_handle(SVC_AST_UNARY_EXPRESSION, MID_UNARY_OP, node_ptr)?;
         check_error(&resp)?;
-        let raw = pb::read_int32_at_field(&resp, 1)
+        let raw = pb::read_int32_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("unary operator not found".into()))?;
         UnaryOp::from_wire(raw)
     }
@@ -390,7 +396,7 @@ impl Module {
     fn node_leaf_image(&mut self, node_ptr: u64) -> Result<String, Error> {
         let resp = self.invoke_handle(SVC_AST_PRINTABLE_LEAF, MID_LEAF_IMAGE, node_ptr)?;
         check_error(&resp)?;
-        pb::read_string_at_field(&resp, 1)
+        pb::read_string_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("literal image not found".into()))
     }
 
@@ -398,14 +404,14 @@ impl Module {
     fn node_boolean_value(&mut self, node_ptr: u64) -> Result<bool, Error> {
         let resp = self.invoke_handle(SVC_AST_BOOLEAN_LITERAL, MID_BOOLEAN_VALUE, node_ptr)?;
         check_error(&resp)?;
-        Ok(pb::read_bool_at_field(&resp, 1))
+        Ok(pb::read_bool_at_field(&resp, 1)?)
     }
 
     /// Returns the decoded value of an `ASTStringLiteral` node (unquoted, unescaped).
     fn node_string_value(&mut self, node_ptr: u64) -> Result<String, Error> {
         let resp = self.invoke_handle(SVC_AST_STRING_LITERAL, MID_STRING_VALUE, node_ptr)?;
         check_error(&resp)?;
-        pb::read_string_at_field(&resp, 1)
+        pb::read_string_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("string literal value not found".into()))
     }
 
@@ -413,7 +419,7 @@ impl Module {
     fn node_bytes_value(&mut self, node_ptr: u64) -> Result<Vec<u8>, Error> {
         let resp = self.invoke_handle(SVC_AST_BYTES_LITERAL, MID_BYTES_VALUE, node_ptr)?;
         check_error(&resp)?;
-        pb::read_bytes_at_field(&resp, 1)
+        pb::read_bytes_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("bytes literal value not found".into()))
     }
 
@@ -425,7 +431,7 @@ impl Module {
         let resp =
             self.call_export_encoded(EXPORT_TYPE_NAME, |buf| pb::append_uint64(buf, 1, node_ptr))?;
         check_error(&resp)?;
-        let name = pb::read_string_at_field(&resp, 1)
+        let name = pb::read_string_at_field(&resp, 1)?
             .ok_or_else(|| Error::Protocol("type name not found".into()))?;
         Ok(name
             .strip_prefix(TYPE_NAME_PREFIX)
@@ -437,7 +443,7 @@ impl Module {
     fn node_num_children(&mut self, node_ptr: u64) -> Result<i32, Error> {
         let resp = self.invoke_handle(SVC_AST_NODE_BASE, MID_NUM_CHILDREN, node_ptr)?;
         check_error(&resp)?;
-        Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(0))
+        Ok(pb::read_int32_at_field(&resp, 1)?.unwrap_or(0))
     }
 
     /// Returns the handle of the `i`-th child node.
@@ -447,7 +453,7 @@ impl Module {
             pb::append_int32(buf, 2, i);
         })?;
         check_error(&resp)?;
-        Ok(pb::read_handle_at_field(&resp, 1))
+        Ok(pb::read_handle_at_field(&resp, 1)?)
     }
 
     /// Returns the source byte range of a node. Returns `None` if position information is unavailable.
@@ -485,13 +491,13 @@ impl Module {
     fn point_byte_offset(&mut self, point_ptr: u64) -> Result<i32, Error> {
         let resp = self.invoke_handle(SVC_LOCATION_POINT, MID_GET_BYTE_OFFSET, point_ptr)?;
         check_error(&resp)?;
-        Ok(pb::read_int32_at_field(&resp, 1).unwrap_or(-1))
+        Ok(pb::read_int32_at_field(&resp, 1)?.unwrap_or(-1))
     }
 
     /// Common helper: passes a single handle and returns the handle from field 1 of the response.
     pub(crate) fn rpc_handle(&mut self, svc: i32, mid: i32, ptr: u64) -> Result<u64, Error> {
         let resp = self.invoke_handle(svc, mid, ptr)?;
         check_error(&resp)?;
-        Ok(pb::read_handle_at_field(&resp, 1))
+        Ok(pb::read_handle_at_field(&resp, 1)?)
     }
 }

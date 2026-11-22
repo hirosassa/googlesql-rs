@@ -329,10 +329,10 @@ impl Module {
                 pb::append_handle(&mut req, 2, options.ptr());
                 let resp = module.invoke(SVC_PARSER, next_mid, &req)?;
                 // A syntax error halts the script: GoogleSQL cannot resume past it.
-                if let Some(message) = pb::extract_error(&resp) {
+                if let Some(message) = pb::extract_error(&resp)? {
                     break Some(message.into());
                 }
-                let output_ptr = pb::read_handle_at_field(&resp, 2);
+                let output_ptr = pb::read_handle_at_field(&resp, 2)?;
                 if output_ptr == 0 {
                     break None;
                 }
@@ -346,7 +346,7 @@ impl Module {
                 // The final statement carries `at_end_of_input`; stopping here
                 // avoids an extra call that would report a spurious "Unexpected
                 // end of statement" past the exhausted input.
-                if pb::read_bool_at_field(&resp, FIELD_PARSE_NEXT_AT_END) {
+                if pb::read_bool_at_field(&resp, FIELD_PARSE_NEXT_AT_END)? {
                     break None;
                 }
             };
@@ -404,7 +404,7 @@ impl Module {
         pb::append_handle(&mut req, 2, options_ptr);
         let resp = self.invoke(SVC_PARSER, parse_mid, &req)?;
         check_error(&resp)?;
-        let output_ptr = pb::read_handle_at_field(&resp, 2);
+        let output_ptr = pb::read_handle_at_field(&resp, 2)?;
         if output_ptr == 0 {
             return Err(Error::Protocol("parse returned null".into()));
         }
@@ -423,14 +423,14 @@ impl Module {
             &pb::handle_arg(output_ptr),
         )?;
         check_error(&node_resp)?;
-        let node_ptr = pb::read_handle_at_field(&node_resp, 1);
+        let node_ptr = pb::read_handle_at_field(&node_resp, 1)?;
         if node_ptr == 0 {
             return Err(Error::Protocol("ParserOutput.Node returned null".into()));
         }
 
         let unparsed = self.invoke(SVC_PARSER, MID_UNPARSE, &pb::handle_arg(node_ptr))?;
         check_error(&unparsed)?;
-        let canonical = pb::read_string_at_field(&unparsed, 1)
+        let canonical = pb::read_string_at_field(&unparsed, 1)?
             .ok_or_else(|| Error::Protocol("Unparse returned no string".into()))?;
 
         let root = self.build_ast(node_ptr)?;

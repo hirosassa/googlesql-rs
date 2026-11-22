@@ -260,7 +260,7 @@ pub enum Error {
 /// This is the single place that mapping lives, shared by every module that
 /// invokes the wasm surface.
 pub fn check_error(resp: &[u8]) -> Result<(), Error> {
-    crate::pb::extract_error(resp).map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
+    crate::pb::extract_error(resp)?.map_or(Ok(()), |message| Err(Error::GoogleSql(message.into())))
 }
 
 #[cfg(test)]
