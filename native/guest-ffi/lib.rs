@@ -216,6 +216,15 @@ pub struct Inst {
     poisoned: bool,
 }
 
+// `src/native_ffi_backend.rs` implements `Send` for its handle to this type by
+// hand (`unsafe impl Send for NativeFfiInstance`), which is only sound while the
+// instance is itself `Send`. Break the build here if a guest/import change makes
+// it `!Send`, rather than letting the unsafe impl silently become wrong.
+const _: fn() = || {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Inst>();
+};
+
 /// Version of this C ABI, returned by [`guest_abi_version`]. Bump on any change
 /// to a signature or to the meaning of a status code. Libraries that predate the
 /// handshake do not export the symbol and are implicitly version 0.
@@ -298,6 +307,39 @@ fn guard(body: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(ERR_PANIC)
 }
 
+/// The poison flag [`run_on_instance`] reads and sets; a trait so the state
+/// machine can be exercised without constructing a real guest `Inst`.
+trait Poisonable {
+    fn is_poisoned(&self) -> bool;
+    fn poison(&mut self);
+}
+
+impl Poisonable for Inst {
+    fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+    fn poison(&mut self) {
+        self.poisoned = true;
+    }
+}
+
+/// The poison state machine behind [`with_instance`]: a missing instance is
+/// `ERR_MEMORY`, a poisoned one `ERR_POISONED` (without running `body`), and a
+/// `body` that traps poisons the instance so every later call is rejected.
+fn run_on_instance<T: Poisonable>(inst: Option<&mut T>, body: impl FnOnce(&mut T) -> i32) -> i32 {
+    let Some(inst) = inst else {
+        return ERR_MEMORY;
+    };
+    if inst.is_poisoned() {
+        return ERR_POISONED;
+    }
+    let status = guard(|| body(inst));
+    if status == ERR_PANIC {
+        inst.poison();
+    }
+    status
+}
+
 /// [`guard`] for entry points that operate on a live instance: rejects a null or
 /// poisoned handle, and poisons the instance when `body` traps.
 ///
@@ -310,17 +352,7 @@ fn guard(body: impl FnOnce() -> i32) -> i32 {
 )]
 unsafe fn with_instance(inst: *mut Inst, body: impl FnOnce(&mut Inst) -> i32) -> i32 {
     // SAFETY: the caller guarantees `inst` is live and unaliased if non-null.
-    let Some(inst) = (unsafe { borrow_mut(inst) }) else {
-        return ERR_MEMORY;
-    };
-    if inst.poisoned {
-        return ERR_POISONED;
-    }
-    let status = guard(|| body(inst));
-    if status == ERR_PANIC {
-        inst.poisoned = true;
-    }
-    status
+    run_on_instance(unsafe { borrow_mut(inst) }, body)
 }
 
 /// Returns the C ABI version ([`ABI_VERSION`]) this library implements, so a
@@ -389,8 +421,20 @@ pub unsafe extern "C" fn guest_free_instance(inst: *mut Inst) {
         OK
     });
     if status != OK {
-        eprintln!("guest-ffi: guest_free_instance failed (status {status}); instance leaked");
+        report_free_failure(status);
     }
+}
+
+/// Reports a failed teardown on stderr. `eprintln!` panics when stderr is closed
+/// or broken, and a panic escaping an `extern "C"` function aborts the host, so
+/// the write runs under [`guard`]. If that write itself fails there is no channel
+/// left to report on and the function returns nothing, so its status is dropped
+/// deliberately.
+fn report_free_failure(status: i32) {
+    guard(|| {
+        eprintln!("guest-ffi: guest_free_instance failed (status {status}); instance leaked");
+        OK
+    });
 }
 
 /// Allocates `len` bytes in guest memory, writing the offset to `*out`. A NULL
@@ -586,5 +630,145 @@ pub unsafe extern "C" fn guest_call_named(
             *out = func(&mut inst.guest, ptr.cast_signed(), len.cast_signed()).cast_unsigned();
             OK
         })
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "test code")]
+mod tests {
+    use super::{
+        ERR_MEMORY, ERR_PANIC, ERR_POISONED, OK, Poisonable, borrow_mut, bytes_from,
+        bytes_from_mut, run_on_instance,
+    };
+
+    #[derive(Default)]
+    struct Fake {
+        poisoned: bool,
+        calls: u32,
+    }
+
+    impl Poisonable for Fake {
+        fn is_poisoned(&self) -> bool {
+            self.poisoned
+        }
+        fn poison(&mut self) {
+            self.poisoned = true;
+        }
+    }
+
+    #[test]
+    fn bytes_from_empty_accepts_null() {
+        // SAFETY: a zero length never dereferences the pointer.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let s = unsafe { bytes_from(std::ptr::null(), 0) };
+        assert_eq!(s, Some(&[][..]));
+    }
+
+    #[test]
+    fn bytes_from_views_the_range() {
+        let data = [1u8, 2, 3, 4];
+        // SAFETY: `data` is 4 readable bytes outliving the borrow.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let s = unsafe { bytes_from(data.as_ptr(), data.len()) };
+        assert_eq!(s, Some(&data[..]));
+    }
+
+    #[test]
+    fn bytes_from_rejects_null_with_length_and_oversize() {
+        // SAFETY: both calls are rejected before any dereference.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let (null, huge) = unsafe {
+            (
+                bytes_from(std::ptr::null(), 1),
+                bytes_from(std::ptr::NonNull::<u8>::dangling().as_ptr(), usize::MAX),
+            )
+        };
+        assert_eq!(null, None);
+        assert_eq!(huge, None);
+    }
+
+    #[test]
+    fn bytes_from_mut_writes_through() {
+        let mut data = [0u8; 3];
+        // SAFETY: `data` is 3 writable bytes, unaliased for the borrow.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let s = unsafe { bytes_from_mut(data.as_mut_ptr(), 3) }.expect("valid range");
+        s.copy_from_slice(&[7, 8, 9]);
+        assert_eq!(data, [7, 8, 9]);
+    }
+
+    #[test]
+    fn bytes_from_mut_empty_and_invalid() {
+        // SAFETY: zero length and rejected inputs never dereference the pointer.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let (empty, null, huge) = unsafe {
+            (
+                bytes_from_mut(std::ptr::null_mut(), 0).map(|s| s.len()),
+                bytes_from_mut(std::ptr::null_mut(), 1).map(|s| s.len()),
+                bytes_from_mut(std::ptr::NonNull::<u8>::dangling().as_ptr(), usize::MAX)
+                    .map(|s| s.len()),
+            )
+        };
+        assert_eq!(empty, Some(0));
+        assert_eq!(null, None);
+        assert_eq!(huge, None);
+    }
+
+    #[test]
+    fn borrow_mut_null_is_none_and_non_null_aliases_target() {
+        // SAFETY: null is handled without dereference.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let none = unsafe { borrow_mut::<u32>(std::ptr::null_mut()) };
+        assert!(none.is_none());
+
+        let mut v = 1u32;
+        // SAFETY: `&raw mut v` is valid and not otherwise used during the borrow.
+        #[expect(unsafe_code, reason = "exercising the unsafe helper")]
+        let r = unsafe { borrow_mut(&raw mut v) }.expect("non-null");
+        *r = 5;
+        assert_eq!(v, 5);
+    }
+
+    #[test]
+    fn run_on_instance_null_is_memory_error() {
+        let status = run_on_instance::<Fake>(None, |_| OK);
+        assert_eq!(status, ERR_MEMORY);
+    }
+
+    #[test]
+    fn run_on_instance_passes_status_through_without_poisoning() {
+        let mut f = Fake::default();
+        let status = run_on_instance(Some(&mut f), |f| {
+            f.calls += 1;
+            ERR_MEMORY
+        });
+        assert_eq!(status, ERR_MEMORY);
+        assert!(!f.poisoned);
+        assert_eq!(run_on_instance(Some(&mut f), |_| OK), OK);
+        assert_eq!(f.calls, 1);
+    }
+
+    #[test]
+    fn run_on_instance_poisoned_rejects_without_running_body() {
+        let mut f = Fake {
+            poisoned: true,
+            calls: 0,
+        };
+        let status = run_on_instance(Some(&mut f), |f| {
+            f.calls += 1;
+            OK
+        });
+        assert_eq!(status, ERR_POISONED);
+        assert_eq!(f.calls, 0);
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "simulates a guest trap")]
+    fn run_on_instance_panic_poisons_for_later_calls() {
+        let mut f = Fake::default();
+        let status = run_on_instance(Some(&mut f), |_| panic!("trap"));
+        assert_eq!(status, ERR_PANIC);
+        assert!(f.poisoned);
+        assert_eq!(run_on_instance(Some(&mut f), |_| OK), ERR_POISONED);
     }
 }
