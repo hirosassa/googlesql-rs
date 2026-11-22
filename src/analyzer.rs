@@ -1,4 +1,4 @@
-//! High-level API for the GoogleSQL analyzer.
+//! High-level API for the `GoogleSQL` analyzer.
 //!
 //! Call chain (svc/mid values measured from the wazero reference glue):
 //! NewAnalyzerOptions2(554,1) + NewTypeFactory(1420,0) + NewSimpleCatalog(1348,0)
@@ -42,7 +42,7 @@ const MID_SET_PARAMETER_MODE: i32 = 76;
 const MID_FREE_ANALYZER_OPTIONS: i32 = 86;
 
 /// `ParameterMode::PARAMETER_POSITIONAL`: query parameters are written `?` and
-/// matched by position. GoogleSQL numbers the enum from 1 (named = 1), so this is 2.
+/// matched by position. `GoogleSQL` numbers the enum from 1 (named = 1), so this is 2.
 const PARAMETER_MODE_POSITIONAL: i32 = 2;
 
 /// `ParseLocationRecordType::PARSE_LOCATION_RECORD_FULL_NODE_SCOPE`: record a
@@ -243,10 +243,10 @@ const MID_FREE_ANALYZER_OUTPUT: i32 = 11;
 /// A column type that a user table can expose to the analyzer.
 ///
 /// Each scalar variant maps to a `TypeFactory` accessor for the corresponding
-/// GoogleSQL type; [`Array`](Self::Array) wraps an element type, built
+/// `GoogleSQL` type; [`Array`](Self::Array) wraps an element type, built
 /// recursively (so `ARRAY<STRING>` is `Array(Box::new(String))`).
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL has more types than are modelled
+/// Marked `#[non_exhaustive]` because `GoogleSQL` has more types than are modelled
 /// here; adding a variant later must not be a breaking change for callers that
 /// match on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,12 +280,12 @@ pub enum ColumnType {
     Interval,
     /// Geospatial value (`GEOGRAPHY`).
     Geography,
-    /// An array of a given element type (`ARRAY<T>`). GoogleSQL forbids arrays of
+    /// An array of a given element type (`ARRAY<T>`). `GoogleSQL` forbids arrays of
     /// arrays, so a nested `Array` element is rejected during analysis.
     Array(Box<Self>),
     /// A struct with named, typed fields (`STRUCT<name T, ...>`), in order.
     Struct(Vec<StructField>),
-    /// A contiguous range over an ordered element type (`RANGE<T>`). GoogleSQL
+    /// A contiguous range over an ordered element type (`RANGE<T>`). `GoogleSQL`
     /// allows only `DATE`, `DATETIME`, or `TIMESTAMP` elements; any other element
     /// is rejected during analysis.
     Range(Box<Self>),
@@ -374,7 +374,7 @@ pub struct FunctionDef {
 
 /// How a registered [`FunctionDef`] is invoked in SQL.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL supports more modes (e.g.
+/// Marked `#[non_exhaustive]` because `GoogleSQL` supports more modes (e.g.
 /// analytic/window functions) than are modeled here yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -403,7 +403,7 @@ impl FunctionKind {
 /// for validation, e.g. allowing only [`Query`](Self::Query) to reject any DML
 /// or DDL a caller must not run.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL has more statement kinds than
+/// Marked `#[non_exhaustive]` because `GoogleSQL` has more statement kinds than
 /// are modelled here; adding a variant later must not break callers that match
 /// on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,7 +455,7 @@ impl StatementKind {
     }
 }
 
-/// A GoogleSQL language feature that can be turned off with
+/// A `GoogleSQL` language feature that can be turned off with
 /// [`Module::disable_language_features`].
 ///
 /// The analyzer enables the maximum feature set by default, so every feature
@@ -464,7 +464,7 @@ impl StatementKind {
 /// clause, or [`AnalyticFunctions`](Self::AnalyticFunctions) rejects window
 /// functions.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL has many more features than are
+/// Marked `#[non_exhaustive]` because `GoogleSQL` has many more features than are
 /// modelled here; adding a variant later must not break callers that match on
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,7 +518,7 @@ pub struct ConstantDef {
 
 /// The value (and thus type) of a registered [`ConstantDef`].
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL has more value types than the
+/// Marked `#[non_exhaustive]` because `GoogleSQL` has more value types than the
 /// scalars modeled here.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -552,7 +552,7 @@ pub struct QueryParameter {
 
 /// An argument accepted by a table-valued function (see [`TvfDef::arguments`]).
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL supports more argument kinds
+/// Marked `#[non_exhaustive]` because `GoogleSQL` supports more argument kinds
 /// (e.g. model or connection arguments) than are modelled here; adding a variant
 /// later must not break callers that match on it.
 #[derive(Debug, Clone)]
@@ -619,7 +619,7 @@ pub struct EnumValue {
 /// expected (e.g. `CAST(x AS Color)`); casting a string literal to the enum
 /// resolves only against the declared [`values`](Self::values). Internally the
 /// enum is materialized as a protobuf `EnumDescriptor` built into a descriptor
-/// pool, mirroring how GoogleSQL represents enum types.
+/// pool, mirroring how `GoogleSQL` represents enum types.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     /// The enum type name as referenced in SQL.
@@ -678,7 +678,7 @@ pub struct GraphEdgeTableDef {
     /// The labels exposed by the edge table, each declaring a set of properties.
     ///
     /// A property name must be declared at most once across the edge table's
-    /// labels; GoogleSQL rejects a graph that declares the same property twice.
+    /// labels; `GoogleSQL` rejects a graph that declares the same property twice.
     pub labels: Vec<GraphLabelDef>,
     /// The source (tail) node the edge starts from.
     pub source: GraphNodeReferenceDef,
@@ -722,7 +722,7 @@ pub struct GraphNodeTableDef {
     /// The labels exposed by the node table, each declaring a set of properties.
     ///
     /// A property name must be declared at most once across the node table's
-    /// labels; GoogleSQL rejects a graph that declares the same property twice.
+    /// labels; `GoogleSQL` rejects a graph that declares the same property twice.
     pub labels: Vec<GraphLabelDef>,
 }
 
@@ -822,11 +822,11 @@ pub struct Catalog {
 /// its name.
 ///
 /// Registering a `NamedCatalog` called `ds` whose inner [`Catalog`] holds a
-/// table `t` lets `SELECT * FROM ds.t` resolve, mirroring a BigQuery
+/// table `t` lets `SELECT * FROM ds.t` resolve, mirroring a `BigQuery`
 /// `dataset.table`. The unqualified `t` stays unresolved: nesting does not
 /// flatten the namespace. Sub-catalogs may nest arbitrarily deep (`a.b.t`).
 ///
-/// Unlike the top-level catalog, a nested catalog does not receive GoogleSQL's
+/// Unlike the top-level catalog, a nested catalog does not receive `GoogleSQL`'s
 /// builtin functions and types — it is a pure namespace for user declarations.
 #[derive(Debug, Clone)]
 pub struct NamedCatalog {
@@ -1027,7 +1027,7 @@ fn append_column_indices(req: &mut Vec<u8>, field: u32, indices: &[u32]) -> Resu
     Ok(())
 }
 
-/// The product mode selecting GoogleSQL's type surface, set via
+/// The product mode selecting `GoogleSQL`'s type surface, set via
 /// [`Module::set_product_mode`].
 ///
 /// It governs both how types render (`DOUBLE` vs `FLOAT64`) and the analysis
@@ -1038,12 +1038,12 @@ pub enum ProductMode {
     /// The internal type surface: `DOUBLE`, `INT64`, and so on. The default.
     #[default]
     Internal,
-    /// The external (BigQuery) type surface: `FLOAT64`, `INT64`, and so on.
+    /// The external (`BigQuery`) type surface: `FLOAT64`, `INT64`, and so on.
     External,
 }
 
 impl ProductMode {
-    /// The GoogleSQL `ProductMode` wire value. The enum is numbered from 1, so
+    /// The `GoogleSQL` `ProductMode` wire value. The enum is numbered from 1, so
     /// `Internal` is 1 (`PRODUCT_INTERNAL`) and `External` is 2 (`PRODUCT_EXTERNAL`).
     const fn raw(self) -> i32 {
         match self {
@@ -1057,7 +1057,7 @@ impl Module {
     /// Restricts analysis to the given statement kinds; other kinds then fail
     /// with a "Statement not supported" error.
     ///
-    /// The default (and the effect of passing an empty slice, mirroring ZetaSQL's
+    /// The default (and the effect of passing an empty slice, mirroring `ZetaSQL`'s
     /// `SetSupportedStatementKinds({})`) is to accept every kind. Restricting to
     /// `&[StatementKind::Query]`, for example, lets `SELECT` resolve while
     /// rejecting any DML or DDL. The restriction applies to every subsequent
@@ -1109,6 +1109,12 @@ impl Module {
     /// Performs type inference and name resolution. Returns [`Error::GoogleSql`]
     /// on a syntax error or when a referenced name cannot be resolved (which, with
     /// an empty catalog, includes any table reference).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_statement(&mut self, sql: &str) -> Result<(), Error> {
         self.analyze_statement_with_catalog(sql, &[])
     }
@@ -1119,6 +1125,12 @@ impl Module {
     /// analysis, so queries referencing those tables resolve. Passing an empty
     /// slice is equivalent to [`Module::analyze_statement`]. Returns
     /// [`Error::GoogleSql`] on a syntax error or unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_statement_with_catalog(
         &mut self,
         sql: &str,
@@ -1141,6 +1153,12 @@ impl Module {
     /// The expression may reference catalog constants and functions but not table
     /// columns, which are not in scope. Returns [`Error::GoogleSql`] on a syntax
     /// error or unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_expression(&mut self, sql: &str, tables: &[TableDef]) -> Result<String, Error> {
         self.run_analysis(
             sql,
@@ -1164,6 +1182,12 @@ impl Module {
     /// still in scope; only catalog tables, constants, and functions are not (use
     /// [`Module::analyze_expression_in`] with [`Catalog::expression_columns`] for
     /// those). Returns [`Error::GoogleSql`] on a syntax error or unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_expression_with_columns(
         &mut self,
         sql: &str,
@@ -1189,6 +1213,12 @@ impl Module {
     /// first statement that fails, returning [`Error::GoogleSql`] with a location
     /// relative to the whole script. An empty or whitespace-only script yields
     /// `0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_statements(&mut self, sql: &str, tables: &[TableDef]) -> Result<usize, Error> {
         let analyzed = self.run_multi_analysis(
             sql,
@@ -1209,6 +1239,12 @@ impl Module {
     /// empty vec. This discovers a query's parameter signature without declaring
     /// it up front. Returns [`Error::GoogleSql`] on a syntax error or unresolved
     /// name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn undeclared_parameter_types(
         &mut self,
         sql: &str,
@@ -1233,6 +1269,12 @@ impl Module {
     /// entries here only matter for named types, so [`Module::analyze_type_in`] is
     /// the useful counterpart when resolving catalog-defined type names. Returns
     /// [`Error::GoogleSql`] for a malformed or unknown type name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_type(&mut self, type_name: &str, tables: &[TableDef]) -> Result<String, Error> {
         self.run_analysis(
             type_name,
@@ -1252,6 +1294,12 @@ impl Module {
     /// produces, each carrying the column's name and resolved type. Non-query
     /// statements have no output schema and yield an empty vec. Returns
     /// [`Error::GoogleSql`] on a syntax error or unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_output_columns(
         &mut self,
         sql: &str,
@@ -1272,6 +1320,12 @@ impl Module {
     /// pruned to those the query needs. Non-query statements read no tables and
     /// yield an empty vec. Returns [`Error::GoogleSql`] on a syntax error or
     /// unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn referenced_tables(
         &mut self,
         sql: &str,
@@ -1295,6 +1349,12 @@ impl Module {
     /// [`Module::parse_statement`] tree for the analyzer's typed output. Returns
     /// `Ok(None)` for a statement that produces no resolved output, or
     /// [`Error::GoogleSql`] on a syntax error or unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn resolved_tree(
         &mut self,
         sql: &str,
@@ -1319,6 +1379,12 @@ impl Module {
     /// besides tables, any [`FunctionDef`] it carries is registered so calls to
     /// that function resolve. Returns [`Error::GoogleSql`] on a syntax error or
     /// unresolved name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_statement_in(&mut self, sql: &str, catalog: &Catalog) -> Result<(), Error> {
         self.run_analysis(
             sql,
@@ -1334,6 +1400,12 @@ impl Module {
     /// The [`Catalog`] counterpart of [`Module::analyze_expression`]: besides
     /// tables, the expression may reference the catalog's constants and
     /// user-defined functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_expression_in(&mut self, sql: &str, catalog: &Catalog) -> Result<String, Error> {
         self.run_analysis(
             sql,
@@ -1351,6 +1423,12 @@ impl Module {
     ///
     /// The [`Catalog`] counterpart of [`Module::analyze_statements`]: each
     /// statement resolves against the catalog's tables and user-defined functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_statements_in(&mut self, sql: &str, catalog: &Catalog) -> Result<usize, Error> {
         let analyzed = self.run_multi_analysis(
             sql,
@@ -1367,6 +1445,12 @@ impl Module {
     /// The [`Catalog`] counterpart of [`Module::undeclared_parameter_types`]: a
     /// parameter compared against a catalog table's column infers that column's
     /// type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn undeclared_parameter_types_in(
         &mut self,
         sql: &str,
@@ -1388,6 +1472,12 @@ impl Module {
     /// The [`Catalog`] counterpart of [`Module::analyze_type`]: `type_name` may
     /// reference the catalog's named types (and other catalog-defined type names),
     /// which resolve to their underlying type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_type_in(&mut self, type_name: &str, catalog: &Catalog) -> Result<String, Error> {
         self.run_analysis(
             type_name,
@@ -1404,6 +1494,12 @@ impl Module {
     ///
     /// The [`Catalog`] counterpart of [`Module::analyze_output_columns`], also
     /// resolving calls to the catalog's user-defined functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn analyze_output_columns_in(
         &mut self,
         sql: &str,
@@ -1421,6 +1517,12 @@ impl Module {
     /// with the columns actually referenced.
     ///
     /// The [`Catalog`] counterpart of [`Module::referenced_tables`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn referenced_tables_in(
         &mut self,
         sql: &str,
@@ -1442,6 +1544,12 @@ impl Module {
     /// self-contained tree.
     ///
     /// The [`Catalog`] counterpart of [`Module::resolved_tree`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GoogleSql`] if `GoogleSQL` rejects the input (a syntax error or,
+    /// where applicable, an unresolved name), and [`Error::Wasm`], [`Error::Memory`] or
+    /// [`Error::Protocol`] on an engine, memory or response-contract failure.
     pub fn resolved_tree_in(
         &mut self,
         sql: &str,
@@ -1555,7 +1663,7 @@ impl Module {
     /// statement using `@param` resolves (with the parameter's type inferred from
     /// context) instead of erroring; this leaves parameter-free statements
     /// unaffected. It is cleared when the caller declares typed parameters, which
-    /// are mutually exclusive with undeclared ones in GoogleSQL. Enables column
+    /// are mutually exclusive with undeclared ones in `GoogleSQL`. Enables column
     /// pruning when requested so table scans expose only referenced columns, and
     /// parse-location recording so resolved nodes carry their source byte range.
     fn configure_options(
@@ -1837,7 +1945,7 @@ impl Module {
         Ok(())
     }
 
-    /// Builds a GoogleSQL type handle for `ty` via `type_factory`, recursing into
+    /// Builds a `GoogleSQL` type handle for `ty` via `type_factory`, recursing into
     /// element types. The returned type is owned by the factory (reclaimed when
     /// the factory is freed), so it is not registered for an individual free —
     /// matching how the scalar getters' types are handled.
@@ -1876,7 +1984,7 @@ impl Module {
     }
 
     /// Wraps `element` in an `ARRAY<...>` type via `TypeFactory::MakeArrayType`.
-    /// GoogleSQL rejects arrays of arrays, surfacing as [`Error::GoogleSql`].
+    /// `GoogleSQL` rejects arrays of arrays, surfacing as [`Error::GoogleSql`].
     fn make_array_type(&mut self, type_factory: u64, element: u64) -> Result<u64, Error> {
         let mut req = Vec::new();
         pb::append_handle(&mut req, 1, type_factory);
@@ -1891,7 +1999,7 @@ impl Module {
     }
 
     /// Wraps `element` in a `RANGE<...>` type via `TypeFactory::MakeRangeType`.
-    /// GoogleSQL allows only `DATE`/`DATETIME`/`TIMESTAMP` elements; any other
+    /// `GoogleSQL` allows only `DATE`/`DATETIME`/`TIMESTAMP` elements; any other
     /// surfaces as [`Error::GoogleSql`].
     fn make_range_type(&mut self, type_factory: u64, element: u64) -> Result<u64, Error> {
         let mut req = Vec::new();
@@ -1907,7 +2015,7 @@ impl Module {
     }
 
     /// Builds a `MAP<K, V>` type from `key` and `value` via
-    /// `TypeFactory::MakeMapType`. GoogleSQL requires the key type to support
+    /// `TypeFactory::MakeMapType`. `GoogleSQL` requires the key type to support
     /// grouping and gates the type behind a language feature; an unsupported key
     /// or a disabled feature surfaces as [`Error::GoogleSql`].
     fn make_map_type(&mut self, type_factory: u64, key: u64, value: u64) -> Result<u64, Error> {
@@ -3133,7 +3241,7 @@ impl Module {
         check_error(&resp)
     }
 
-    /// Registers GoogleSQL's builtin functions and types (with default language
+    /// Registers `GoogleSQL`'s builtin functions and types (with default language
     /// options) into `catalog`, so operators like `+` and standard functions
     /// resolve during analysis.
     fn add_builtin_functions(&mut self, catalog: u64) -> Result<(), Error> {
