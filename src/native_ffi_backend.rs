@@ -150,7 +150,9 @@ pub struct NativeFfiInstance {
 }
 
 // SAFETY: the handle owns a single guest instance that is only ever touched from
-// the `&mut self` methods below, i.e. from one thread at a time. This matches
+// the `&mut self` methods below, i.e. from one thread at a time. This relies on
+// the library's `Inst` itself being `Send`, which `native/guest-ffi/lib.rs`
+// asserts at compile time. This matches
 // the `GuestInstance: Send` (not `Sync`) contract the other backends uphold, and
 // how `Module` moves an instance between threads without sharing it.
 #[expect(
@@ -304,7 +306,7 @@ impl GuestInstance for NativeFfiInstance {
 mod tests {
     use super::{
         GuestHandle, NativeFfiInstance, STATUS_ALLOC, STATUS_MEMORY, STATUS_NO_EXPORT, STATUS_OK,
-        STATUS_PANIC, STATUS_POISONED, poisons, status_to_result,
+        STATUS_PANIC, STATUS_POISONED, alloc_zeroed_buf, poisons, status_to_result,
     };
     use crate::backend::GuestInstance;
     use crate::error::Error;
@@ -361,6 +363,25 @@ mod tests {
         let err = status_to_result(STATUS_PANIC, "call_named").expect_err("trap");
         assert!(err.to_string().contains("call_named"), "{err}");
         assert!(err.to_string().contains("poisoned"), "{err}");
+    }
+
+    /// `len == 0` yields an empty buffer; otherwise the buffer is exactly `len`
+    /// zeroed bytes.
+    #[test]
+    fn alloc_zeroed_buf_is_empty_or_zeroed() {
+        assert_eq!(alloc_zeroed_buf(0).expect("empty"), Vec::<u8>::new());
+        let buf = alloc_zeroed_buf(4096).expect("4 KiB");
+        assert_eq!(buf.len(), 4096);
+        assert!(buf.iter().all(|&b| b == 0));
+        drop(buf);
+    }
+
+    /// A length `Layout` rejects (above `isize::MAX`) is `Error::Memory`, not an
+    /// abort.
+    #[test]
+    fn alloc_zeroed_buf_oversize_is_a_memory_error() {
+        let err = alloc_zeroed_buf(usize::MAX).expect_err("exceeds isize::MAX");
+        assert!(matches!(err, Error::Memory(_)), "unexpected error: {err}");
     }
 
     /// Only a trap (or a library-reported poisoned state) makes an instance
