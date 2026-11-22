@@ -1,11 +1,11 @@
-//! Represents the GoogleSQL AST as a self-contained Rust tree.
+//! Represents the `GoogleSQL` AST as a self-contained Rust tree.
 //!
 //! The wasm-internal AST (arena-owned) is traversed exactly once recursively,
 //! copying each node's type name, source byte range, and children into Rust.
 //! The resulting [`AstNode`] holds no wasm handles, so it can be freely
 //! traversed and retained after parsing.
 //!
-//! The ASTNodeBase (svc 331) accessors used here are documented in `docs/SPIKE.md`.
+//! The `ASTNodeBase` (svc 331) accessors used here are documented in `docs/SPIKE.md`.
 
 use std::ops::Range;
 
@@ -68,11 +68,13 @@ pub struct BinaryOperator {
 
 impl BinaryOperator {
     /// The operator token (ignoring any leading `NOT`).
+    #[must_use]
     pub const fn operator(&self) -> BinaryOp {
         self.operator
     }
 
     /// Whether the operator is negated by a leading `NOT` (e.g. `NOT LIKE`, `IS NOT`).
+    #[must_use]
     pub const fn is_negated(&self) -> bool {
         self.negated
     }
@@ -80,7 +82,7 @@ impl BinaryOperator {
 
 /// The operator token of a [`BinaryOperator`].
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL may add operators (its grammar
+/// Marked `#[non_exhaustive]` because `GoogleSQL` may add operators (its grammar
 /// grows over time); adding a variant later must not break callers that match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -128,7 +130,7 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
-    /// Maps a GoogleSQL `ASTBinaryExpression::Op` wire value to a variant.
+    /// Maps a `GoogleSQL` `ASTBinaryExpression::Op` wire value to a variant.
     ///
     /// Errors on an unknown value (including the `NotSet` sentinel `1`) rather
     /// than defaulting, so a genuine binary expression never reports a wrong
@@ -165,7 +167,7 @@ impl BinaryOp {
 /// Unlike [`BinaryOp`], a unary operator carries no separate negation flag:
 /// `IS NOT UNKNOWN` is its own variant rather than a negated `IS UNKNOWN`.
 ///
-/// Marked `#[non_exhaustive]` because GoogleSQL may add operators (its grammar
+/// Marked `#[non_exhaustive]` because `GoogleSQL` may add operators (its grammar
 /// grows over time); adding a variant later must not break callers that match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -185,7 +187,7 @@ pub enum UnaryOp {
 }
 
 impl UnaryOp {
-    /// Maps a GoogleSQL `ASTUnaryExpression::Op` wire value to a variant.
+    /// Maps a `GoogleSQL` `ASTUnaryExpression::Op` wire value to a variant.
     ///
     /// Errors on an unknown value (including the `NotSet` sentinel `1`) rather
     /// than defaulting, so a genuine unary expression never reports a wrong
@@ -244,16 +246,19 @@ pub struct AstNode {
 
 impl AstNode {
     /// The node's type name (e.g. `ASTQueryStatement`). The `googlesql::` prefix is stripped.
+    #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
     /// The byte range of this node within the original SQL. `None` if position information is unavailable.
+    #[must_use]
     pub fn byte_range(&self) -> Option<Range<usize>> {
         self.byte_range.clone()
     }
 
     /// The child nodes.
+    #[must_use]
     pub fn children(&self) -> &[Self] {
         &self.children
     }
@@ -262,6 +267,7 @@ impl AstNode {
     ///
     /// `None` for every other node kind. Unlike [`text`](Self::text), this needs no
     /// original SQL and strips any backtick quoting.
+    #[must_use]
     pub fn identifier(&self) -> Option<&str> {
         self.identifier.as_deref()
     }
@@ -270,6 +276,7 @@ impl AstNode {
     ///
     /// `None` for every other node kind. Carries the negation flag, which the
     /// operator token alone cannot express — see [`BinaryOperator`].
+    #[must_use]
     pub const fn binary_operator(&self) -> Option<BinaryOperator> {
         self.binary_operator
     }
@@ -277,6 +284,7 @@ impl AstNode {
     /// The operator of an `ASTUnaryExpression` node (e.g. `NOT x`, `-x`, `~x`).
     ///
     /// `None` for every other node kind. See [`UnaryOp`].
+    #[must_use]
     pub const fn unary_operator(&self) -> Option<UnaryOp> {
         self.unary_operator
     }
@@ -285,11 +293,13 @@ impl AstNode {
     /// `BYTES`, or `NULL`).
     ///
     /// `None` for every non-literal node kind. See [`Literal`].
+    #[must_use]
     pub const fn literal(&self) -> Option<&Literal> {
         self.literal.as_ref()
     }
 
     /// Extracts the source text for this node from the original SQL string.
+    #[must_use]
     pub fn text<'a>(&self, sql: &'a str) -> Option<&'a str> {
         let range = self.byte_range.clone()?;
         sql.get(range)
