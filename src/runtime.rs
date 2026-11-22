@@ -182,7 +182,9 @@ impl Module {
     /// construction is backend-agnostic, so the choice is invisible here.
     #[cfg(feature = "wasmtime")]
     pub fn new() -> Result<Self, Error> {
-        Self::from_backend(Box::new(crate::wasmtime_backend::WasmtimeInstance::new()?))
+        Ok(Self::from_backend(Box::new(
+            crate::wasmtime_backend::WasmtimeInstance::new()?,
+        )))
     }
 
     /// Loads the default engine (the `native-ffi` cdylib, as `wasmtime` is not
@@ -190,9 +192,9 @@ impl Module {
     /// variant of this method for how the default engine is chosen.
     #[cfg(all(not(feature = "wasmtime"), feature = "native-ffi"))]
     pub fn new() -> Result<Self, Error> {
-        Self::from_backend(Box::new(
-            crate::native_ffi_backend::NativeFfiInstance::new()?
-        ))
+        Ok(Self::from_backend(Box::new(
+            crate::native_ffi_backend::NativeFfiInstance::new()?,
+        )))
     }
 
     /// Loads the default engine (the `native` wasm2rs engine, as neither
@@ -205,7 +207,9 @@ impl Module {
         feature = "native"
     ))]
     pub fn new() -> Result<Self, Error> {
-        Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
+        Ok(Self::from_backend(Box::new(
+            crate::native_backend::NativeInstance::new(),
+        )))
     }
 
     /// Loads the wasm2rs-transpiled native engine and returns a fully
@@ -223,7 +227,9 @@ impl Module {
     /// (`scripts/fetch-native-guest.sh`) and build with `--features native`.
     #[cfg(feature = "native")]
     pub fn new_native() -> Result<Self, Error> {
-        Self::from_backend(Box::new(crate::native_backend::NativeInstance::new()?))
+        Ok(Self::from_backend(Box::new(
+            crate::native_backend::NativeInstance::new(),
+        )))
     }
 
     /// Loads the native engine through the C-ABI cdylib and returns a fully
@@ -247,9 +253,9 @@ impl Module {
     /// `GUEST_FFI_LIB`); see `docs/NATIVE.md`.
     #[cfg(feature = "native-ffi")]
     pub fn new_native_ffi() -> Result<Self, Error> {
-        Self::from_backend(Box::new(
-            crate::native_ffi_backend::NativeFfiInstance::new()?
-        ))
+        Ok(Self::from_backend(Box::new(
+            crate::native_ffi_backend::NativeFfiInstance::new()?,
+        )))
     }
 
     /// Builds a `Module` around an already-initialized engine backend.
@@ -259,8 +265,8 @@ impl Module {
     /// constructors (`new_native`, `new_native_ffi`) plug their engines in here
     /// behind the same [`GuestInstance`] trait without touching any of the state
     /// below.
-    fn from_backend(backend: Box<dyn GuestInstance>) -> Result<Self, Error> {
-        Ok(Self {
+    fn from_backend(backend: Box<dyn GuestInstance>) -> Self {
+        Self {
             backend,
             pending_frees: Arc::new(Mutex::new(Vec::new())),
             cached_language_options: None,
@@ -271,7 +277,7 @@ impl Module {
             scratch: Vec::new(),
             req_scratch_ptr: 0,
             req_scratch_cap: 0,
-        })
+        }
     }
 
     /// Runs `f`, then frees every handle it acquired via a single flush, whether
@@ -676,7 +682,7 @@ const fn unpack(packed: u64) -> (u32, u32) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "test code")]
+#[expect(clippy::expect_used, reason = "test code")]
 mod tests {
     // A `ParserOptions` handle (NewParserOptions = svc700/mid0, freed by mid12)
     // is a convenient real handle to exercise the deferred-free machinery.
@@ -807,8 +813,7 @@ mod tests {
         }));
         let mut module = super::Module::from_backend(Box::new(FakeGuest {
             log: super::Arc::clone(&log),
-        }))
-        .expect("build module over the fake backend");
+        }));
 
         // The pointer `finish_response` receives stands in for the response buffer
         // the guest allocated for this call.
@@ -832,8 +837,7 @@ mod tests {
         let log = super::Arc::new(super::Mutex::new(AllocLog::default()));
         let mut module = super::Module::from_backend(Box::new(FakeGuest {
             log: super::Arc::clone(&log),
-        }))
-        .expect("build module over the fake backend");
+        }));
 
         let resp_ptr = module.alloc(4).expect("alloc response buffer");
         let resp = module

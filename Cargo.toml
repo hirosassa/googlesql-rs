@@ -182,6 +182,7 @@ warnings = "deny"
 # `unsafe`). That one call carries a localized `#[allow(unsafe_code, reason=…)]`,
 # so unsafe is denied rather than forbidden to let that documented allow stand.
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]
 # rust-hardening: forbid panicking constructs in non-test code.
@@ -206,5 +207,18 @@ float_cmp = "deny"
 lossy_float_literal = "deny"
 # Don't silently drop a fallible result.
 let_underscore_must_use = "deny"
-# Suppression hygiene: every #[allow]/#[expect] must carry a `reason = "…"`.
+# Suppression hygiene: every #[allow]/#[expect] must carry a `reason = "…"`, and
+# `#[allow]` is nudged toward the self-cleaning `#[expect]`.
+allow_attributes = "warn"
 allow_attributes_without_reason = "deny"
+# Production allowlist: suppressions are accepted only for `arithmetic_side_effects`
+# (float math), `indexing_slicing` (constant index into `[_; N]`) and a deliberate,
+# documented `as_conversions`/`cast_*`; never for unwrap/expect/panic/unreachable/
+# todo/unimplemented/string_slice, and never module-wide in production code.
+# pedantic is rolled out in stages: the lints below are still pending a doc/attribute
+# sweep and are allowed only until that lands; everything else in the group is warn.
+pedantic = { level = "warn", priority = -1 }
+doc_markdown = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+too_many_lines = "allow"

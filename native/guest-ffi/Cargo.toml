@@ -31,6 +31,9 @@ guest = { path = "../guest" }
 # no `--release`) must turn it off explicitly here, not just in release.
 [profile.dev]
 debug = false
+# Same unwind pin for dev builds (CI's wiring check builds without `--release`);
+# `lib.rs` also refuses to compile under `panic=abort` via `compile_error!`.
+panic = "unwind"
 
 # opt-level 3 (the release default) is the whole point of this crate: the linked
 # library must carry optimized native code for a fair comparison against the
@@ -44,3 +47,47 @@ debug = false
 # be a no-op and a trap would kill the host process. It is the release default,
 # but pinned here so the soundness precondition is stated where it is relied on.
 panic = "unwind"
+
+# The runtime backstop behind the compile-time `arithmetic_side_effects` ban, for
+# this hand-written crate only. The transpiled `guest` dependency is excluded:
+# wasm2rs output relies on wrapping i32/i64 semantics and must not gain overflow
+# panics.
+[profile.release.package.guest-ffi]
+overflow-checks = true
+
+[profile.release.package.guest]
+overflow-checks = false
+
+# Mirrors the root crate's rust-hardening lint set. Lints apply to this crate's
+# own `lib.rs` only; the `guest` dependency does not inherit them.
+[lints.rust]
+warnings = "deny"
+# `unsafe` is the point of this crate; deny (not forbid) so each exported fn and
+# helper opts in with a narrowly scoped `#[expect(unsafe_code, reason = "…")]`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+unwrap_in_result = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "warn"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+let_underscore_must_use = "deny"
+allow_attributes = "warn"
+allow_attributes_without_reason = "deny"
+pedantic = { level = "warn", priority = -1 }
+# Staged pedantic rollout, as in the root crate.
+doc_markdown = "allow"

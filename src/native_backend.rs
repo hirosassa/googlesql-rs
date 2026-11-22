@@ -22,10 +22,12 @@ use crate::error::Error;
 // in a module so the one blanket allow for the machine-generated table stays
 // scoped to it.
 #[allow(
+    clippy::allow_attributes,
     clippy::all,
     clippy::pedantic,
     clippy::nursery,
-    reason = "machine-generated dispatch table (26k arms); not hand-maintained"
+    reason = "machine-generated dispatch table (26k arms); not hand-maintained, and an `expect` \
+              would go unfulfilled for whichever group lints the table happens not to trip"
 )]
 mod dispatch {
     include!("../native/dispatch.rs");
@@ -40,10 +42,18 @@ mod dispatch {
 /// is harmless because `__cxa_throw` traps before the guest can use it.
 struct HostImports;
 
+/// Traps the guest on a C++ `throw`. The `guest::Imports` methods return plain
+/// values, so a panic is the only way to abort the call. This in-crate backend
+/// does not catch it, so it reaches the caller of the `Module` API; only the
+/// `guest-ffi` cdylib converts it into an error status.
 #[expect(
     clippy::panic,
     reason = "a C++ throw cannot be unwound through native Rust; trapping matches the wasmtime env stub"
 )]
+fn trap_cxx_throw() -> ! {
+    panic!("C++ exception thrown in wasm (env::__cxa_throw)");
+}
+
 impl guest::Imports for HostImports {
     fn import0(&mut self, _a0: i32) -> i32 {
         0
@@ -53,7 +63,7 @@ impl guest::Imports for HostImports {
     }
     // `__cxa_throw`: terminate, mirroring the wasmtime stub that returns a trap.
     fn import2(&mut self, _a0: i32, _a1: i32, _a2: i32) {
-        panic!("C++ exception thrown in wasm (env::__cxa_throw)");
+        trap_cxx_throw();
     }
     fn import3(&mut self, _a0: i32, _a1: i32, _a2: i32, _a3: i32, _a4: i32) {}
 
@@ -203,11 +213,11 @@ impl NativeInstance {
     /// under `/usr/share/zoneinfo` (and may consult `/etc/localtime`); rooting the
     /// single WASI preopen at "/" lets those absolute reads resolve, exactly as
     /// under wasmtime. Without it the guest traps when cctz's read is refused.
-    pub(crate) fn new() -> Result<Self, Error> {
+    pub(crate) fn new() -> Self {
         let mut instance = guest::Instance::new(HostImports).with_preopen_root("/");
         instance.func60();
         let _status: i32 = instance.func15923();
-        Ok(Self { instance })
+        Self { instance }
     }
 }
 
@@ -283,7 +293,7 @@ impl GuestInstance for NativeInstance {
 // against, so they compile only when `wasmtime` is enabled alongside `native`
 // (run with `--features native,wasmtime`).
 #[cfg(all(test, feature = "wasmtime"))]
-#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#[expect(clippy::expect_used, reason = "test code")]
 mod tests {
     use crate::Module;
 

@@ -16,10 +16,6 @@
 //! fixed-name std symbol (`rust_eh_personality`) a staticlib would leak. The
 //! library also converts guest traps into error statuses at its boundary, so no
 //! panic unwinds across the `extern "C"` edge.
-#![allow(
-    unsafe_code,
-    reason = "this backend is an FFI shim over the C-ABI guest-ffi cdylib; all unsafe is confined here"
-)]
 
 use crate::backend::GuestInstance;
 use crate::error::Error;
@@ -34,6 +30,10 @@ struct GuestHandle {
 // The C ABI exported by the `guest-ffi` cdylib (see `native/guest-ffi/lib.rs`).
 // Each returns an `i32` status (`0` = success) and writes results through
 // out-pointers, so no allocation crosses the boundary.
+#[expect(
+    unsafe_code,
+    reason = "extern declarations for the guest-ffi C ABI; every call site carries a SAFETY comment"
+)]
 unsafe extern "C" {
     fn guest_new(out: *mut *mut GuestHandle) -> i32;
     fn guest_free_instance(inst: *mut GuestHandle);
@@ -84,6 +84,10 @@ fn alloc_zeroed_buf(len: usize) -> Result<Vec<u8>, Error> {
     }
     let layout = std::alloc::Layout::array::<u8>(len).map_err(|e| Error::Memory(e.to_string()))?;
     // SAFETY: `layout` has non-zero size (`len > 0`).
+    #[expect(
+        unsafe_code,
+        reason = "raw allocation for a read buffer; see the SAFETY comment"
+    )]
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err(Error::Memory(format!(
@@ -93,7 +97,16 @@ fn alloc_zeroed_buf(len: usize) -> Result<Vec<u8>, Error> {
     // SAFETY: `ptr` was allocated by the global allocator with `Layout::array::<u8>(len)`
     // (align 1, size `len`) and is fully initialized (zeroed), so it is a valid
     // `Vec<u8>` of length and capacity `len`.
-    Ok(unsafe { Vec::from_raw_parts(ptr, len, len) })
+    #[expect(
+        clippy::same_length_and_capacity,
+        reason = "u8 buffer sized exactly by the allocation; no layout-changing conversion follows"
+    )]
+    #[expect(
+        unsafe_code,
+        reason = "raw allocation for a read buffer; see the SAFETY comment"
+    )]
+    let buf = unsafe { Vec::from_raw_parts(ptr, len, len) };
+    Ok(buf)
 }
 
 /// The native-ffi engine: owns one staticlib instance for its lifetime.
@@ -105,6 +118,10 @@ pub struct NativeFfiInstance {
 // the `&mut self` methods below, i.e. from one thread at a time. This matches
 // the `GuestInstance: Send` (not `Sync`) contract the other backends uphold, and
 // how `Module` moves an instance between threads without sharing it.
+#[expect(
+    unsafe_code,
+    reason = "the handle is owned exclusively by this instance; see the SAFETY comment"
+)]
 unsafe impl Send for NativeFfiInstance {}
 
 impl NativeFfiInstance {
@@ -112,6 +129,10 @@ impl NativeFfiInstance {
     pub(crate) fn new() -> Result<Self, Error> {
         let mut handle: *mut GuestHandle = std::ptr::null_mut();
         // SAFETY: `&raw mut handle` is a valid, writable out-pointer.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe { guest_new(&raw mut handle) };
         check(status, "new")?;
         if handle.is_null() {
@@ -126,7 +147,13 @@ impl NativeFfiInstance {
 impl Drop for NativeFfiInstance {
     fn drop(&mut self) {
         // SAFETY: `handle` came from `guest_new` and is released exactly once here.
-        unsafe { guest_free_instance(self.handle) };
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
+        unsafe {
+            guest_free_instance(self.handle);
+        }
     }
 }
 
@@ -134,6 +161,10 @@ impl GuestInstance for NativeFfiInstance {
     fn alloc(&mut self, len: u32) -> Result<u32, Error> {
         let mut out: u32 = 0;
         // SAFETY: `handle` is live; `out` is a valid writable pointer.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe { guest_alloc(self.handle, len, &raw mut out) };
         check(status, "alloc")?;
         Ok(out)
@@ -141,12 +172,20 @@ impl GuestInstance for NativeFfiInstance {
 
     fn free(&mut self, ptr: u32) -> Result<(), Error> {
         // SAFETY: `handle` is live for the duration of the call.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe { guest_free(self.handle, ptr) };
         check(status, "free")
     }
 
     fn write(&mut self, ptr: u32, data: &[u8]) -> Result<(), Error> {
         // SAFETY: `handle` is live; `data` points to `data.len()` readable bytes.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe { guest_write(self.handle, ptr, data.as_ptr(), data.len()) };
         check(status, "write")
     }
@@ -155,6 +194,10 @@ impl GuestInstance for NativeFfiInstance {
         let len_usize = usize::try_from(len).map_err(|e| Error::Memory(e.to_string()))?;
         let mut buf = alloc_zeroed_buf(len_usize)?;
         // SAFETY: `handle` is live; `buf` has exactly `len` writable bytes.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe { guest_read(self.handle, ptr, len, buf.as_mut_ptr()) };
         if status == ERR_MEMORY {
             return Err(Error::Memory(format!(
@@ -168,6 +211,10 @@ impl GuestInstance for NativeFfiInstance {
     fn call_rpc(&mut self, svc: i32, mid: i32, req_ptr: u32, req_len: u32) -> Result<u64, Error> {
         let mut out: u64 = 0;
         // SAFETY: `handle` is live; `out` is a valid writable pointer.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status =
             unsafe { guest_call_rpc(self.handle, svc, mid, req_ptr, req_len, &raw mut out) };
         check(status, "call_rpc")?;
@@ -178,6 +225,10 @@ impl GuestInstance for NativeFfiInstance {
         let mut out: u64 = 0;
         // SAFETY: `handle` is live; `name` points to `name.len()` readable bytes
         // and `out` is a valid writable pointer.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
         let status = unsafe {
             guest_call_named(
                 self.handle,
@@ -194,7 +245,7 @@ impl GuestInstance for NativeFfiInstance {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "test code")]
+#[expect(clippy::expect_used, reason = "test code")]
 mod tests {
     use super::NativeFfiInstance;
     use crate::backend::GuestInstance;
@@ -227,6 +278,6 @@ mod tests {
         inst.write(ptr, &[1, 2, 3, 4]).expect("write block");
 
         assert_eq!(inst.read(ptr, 4).expect("read block"), [1, 2, 3, 4]);
-        assert!(inst.read(ptr, 0).expect("empty read").is_empty());
+        assert_eq!(inst.read(ptr, 0).expect("empty read"), Vec::<u8>::new());
     }
 }

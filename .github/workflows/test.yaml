@@ -133,6 +133,25 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Drop stale workspace objects
+        # The cached target tree is restored wholesale and, for an exact key hit,
+        # never re-saved, so it keeps the workspace crate's objects from every
+        # source version built since the key was created. cargo-llvm-cov reports
+        # over all of them, so a file edited since then is counted once per old
+        # version and codecov sees phantom uncovered lines (the project figure
+        # swung by several points on a PR that barely touched coverage). Dependency
+        # artifacts are kept; only the workspace crate is rebuilt, which is cheap.
+        # Neither `cargo llvm-cov clean --workspace` nor `cargo clean -p` removes
+        # the stale test binaries in `deps/`: they carry hashes from an older cargo,
+        # which only knows the current layout (`build/<pkg>/<hash>/out`). Those
+        # executables are the workspace's own test binaries (dependencies build no
+        # executables there), so delete every extension-less executable in `deps/`
+        # as well, plus profile data left in the cached tree.
+        run: |
+          cargo clean -p googlesql --target-dir target/llvm-cov-target
+          find target/llvm-cov-target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.*' -print -delete
+          rm -f target/llvm-cov-target/*.profraw target/llvm-cov-target/*.profdata target/llvm-cov-target/*-profraw-list
+
       - name: Generate code coverage
         # Cover the crate on the wasmtime engine: it is the reference backend and
         # its Rust source (unlike the native-ffi cdylib's opaque object code) is

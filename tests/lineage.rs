@@ -72,7 +72,7 @@ fn reports_every_table_in_a_join() {
         )
         .unwrap();
 
-    let names: Vec<&str> = tables.iter().map(|t| t.name()).collect();
+    let names: Vec<&str> = tables.iter().map(googlesql::TableRef::name).collect();
     assert!(names.contains(&"users"), "expected users, got: {names:?}");
     assert!(names.contains(&"orders"), "expected orders, got: {names:?}");
 }
@@ -102,7 +102,7 @@ fn reports_tables_of_insert_select() {
         .referenced_tables("INSERT INTO dst (id) SELECT id FROM src", &[src, dst])
         .unwrap();
 
-    let names: Vec<&str> = tables.iter().map(|t| t.name()).collect();
+    let names: Vec<&str> = tables.iter().map(googlesql::TableRef::name).collect();
     assert!(names.contains(&"src"), "expected src, got: {names:?}");
     assert!(names.contains(&"dst"), "expected dst, got: {names:?}");
 }

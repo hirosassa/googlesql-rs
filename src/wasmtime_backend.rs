@@ -164,6 +164,17 @@ fn bundled_tzdb_dir() -> Result<&'static Path, &'static str> {
         .map_err(String::as_str)
 }
 
+/// The calling user's uid, which owns the tz cache.
+#[cfg(all(unix, feature = "bundled-tzdb"))]
+fn current_uid() -> u32 {
+    #[expect(
+        unsafe_code,
+        reason = "getuid is a pure libc query with no preconditions; std exposes no uid API"
+    )]
+    let uid = unsafe { libc::getuid() };
+    uid
+}
+
 /// Root under which materialized tz database versions are cached.
 ///
 /// Windows `%TEMP%` is already per-user and access-controlled by the OS. Unix
@@ -173,14 +184,7 @@ fn bundled_tzdb_dir() -> Result<&'static Path, &'static str> {
 #[cfg(any(windows, feature = "bundled-tzdb"))]
 fn tzdb_cache_root() -> PathBuf {
     #[cfg(unix)]
-    let user = {
-        #[allow(
-            unsafe_code,
-            reason = "getuid is a pure libc query with no preconditions; std exposes no uid API"
-        )]
-        let uid = unsafe { libc::getuid() };
-        format!("-{uid}")
-    };
+    let user = format!("-{}", current_uid());
     // Windows needs no suffix: `%TEMP%` is per-user already.
     #[cfg(windows)]
     let user = "";
@@ -235,7 +239,12 @@ fn write_bundled_tzdb(root: &Path) -> Result<PathBuf, String> {
     // Staged tree of this process; a leftover from an earlier crashed run of
     // this pid (or a recycled pid) would make the write below incomplete.
     let staged = root.join(format!("{}.tmp-{}", tzdb::VERSION, std::process::id()));
-    remove_dir_best_effort(&staged);
+    remove_dir_if_present(&staged).map_err(|error| {
+        format!(
+            "materialize the bundled tz database: remove stale {}: {error}",
+            staged.display()
+        )
+    })?;
     create_tz_dirs(&staged).map_err(|error| {
         format!(
             "materialize the bundled tz database: create {}: {error}",
@@ -272,16 +281,21 @@ fn write_bundled_tzdb(root: &Path) -> Result<PathBuf, String> {
     // and the race is lost exactly like a failed rename below — keep the
     // winner's tree and drop the one staged here.
     if tzdb_dir_complete(&dir) {
-        remove_dir_best_effort(&staged);
+        discard_staged(&staged);
         return Ok(dir);
     }
-    remove_dir_best_effort(&dir);
+    remove_dir_if_present(&dir).map_err(|error| {
+        format!(
+            "materialize the bundled tz database: remove incomplete {}: {error}",
+            dir.display()
+        )
+    })?;
     match std::fs::rename(&staged, &dir) {
         Ok(()) => Ok(dir),
         // Lost a race with a concurrent writer whose tree is complete: it is
         // equivalent to ours, so accept it and drop the one staged here.
         Err(_) if tzdb_dir_complete(&dir) => {
-            remove_dir_best_effort(&staged);
+            discard_staged(&staged);
             Ok(dir)
         }
         Err(error) => Err(format!(
@@ -316,14 +330,8 @@ fn tzdb_dir_complete(dir: &Path) -> bool {
 #[cfg(all(unix, feature = "bundled-tzdb"))]
 fn dir_is_private(dir: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
-        #[allow(
-            unsafe_code,
-            reason = "getuid is a pure libc query with no preconditions; std exposes no uid API"
-        )]
-        let uid = unsafe { libc::getuid() };
-        uid == meta.uid() && meta.mode() & 0o022 == 0
-    })
+    std::fs::symlink_metadata(dir)
+        .is_ok_and(|meta| current_uid() == meta.uid() && meta.mode() & 0o022 == 0)
 }
 
 /// Windows twin of [`dir_is_private`]: `%TEMP%` is per-user and ACL-controlled,
@@ -333,18 +341,27 @@ const fn dir_is_private(_dir: &Path) -> bool {
     true
 }
 
-/// Removes `dir` recursively, best-effort.
-///
-/// Every call site discards the outcome deliberately: a stale staged tree
-/// only costs disk space, and a failed teardown of an untrusted leftover
-/// surfaces at the next real filesystem operation instead.
+/// Removes `dir` recursively; a directory that is already absent is success.
 #[cfg(any(windows, feature = "bundled-tzdb"))]
-fn remove_dir_best_effort(dir: &Path) {
-    #[allow(
-        clippy::let_underscore_must_use,
-        reason = "best-effort cleanup; a real failure surfaces at the next operation"
-    )]
-    let _ = std::fs::remove_dir_all(dir);
+fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        outcome => outcome,
+    }
+}
+
+/// Drops a staged tree that is no longer needed once the cache is in place.
+///
+/// The caller's result (the complete cache directory) is already settled, so a
+/// failed removal only strands disk space: it is reported, not propagated.
+#[cfg(any(windows, feature = "bundled-tzdb"))]
+fn discard_staged(dir: &Path) {
+    if let Err(error) = remove_dir_if_present(dir) {
+        eprintln!(
+            "googlesql: could not remove staged tz tree {}: {error}",
+            dir.display()
+        );
+    }
 }
 
 /// Creates `dir` and any missing parents without group/world write permission.
@@ -400,17 +417,15 @@ fn write_tzdb_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
-/// Preopens `host_dir` read-only at [`GUEST_TZDIR`], best-effort.
-///
-/// The required `/` preopen in [`WasmtimeInstance::new`] already covers the tz
-/// directory, so a failure here is tolerable and discarded; the direct preopen
-/// only hands the guest an unambiguous handle at the path cctz expects.
-fn preopen_tzdir(builder: &mut WasiCtxBuilder, host_dir: &Path) {
-    #[allow(
-        clippy::let_underscore_must_use,
-        reason = "optional tz preopen; the required \"/\" preopen is the guarantee"
-    )]
-    let _ = builder.preopened_dir(host_dir, GUEST_TZDIR, FsPerms::ReadOnly);
+/// Preopens `host_dir` read-only at [`GUEST_TZDIR`], so the guest gets an
+/// unambiguous handle at the path cctz expects.
+fn preopen_tzdir(builder: &mut WasiCtxBuilder, host_dir: &Path) -> Result<(), Error> {
+    builder
+        .preopened_dir(host_dir, GUEST_TZDIR, FsPerms::ReadOnly)
+        .map(|_| ())
+        .map_err(|e| {
+            Error::Instantiate(format!("preopen tz directory {}: {e}", host_dir.display()))
+        })
 }
 
 impl WasmtimeInstance {
@@ -442,14 +457,14 @@ impl WasmtimeInstance {
         {
             builder.env("TZDIR", GUEST_TZDIR);
             match bundled_tzdb_dir() {
-                Ok(dir) => preopen_tzdir(&mut builder, dir),
+                Ok(dir) => preopen_tzdir(&mut builder, dir)?,
                 #[cfg(unix)]
                 Err(error) => {
                     // Hermetic tz is an opt-in on unix: the host's own database
                     // (when present) still beats failing instantiation.
                     eprintln!("googlesql: {error}; falling back to host {GUEST_TZDIR}");
                     if let Ok(real) = std::fs::canonicalize(GUEST_TZDIR) {
-                        preopen_tzdir(&mut builder, &real);
+                        preopen_tzdir(&mut builder, &real)?;
                     }
                 }
                 #[cfg(windows)]
@@ -468,14 +483,14 @@ impl WasmtimeInstance {
             // in-sandbox symlink traversal.
             if let Ok(real) = std::fs::canonicalize(GUEST_TZDIR) {
                 builder.env("TZDIR", GUEST_TZDIR);
-                preopen_tzdir(&mut builder, &real);
+                preopen_tzdir(&mut builder, &real)?;
             }
         }
-        let wasi = builder
+        let wasi_ctx = builder
             .preopened_dir("/", "/", FsPerms::ReadOnly)
             .map_err(|e| Error::Instantiate(format!("preopen /: {e}")))?
             .build_p1();
-        let mut store = Store::new(engine, HostState { wasi });
+        let mut store = Store::new(engine, HostState { wasi: wasi_ctx });
 
         let instance = linker
             .instantiate(&mut store, wasm)
@@ -571,14 +586,13 @@ impl GuestInstance for WasmtimeInstance {
     }
 
     fn call_rpc(&mut self, svc: i32, mid: i32, req_ptr: u32, req_len: u32) -> Result<u64, Error> {
-        let func = match self.invoke_cache.get(&(svc, mid)) {
-            Some(func) => func.clone(),
-            None => {
-                let name = format!("w_{svc}_{mid}");
-                let func = self.typed_export(&name)?;
-                self.invoke_cache.insert((svc, mid), func.clone());
-                func
-            }
+        let func = if let Some(func) = self.invoke_cache.get(&(svc, mid)) {
+            func.clone()
+        } else {
+            let name = format!("w_{svc}_{mid}");
+            let func = self.typed_export(&name)?;
+            self.invoke_cache.insert((svc, mid), func.clone());
+            func
         };
         // Format the export name only on the error path, so the cached hot path
         // never allocates it.
@@ -587,13 +601,12 @@ impl GuestInstance for WasmtimeInstance {
     }
 
     fn call_named(&mut self, name: &str, req_ptr: u32, req_len: u32) -> Result<u64, Error> {
-        let func = match self.export_cache.get(name) {
-            Some(func) => func.clone(),
-            None => {
-                let func = self.typed_export(name)?;
-                self.export_cache.insert(name.to_string(), func.clone());
-                func
-            }
+        let func = if let Some(func) = self.export_cache.get(name) {
+            func.clone()
+        } else {
+            let func = self.typed_export(name)?;
+            self.export_cache.insert(name.to_string(), func.clone());
+            func
         };
         func.call(&mut self.store, (req_ptr, req_len))
             .map_err(|e| Error::Wasm(format!("`{name}` call: {e}")))
@@ -699,16 +712,16 @@ fn alloc_via_caller(caller: &mut Caller<'_, HostState>, size: i32) -> Option<i32
 /// Returns the zero `Val` for a numeric `ValType`.
 const fn zero_val(ty: &ValType) -> Val {
     match ty {
-        ValType::I32 => Val::I32(0),
         ValType::I64 => Val::I64(0),
         ValType::F32 => Val::F32(0),
         ValType::F64 => Val::F64(0),
+        // I32, and any non-numeric type (the caller only passes numerics).
         _ => Val::I32(0),
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "test code")]
+#[expect(clippy::expect_used, reason = "test code")]
 mod tests {
     use super::{CWASM_PATH, WasmtimeInstance};
     use crate::backend::GuestInstance;
@@ -803,14 +816,14 @@ mod tests {
         let bytes = inst.read(ptr, 4).expect("read up to the last byte");
         assert_eq!(bytes.len(), 4);
         let empty = inst.read(u32::try_from(mem_len).expect("fits u32"), 0);
-        assert!(empty.expect("empty read at the end").is_empty());
+        assert_eq!(empty.expect("empty read at the end"), Vec::<u8>::new());
     }
 }
 
 #[cfg(all(test, any(windows, feature = "bundled-tzdb")))]
-#[allow(clippy::expect_used, reason = "test code")]
+#[expect(clippy::expect_used, reason = "test code")]
 mod tzdb_tests {
-    use super::{TZDB_MARKER, remove_dir_best_effort, tzdb_dir_complete, write_bundled_tzdb};
+    use super::{TZDB_MARKER, remove_dir_if_present, tzdb_dir_complete, write_bundled_tzdb};
 
     /// A private cache root per test (parallel tests in one binary share a
     /// pid, so the test name carries the isolation), cleared before use.
@@ -818,7 +831,7 @@ mod tzdb_tests {
         let root = std::env::temp_dir()
             .join("googlesql-tzdb-tests")
             .join(format!("{test}-{}", std::process::id()));
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
         root
     }
 
@@ -839,7 +852,7 @@ mod tzdb_tests {
             bytes.starts_with(b"TZif"),
             "nested zone must be a TZif file"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 
     /// A complete cache is reused as-is: the second run must not rewrite it.
@@ -879,7 +892,7 @@ mod tzdb_tests {
             staged.is_empty(),
             "no staged tree may be left behind: {staged:?}"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 
     /// A directory whose marker is gone (a crash mid-materialization from
@@ -897,7 +910,7 @@ mod tzdb_tests {
             tzdb_dir_complete(&rebuilt),
             "the rebuilt dir must be complete"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 
     /// The marker alone is not trusted: a temp cleaner that deleted zone files
@@ -920,7 +933,7 @@ mod tzdb_tests {
             rebuilt.join("UTC").is_file(),
             "the rebuilt directory must contain every zone again"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 
     /// Zone files are written with explicit `0644`, so a permissive umask
@@ -940,7 +953,7 @@ mod tzdb_tests {
             0,
             "zone files must not be group/world-writable"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 
     /// A group/world-writable version directory at this predictable cache path
@@ -970,6 +983,6 @@ mod tzdb_tests {
             0,
             "the rebuilt directory must not be group/world-writable"
         );
-        remove_dir_best_effort(&root);
+        remove_dir_if_present(&root).expect("clean up test dir");
     }
 }
