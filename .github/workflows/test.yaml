@@ -147,9 +147,15 @@ jobs:
         # executables are the workspace's own test binaries (dependencies build no
         # executables there), so delete every extension-less executable in `deps/`
         # as well, plus profile data left in the cached tree.
+        #
+        # A cold cache (first run on a branch) has no `deps/` yet; that means there
+        # is nothing stale, so only the existing directory is searched. A `find`
+        # failure on a directory that does exist still fails the step.
         run: |
           cargo clean -p googlesql --target-dir target/llvm-cov-target
-          find target/llvm-cov-target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.*' -print -delete
+          if [ -d target/llvm-cov-target/debug/deps ]; then
+            find target/llvm-cov-target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.*' -print -delete
+          fi
           rm -f target/llvm-cov-target/*.profraw target/llvm-cov-target/*.profdata target/llvm-cov-target/*-profraw-list
 
       - name: Generate code coverage
