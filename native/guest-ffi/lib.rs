@@ -1,4 +1,4 @@
-//! C-ABI cdylib wrapper around the wasm2rs-transpiled `guest` crate (PoC).
+//! C-ABI cdylib wrapper around the `wasm2rs`-transpiled `guest` crate (proof of concept).
 //!
 //! Exposes the six [`GuestInstance`](../../src/backend.rs) operations — plus
 //! construct/destroy — through a flat C ABI, so the compiled, opt-level-3 object
@@ -241,7 +241,7 @@ const ERR_PANIC: i32 = -1;
 /// A non-null `ptr` must be valid for reads and writes of a `T` and not aliased
 /// for the duration of the returned borrow.
 #[expect(unsafe_code, reason = "raw-pointer reborrow at the C-ABI boundary")]
-unsafe fn borrow_mut<'a, T>(ptr: *mut T) -> Option<&'a mut T> {
+const unsafe fn borrow_mut<'a, T>(ptr: *mut T) -> Option<&'a mut T> {
     // SAFETY: the caller upholds validity and aliasing; `as_mut` handles null.
     unsafe { ptr.as_mut() }
 }
@@ -328,7 +328,7 @@ unsafe fn with_instance(inst: *mut Inst, body: impl FnOnce(&mut Inst) -> i32) ->
 /// declarations it was compiled against.
 #[expect(unsafe_code, reason = "C-ABI export: exported symbol")]
 #[unsafe(no_mangle)]
-pub extern "C" fn guest_abi_version() -> u32 {
+pub const extern "C" fn guest_abi_version() -> u32 {
     ABI_VERSION
 }
 
