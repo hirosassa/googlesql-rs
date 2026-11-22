@@ -133,6 +133,16 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Drop stale workspace objects
+        # The cached target tree is restored wholesale and, for an exact key hit,
+        # never re-saved, so it keeps the workspace crate's objects from every
+        # source version built since the key was created. cargo-llvm-cov reports
+        # over all of them, so a file edited since then is counted once per old
+        # version and codecov sees phantom uncovered lines (the project figure
+        # swung by several points on a PR that barely touched coverage). Dependency
+        # artifacts are kept; only the workspace crate is rebuilt, which is cheap.
+        run: cargo llvm-cov clean --workspace
+
       - name: Generate code coverage
         # Cover the crate on the wasmtime engine: it is the reference backend and
         # its Rust source (unlike the native-ffi cdylib's opaque object code) is
