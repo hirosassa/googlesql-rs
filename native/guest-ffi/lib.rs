@@ -326,6 +326,7 @@ unsafe fn with_instance(inst: *mut Inst, body: impl FnOnce(&mut Inst) -> i32) ->
 /// Returns the C ABI version ([`ABI_VERSION`]) this library implements, so a
 /// host can refuse a library whose signatures or status codes differ from the
 /// declarations it was compiled against.
+#[expect(unsafe_code, reason = "C-ABI export: exported symbol")]
 #[unsafe(no_mangle)]
 pub extern "C" fn guest_abi_version() -> u32 {
     ABI_VERSION
