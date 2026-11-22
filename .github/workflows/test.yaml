@@ -141,7 +141,15 @@ jobs:
         # version and codecov sees phantom uncovered lines (the project figure
         # swung by several points on a PR that barely touched coverage). Dependency
         # artifacts are kept; only the workspace crate is rebuilt, which is cheap.
-        run: cargo llvm-cov clean --workspace
+        # `cargo clean -p` is used rather than `cargo llvm-cov clean --workspace`
+        # because the latter left the objects in place: recent cargo keeps
+        # intermediates (test binaries included) under `build/<pkg>/<hash>/out`.
+        run: |
+          echo "--- workspace artifacts before clean"
+          find target/llvm-cov-target -type f \( -name 'googlesql-*' -o -name 'analyzer-*' \) | sort
+          cargo clean -p googlesql --target-dir target/llvm-cov-target
+          echo "--- workspace artifacts after clean"
+          find target/llvm-cov-target -type f \( -name 'googlesql-*' -o -name 'analyzer-*' \) | sort
 
       - name: Generate code coverage
         # Cover the crate on the wasmtime engine: it is the reference backend and
