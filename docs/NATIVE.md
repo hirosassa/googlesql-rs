@@ -53,6 +53,11 @@ scripts/gen-native-guest.sh          # transpile + generate native/guest and nat
 cargo test --features native --lib 'native_backend::'   # differential tests vs wasmtime
 ```
 
+A split transpile emits `lib.rs`, `funcs_N.rs`, and `data_N.bin` side files that `lib.rs`
+`include_bytes!`s, so anything copying the tree must take the whole `native/guest` directory
+(the pack / fetch / digest scripts already do). `gen-native-guest.sh` clears the previous
+output first so stale files cannot skew the digest.
+
 `native/`'s generated sources are gitignored (~122MB, regenerated); only the guest crate's
 tiny `native/guest/Cargo.toml` is committed, so Cargo can resolve the optional `guest`
 path-dependency (and a fresh checkout / default build works) without the generated code
