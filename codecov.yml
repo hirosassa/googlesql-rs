@@ -1,20 +1,26 @@
 # Codecov configuration.
 #
-# Coverage is reported on every pull request, but a shortfall does not block
-# merging. The resolved-AST accessors carry defensive error arms for enum wire
-# values this wasm build cannot produce (e.g. an unknown join/set/subquery
-# discriminant). Those arms are unreachable through real SQL and cannot be
-# covered without mocks, which this project's tests deliberately avoid, so a
-# small, isolated accessor PR will always leave a few uncovered lines.
+# Coverage is reported on every pull request against fixed floors rather than
+# `auto` (relative to the base commit). A relative bar moves with whatever the
+# base run happened to measure, so a noisy or stale baseline turns into a red
+# check on an unrelated change; a fixed floor stays the same regardless.
 #
-# Patch coverage is therefore informational (reported, never failing), and
-# project coverage tolerates a small dip.
+# The resolved-AST accessors carry defensive error arms for enum wire values this
+# wasm build cannot produce (e.g. an unknown join/set/subquery discriminant).
+# Those arms are unreachable through real SQL and cannot be covered without
+# mocks, which this project's tests deliberately avoid, so a small, isolated
+# accessor PR will always leave a few uncovered lines. The patch floor is set
+# low enough to absorb that, but still catches a change that ships untested code.
+#
+# Effective floors (target minus threshold): project 89%, patch 65%. Project
+# coverage measured 92.8% when these were chosen.
 coverage:
   status:
     project:
       default:
-        target: auto
+        target: 90%
         threshold: 1%
     patch:
       default:
-        informational: true
+        target: 70%
+        threshold: 5%
