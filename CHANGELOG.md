@@ -9,14 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The native guest is now generated with wasm2rs v0.6.0 (from v0.2.0) and a
-  guest call-depth limit of 8000 (`--call-depth-limit`, pinned as
+- The native guest is now generated with wasm2rs v0.7.0 (from v0.2.0) and a
+  guest call-depth limit of 1800 (`--call-depth-limit`, pinned as
   `CALL_DEPTH_LIMIT` in `scripts/native-guest.lock`). Deeply nested SQL now
   returns an ordinary `Error::Wasm` on the `native` and `native-ffi` engines
   instead of overflowing the host's native stack and aborting the process; the
   limit is sized so the deepest allowed recursion fits an 8 MiB thread stack
-  (not a 2 MiB one), and costs roughly 2x analyze / 1.5x parse latency on
-  `aarch64-apple-darwin`. The
+  (not a 2 MiB one), and costs about 2% analyze / 1% parse latency on
+  `aarch64-apple-darwin` (the guard is placed only on call-graph nodes a
+  recursion must pass through). The
   `native` engine now catches a typed guest trap and poisons the instance, as the
   `native-ffi` shim already did. See `docs/NATIVE.md`.
   - Takes effect for `native-ffi` consumers once a `native-ffi` release built

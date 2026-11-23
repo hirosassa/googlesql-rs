@@ -25,8 +25,8 @@ fn analysis_stack_bytes() -> usize {
         .map_or(512 << 20, |kb| kb << 10)
 }
 
-/// Beyond what the call-depth limit admits (about 610 nested subqueries or 1,000
-/// chained terms at a limit of 8000) but nowhere near a guest that has no limit
+/// Beyond what the call-depth limit admits (about 160 nested subqueries or 450
+/// chained terms at a limit of 1800) but nowhere near a guest that has no limit
 /// failing on its own, so only the limit can make these an error.
 pub const PAST_THE_LIMIT: usize = 2_000;
 
