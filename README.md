@@ -291,9 +291,11 @@ engine (this is how the differential tests compare them).
   **on any other target** (Windows, x86_64 macOS, aarch64 Linux, …) build the `cdylib` from
   source and point `GUEST_FFI_LIB` at it, or disable the default and use `wasmtime` instead.
   Because a `cdylib` keeps its bundled `std` internal, it links cleanly under any rustc version.
-  Deeply nested SQL can overflow the host stack and abort the process, so for untrusted input use
-  `wasmtime` or a large-stack thread — see
-  [`docs/NATIVE.md`](docs/NATIVE.md#known-limitation-deeply-nested-sql-can-overflow-the-host-stack).
+  The guest is generated with a call-depth limit, so deeply nested SQL returns an ordinary
+  `Error` instead of overflowing the host stack (releases of the prebuilt library before the
+  limit, up to `native-ffi-v0.1.2`, abort instead: use `wasmtime` or a large-stack thread for
+  untrusted input there) — see
+  [`docs/NATIVE.md`](docs/NATIVE.md#deeply-nested-sql-the-guest-call-depth-limit).
 - **`wasmtime`** runs the module on [wasmtime](https://wasmtime.dev/), fetching `googlesql.wasm`
   at build time. It is the portable engine — works on every target and needs no prebuilt
   library — at the cost of pulling the wasmtime/cranelift dependency tree.
