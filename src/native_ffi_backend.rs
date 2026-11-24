@@ -35,6 +35,7 @@ struct GuestHandle {
     reason = "extern declarations for the guest-ffi C ABI; every call site carries a SAFETY comment"
 )]
 unsafe extern "C" {
+    fn guest_abi_version() -> u32;
     fn guest_new(out: *mut *mut GuestHandle) -> i32;
     fn guest_free_instance(inst: *mut GuestHandle);
     fn guest_alloc(inst: *mut GuestHandle, len: u32, out: *mut u32) -> i32;
@@ -57,6 +58,28 @@ unsafe extern "C" {
         len: u32,
         out: *mut u64,
     ) -> i32;
+}
+
+/// The `guest-ffi` C ABI version this shim was written against. It must equal
+/// `ABI_VERSION` in `native/guest-ffi/lib.rs` (the value returned by the
+/// exported `guest_abi_version`); bump both together with any ABI change.
+///
+/// The library is linked (not `dlopen`ed), so a library lacking the symbol fails
+/// at link time rather than here; only a library that *has* it but reports a
+/// different value is a runtime error.
+const EXPECTED_GUEST_ABI_VERSION: u32 = 1;
+
+/// Compares the version reported by the library with the one this shim expects.
+/// The reported value comes from outside Rust and is treated as untrusted: any
+/// difference, in either direction, is a hard error.
+fn check_abi_version(reported: u32, expected: u32) -> Result<(), Error> {
+    if reported == expected {
+        Ok(())
+    } else {
+        Err(Error::Instantiate(format!(
+            "guest-ffi ABI version mismatch: library reports {reported}, this crate expects {expected}"
+        )))
+    }
 }
 
 /// `guest-ffi` status codes (mirrors the constants in `native/guest-ffi/lib.rs`).
@@ -164,6 +187,13 @@ unsafe impl Send for NativeFfiInstance {}
 impl NativeFfiInstance {
     /// Constructs and initializes a native-ffi instance via the staticlib.
     pub(crate) fn new() -> Result<Self, Error> {
+        // SAFETY: `guest_abi_version` takes no arguments and has no preconditions.
+        #[expect(
+            unsafe_code,
+            reason = "FFI call into the guest-ffi cdylib; preconditions are stated in the SAFETY comment"
+        )]
+        let reported = unsafe { guest_abi_version() };
+        check_abi_version(reported, EXPECTED_GUEST_ABI_VERSION)?;
         let mut handle: *mut GuestHandle = std::ptr::null_mut();
         // SAFETY: `&raw mut handle` is a valid, writable out-pointer.
         #[expect(
@@ -305,8 +335,9 @@ impl GuestInstance for NativeFfiInstance {
 #[expect(clippy::expect_used, reason = "test code")]
 mod tests {
     use super::{
-        GuestHandle, NativeFfiInstance, STATUS_ALLOC, STATUS_MEMORY, STATUS_NO_EXPORT, STATUS_OK,
-        STATUS_PANIC, STATUS_POISONED, alloc_zeroed_buf, poisons, status_to_result,
+        EXPECTED_GUEST_ABI_VERSION, GuestHandle, NativeFfiInstance, STATUS_ALLOC, STATUS_MEMORY,
+        STATUS_NO_EXPORT, STATUS_OK, STATUS_PANIC, STATUS_POISONED, alloc_zeroed_buf,
+        check_abi_version, guest_abi_version, poisons, status_to_result,
     };
     use crate::backend::GuestInstance;
     use crate::error::Error;
@@ -354,6 +385,30 @@ mod tests {
             let err = status_to_result(status, "call_rpc").expect_err("runtime status");
             assert!(matches!(err, Error::Wasm(_)), "status {status}: {err}");
         }
+    }
+
+    /// A matching version passes; any other value, higher or lower, is an
+    /// `Error::Instantiate` naming both versions.
+    #[test]
+    fn abi_version_check_accepts_match_and_rejects_mismatch() {
+        check_abi_version(1, 1).expect("equal versions");
+        for reported in [0, 2, u32::MAX] {
+            let err = check_abi_version(reported, 1).expect_err("mismatch");
+            assert!(
+                matches!(&err, Error::Instantiate(m)
+                    if m.contains(&reported.to_string()) && m.contains("expects 1")),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    /// The shim's expected constant agrees with the linked library's export.
+    #[test]
+    fn linked_library_reports_the_expected_abi_version() {
+        // SAFETY: no arguments, no preconditions.
+        #[expect(unsafe_code, reason = "FFI call; see the SAFETY comment")]
+        let reported = unsafe { guest_abi_version() };
+        check_abi_version(reported, EXPECTED_GUEST_ABI_VERSION).expect("linked ABI version");
     }
 
     /// The failing operation is named in the message so a caller can tell which
@@ -433,10 +488,8 @@ mod tests {
     }
 
     /// A request the guest allocator cannot satisfy is `Error::Memory` (needs a
-    /// `guest-ffi` that reports `ERR_ALLOC`; the pre-ERR_ALLOC prebuilt returned
-    /// a NULL offset as success), and the instance stays usable afterwards.
-    /// Gated on a from-source library (`GUEST_FFI_LIB`) until the pin is bumped.
-    #[cfg(guest_ffi_from_source)]
+    /// `guest-ffi` that reports `ERR_ALLOC`), and the instance stays usable
+    /// afterwards.
     #[test]
     fn alloc_beyond_guest_memory_is_a_memory_error() {
         let mut inst = NativeFfiInstance::new().expect("instantiate native-ffi instance");

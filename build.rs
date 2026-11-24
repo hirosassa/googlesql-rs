@@ -45,16 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-env-changed=GOOGLESQL_WASM");
     println!("cargo::rerun-if-env-changed=DOCS_RS");
 
-    // `guest_ffi_from_source`: the cdylib was built from this checkout
-    // (`GUEST_FFI_LIB`), so it carries the current boundary behavior. The pinned
-    // prebuilt predates it (e.g. no `ERR_ALLOC`), so tests of new library
-    // behavior are gated on this cfg until the pin is bumped. Remove the cfg
-    // (here and at its use sites) after the next `native-ffi-v*` pin bump.
-    println!("cargo::rustc-check-cfg=cfg(guest_ffi_from_source)");
     println!("cargo::rerun-if-env-changed=GUEST_FFI_LIB");
-    if env::var_os("GUEST_FFI_LIB").is_some() {
-        println!("cargo::rustc-cfg=guest_ffi_from_source");
-    }
 
     // Under the `native-ffi` feature (the default), link the prebuilt C-ABI
     // shared library (`libguest_ffi.{dylib,so}` / `guest_ffi.dll`, built

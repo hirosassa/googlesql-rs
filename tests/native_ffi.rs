@@ -18,7 +18,6 @@
 
 use googlesql::Module;
 
-#[cfg(guest_ffi_from_source)]
 mod common;
 
 /// A non-trivial statement: join + filter + order + limit, so parse and format
@@ -98,11 +97,6 @@ fn native_ffi_surfaces_errors_like_wasmtime() {
 /// The cdylib's guest is generated with a call-depth limit, so SQL nested far
 /// deeper than any real query returns an `Error` instead of overflowing the host
 /// stack (which would abort the whole test process).
-///
-/// Gated on a from-source library (`GUEST_FFI_LIB`): the currently pinned prebuilt
-/// cdylib predates the limit and would abort here. Drop the gate once a release
-/// built from the limited guest is pinned.
-#[cfg(guest_ffi_from_source)]
 #[test]
 fn deeply_nested_sql_is_an_error_not_a_stack_overflow() {
     common::assert_deep_sql_is_an_error(Module::new_native_ffi);
