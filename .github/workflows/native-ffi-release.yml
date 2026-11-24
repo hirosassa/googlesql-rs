@@ -41,7 +41,7 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             dylib: libguest_ffi.dylib
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
@@ -76,20 +76,14 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Enable rustc's parallel frontend
-        # The generated `guest` crate is ~2.6M LOC; its single-threaded
-        # type/borrow check dominates this build. `-Zthreads` parallelises only
-        # the frontend across all cores, so the shipped cdylib is byte-identical
-        # to a single-threaded build (verified runtime-neutral by the native
-        # benches). Nightly-only, so RUSTC_BOOTSTRAP=1 opts stable in; `nproc`
-        # falls back to `sysctl` on the macOS runners. Inherited by every later
-        # cargo step via $GITHUB_ENV.
-        run: |
-          cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-          {
-            echo "RUSTC_BOOTSTRAP=1"
-            echo "RUSTFLAGS=-Zthreads=$cores"
-          } >>"$GITHUB_ENV"
+      # `-Zthreads` is deliberately NOT used here (the `native` and `native-ffi` CI
+      # jobs do use it, but they build the dev profile). Parsing and expanding the
+      # ~2.6M-LOC `guest` crate has a transient memory peak that grows with the
+      # frontend thread count: measured on macOS at ~11.5 GB with a single thread, ~20 GB with
+      # `-Zthreads=2` and ~24 GB with `-Zthreads=4`. A standard 16 GB runner is
+      # OOM-killed at 4 threads ("The runner has received a shutdown signal", exit
+      # 143), so the release build stays single-threaded in the frontend. Codegen
+      # output is identical either way.
 
       - name: Install wasm-tools
         uses: taiki-e/install-action@v2.90.7
