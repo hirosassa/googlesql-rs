@@ -207,10 +207,11 @@ the FFI), so a prebuilt library that predates codes `3`/`4` is still guarded, an
 through one function (`status_to_result`). `wasm_init`'s returned status is intentionally not a
 failure signal (the reference glue and the wasmtime backend ignore it; only a trap fails).
 
-The library also exports `guest_abi_version() -> u32` (currently `1`; a library without the
-symbol is version 0). The Rust shim does **not** reference it yet: a hard `extern` reference
-would make the currently pinned prebuilt (version 0) fail to link. Once a release containing it
-is pinned, add the check to `NativeFfiInstance::new` (follow-up).
+The library also exports `guest_abi_version() -> u32` (currently `1`). `NativeFfiInstance::new`
+calls it before anything else and fails with `Error::Instantiate` when it differs from the
+shim's `EXPECTED_GUEST_ABI_VERSION`. The cdylib is linked, not `dlopen`ed, so a library without
+the symbol (any release before `native-ffi-v0.1.3`) fails at link time instead; only a
+version mismatch is a runtime error.
 
 ### Deeply nested SQL: the guest call-depth limit
 
