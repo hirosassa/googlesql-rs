@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-27
+
+### Added
+
+- `bundled-tzdb` feature: bundles the IANA tz database (the `tzdb` crate) into
+  the wasmtime backend instead of reading the host's `/usr/share/zoneinfo`, so
+  analysis is reproducible across hosts. Opt-in on unix (pulls `libc` for the
+  per-user cache root); the `wasmtime` feature now also activates `tzdb`. (#170)
+- The `native-ffi` backend verifies the guest-ffi ABI version at instantiation:
+  `NativeFfiInstance::new` calls `guest_abi_version()` and returns
+  `Error::Instantiate` on a mismatch with the expected version (1). The
+  temporary `guest_ffi_from_source` test gate was removed, so the depth-limit
+  and allocation-failure tests always run. (#197)
+
 ### Changed
 
 - The native guest is now generated with wasm2rs v0.7.0 (from v0.2.0) and a
@@ -17,14 +31,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limit is sized so the deepest allowed recursion fits an 8 MiB thread stack
   (not a 2 MiB one), and costs about 2% analyze / 1% parse latency on
   `aarch64-apple-darwin` (the guard is placed only on call-graph nodes a
-  recursion must pass through). The
-  `native` engine now catches a typed guest trap and poisons the instance, as the
-  `native-ffi` shim already did. See `docs/NATIVE.md`.
-  - Takes effect for `native-ffi` consumers once a `native-ffi` release built
-    from the new guest is published and pinned; until then the previously
-    pinned prebuilt library (without the limit) is still used.
+  recursion must pass through). The `native` engine now catches a typed guest
+  trap and poisons the instance, as the `native-ffi` shim already did. See
+  `docs/NATIVE.md`. (#194)
+  - The prebuilt `native-ffi` cdylib is pinned to `native-ffi-v0.1.3`, built
+    from the new guest, so default `native-ffi` consumers get the limit. (#196)
   - wasm2rs 0.6 no longer writes `data_N.bin` side files unless asked, so the
     guest tree consists of `lib.rs` and `funcs_N.rs`.
+- Enabled the full `clippy::pedantic` group and tightened the rust-hardening
+  lints (`unsafe_op_in_unsafe_fn`, `allow_attributes`); production lint
+  suppressions were removed or narrowed. Docs gained `# Errors` sections and
+  pure accessors are `#[must_use]`. No behavior change. (#182, #185)
+- Dependency updates: `zstd` 0.14.3 to 0.14.4. (#174)
+
+### Fixed
+
+- Windows: every analyzer call on the wasmtime backend trapped with
+  `unreachable` because the host has no tz database. The backend now bundles
+  one on Windows. Linux/macOS behavior is unchanged (the host database is still
+  used unless `bundled-tzdb` is enabled). (#170)
+- Protobuf decoding: a 10th varint byte with bits beyond the 64-bit range is now
+  rejected instead of silently truncated, and negative `int32` values are
+  sign-extended instead of clamped to 0. (#177)
+- Protobuf decoders now distinguish an absent field from a malformed one:
+  truncated varints, truncated length-delimited/fixed fields and wrong wire
+  types surface as `Error::Protocol` instead of being treated as absent (a
+  truncated handle used to become the null pointer). Encoders are infallible. (#184)
+- The wasmtime and `native-ffi` backends bounds-check or fallibly allocate the
+  guest read buffer before use, so a guest-supplied length can no longer abort
+  the process on allocation failure; out-of-range reads return `Error::Memory`.
+  (#179, #180)
+- `native-ffi`: after a guest trap the instance is poisoned and later calls fail
+  fast instead of running on a half-executed guest; guest allocation failure is
+  detected and reported as `Error::Memory`; all status codes share one mapping.
+  The shim and library also assert `Send` and guard the teardown stderr write.
+  (#183, #188)
+
+### Documentation
+
+- Documented the host stack-overflow limit of natively run guests and how to
+  avoid it. (#189)
 
 ## [0.4.1] - 2026-11-02
 
