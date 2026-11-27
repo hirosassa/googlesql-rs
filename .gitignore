@@ -28,3 +28,6 @@
 
 # tooling caches
 /.workspace_cache/
+
+# BSD `sed -i` backups (e.g. `sed -i -E ...` without an empty suffix)
+*-E
